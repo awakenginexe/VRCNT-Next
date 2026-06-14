@@ -1,12 +1,11 @@
 import { useI18n } from "@useI18n";
 import styles from "./RightSideComponents.module.scss";
-import RefreshSvg from "@images/refresh.svg?react";
 import HelpSvg from "@images/help.svg?react";
 
 import { useStore_OpenedQuickSetting } from "@store";
 import {
-    useSoftwareVersion,
     useIsOscAvailable,
+    useSoftwareVersion,
 } from "@logics_common";
 
 import {
@@ -24,10 +23,9 @@ export const RightSideComponents = () => {
     return (
         <div className={styles.container}>
 
-            <PluginsQuickSetting />
+            <OpenUpdateQuickSetting />
             <OpenVrcMicMuteSyncQuickSetting />
             <OpenOverlayQuickSetting />
-            <SoftwareUpdateAvailableButton />
             <a
                 className={styles.help_and_info_button}
                 href={generateLocalizedDocumentUrl(currentUiLanguage.data).vrct_document_ui_guide_url}
@@ -37,6 +35,25 @@ export const RightSideComponents = () => {
                 <HelpSvg className={styles.help_svg} />
             </a>
         </div>
+    );
+};
+
+const OpenUpdateQuickSetting = () => {
+    const { updateOpenedQuickSetting } = useStore_OpenedQuickSetting();
+    const { currentLatestSoftwareVersionInfo } = useSoftwareVersion();
+
+    if (currentLatestSoftwareVersionInfo.data.is_update_available !== true) return null;
+
+    const onClickFunction = () => {
+        updateOpenedQuickSetting("update_software");
+    };
+
+    return (
+        <OpenQuickSettingButton
+            label="Update"
+            variable={true}
+            onClickFunction={onClickFunction}
+        />
     );
 };
 
@@ -62,22 +79,6 @@ const OpenOverlayQuickSetting = () => {
         />
     );
 };
-const PluginsQuickSetting = () => {
-    const { t } = useI18n();
-    const { updateOpenedQuickSetting } = useStore_OpenedQuickSetting();
-
-    const onClickFunction = () => {
-        updateOpenedQuickSetting("plugins");
-    };
-
-    return (
-        <OpenQuickSettingButton
-            label={t("config_page.side_menu_labels.plugins")}
-            onClickFunction={onClickFunction}
-        />
-    );
-};
-
 const OpenVrcMicMuteSyncQuickSetting = () => {
     const { t } = useI18n();
     const { updateOpenedQuickSetting } = useStore_OpenedQuickSetting();
@@ -95,20 +96,5 @@ const OpenVrcMicMuteSyncQuickSetting = () => {
             is_available={currentIsOscAvailable.data}
             onClickFunction={onClickFunction}
         />
-    );
-};
-
-const SoftwareUpdateAvailableButton = () => {
-    const { t } = useI18n();
-    const { currentLatestSoftwareVersionInfo } = useSoftwareVersion();
-    const { updateOpenedQuickSetting } = useStore_OpenedQuickSetting();
-
-    if (currentLatestSoftwareVersionInfo.data.is_update_available === false) return null;
-
-    return (
-        <button className={styles.software_update_button} onClick={()=>updateOpenedQuickSetting("update_software")}>
-            <RefreshSvg className={styles.refresh_svg}/>
-            <p className={styles.software_update_label}>{t("main_page.update_available")}</p>
-        </button>
     );
 };

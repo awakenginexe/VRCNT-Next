@@ -18,8 +18,15 @@
     font-weight: 500;
     white-space: nowrap;
     opacity: 0;
-    animation: fadeIn 0.15s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    animation: fadeIn 0.16s cubic-bezier(0.4, 0, 0.2, 1) forwards;
     animation-delay: 0.1s; // small delay
+}
+
+.tooltipBox.is_portal {
+    z-index: 3000;
+    margin: 0;
+    transform: var(--tooltip-portal-transform, translate(0.3rem, -50%));
+    animation-name: fadeInPortal;
 }
 
 .placement-top {
@@ -29,8 +36,49 @@
     margin-bottom: var(--margin-bottom, 0.8rem);
 }
 
+.placement-right {
+    top: 50%;
+    left: 100%;
+    margin-left: 0.8rem;
+    transform: translate(0.3rem, -50%);
+    animation-name: fadeInRight;
+}
+
+.tooltipContent {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    text-align: left;
+}
+
+.tooltipTitle {
+    font-size: 1.1rem;
+    font-weight: 800;
+    color: var(--dark_100_color, #fff);
+}
+
+.tooltipDetail {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--dark_300_color, #d4dce7);
+}
+
 @keyframes fadeIn {
     to {
         opacity: 1;
+    }
+}
+
+@keyframes fadeInRight {
+    to {
+        opacity: 1;
+        transform: translate(0, -50%);
+    }
+}
+
+@keyframes fadeInPortal {
+    to {
+        opacity: 1;
+        transform: var(--tooltip-portal-transform-visible, translate(0, -50%));
     }
 }

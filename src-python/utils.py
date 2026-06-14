@@ -1,25 +1,60 @@
 import base64
+import importlib
+import os
+import sys
 from typing import Any, List, Dict, Optional
 import json
 import traceback
 import logging
 from logging.handlers import RotatingFileHandler
 
-try:
-    import torch
-except Exception:
-    torch = None  # type: ignore
 
-try:
-    from ctranslate2 import get_supported_compute_types
-except Exception:
-    # Fallback: if ctranslate2 is not installed, provide a safe stub.
-    def get_supported_compute_types(device: str, device_index: int) -> List[str]:
-        return []
+def _getLogDir() -> str:
+    """Return the absolute directory where log files should live.
+
+    Anchored to the executable when frozen by PyInstaller, otherwise to
+    this source file. Guarantees logs do not land in whatever CWD the
+    parent process happened to spawn us with (e.g. C:\\Windows\\system32
+    when started by the Tauri sidecar mechanism).
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+_TORCH_MODULE = None
+_TORCH_IMPORT_ATTEMPTED = False
+_CTRANSLATE2_GET_SUPPORTED_COMPUTE_TYPES = None
+_CTRANSLATE2_IMPORT_ATTEMPTED = False
 
 import requests
 import ipaddress
 import socket
+
+
+def _getTorch():
+    global _TORCH_MODULE, _TORCH_IMPORT_ATTEMPTED
+    if _TORCH_IMPORT_ATTEMPTED is False:
+        _TORCH_IMPORT_ATTEMPTED = True
+        try:
+            _TORCH_MODULE = importlib.import_module("torch")
+        except Exception:
+            _TORCH_MODULE = None
+    return _TORCH_MODULE
+
+
+def _getSupportedComputeTypes(device: str, device_index: int) -> List[str]:
+    global _CTRANSLATE2_GET_SUPPORTED_COMPUTE_TYPES, _CTRANSLATE2_IMPORT_ATTEMPTED
+    if _CTRANSLATE2_IMPORT_ATTEMPTED is False:
+        _CTRANSLATE2_IMPORT_ATTEMPTED = True
+        try:
+            ctranslate2_module = importlib.import_module("ctranslate2")
+            _CTRANSLATE2_GET_SUPPORTED_COMPUTE_TYPES = ctranslate2_module.get_supported_compute_types
+        except Exception:
+            _CTRANSLATE2_GET_SUPPORTED_COMPUTE_TYPES = None
+
+    if _CTRANSLATE2_GET_SUPPORTED_COMPUTE_TYPES is None:
+        return []
+    return list(_CTRANSLATE2_GET_SUPPORTED_COMPUTE_TYPES(device, device_index))
 
 def validateDictStructure(data: dict, structure: dict) -> bool:
     """
@@ -56,16 +91,35 @@ def validateDictStructure(data: dict, structure: dict) -> bool:
                 return False
     return True
 
-def isConnectedNetwork(url="http://www.google.com", timeout=3) -> bool:
-    """Quick network connectivity check by requesting `url`.
+def isConnectedNetwork(url="https://clients3.google.com/generate_204", timeout=1.5) -> bool:
+    """Quick network connectivity check using one or more lightweight probes.
 
-    Returns True when a 200 response is returned within `timeout` seconds.
+    The default Google probe commonly returns HTTP 204, so any non-error
+    success response in the 2xx/3xx range should be considered connected.
+    When a single URL is supplied it is tried first, followed by a few
+    built-in fallbacks to avoid false offline detections.
     """
-    try:
-        response = requests.get(url, timeout=timeout)
-        return response.status_code == 200
-    except requests.RequestException:
-        return False
+    probe_urls = []
+    if url:
+        probe_urls.append(url)
+    probe_urls.extend(
+        probe
+        for probe in (
+            "https://www.google.com/generate_204",
+            "https://www.cloudflare.com/cdn-cgi/trace",
+            "http://www.msftconnecttest.com/connecttest.txt",
+        )
+        if probe not in probe_urls
+    )
+
+    for probe_url in probe_urls:
+        try:
+            response = requests.get(probe_url, timeout=timeout, allow_redirects=True)
+            if 200 <= response.status_code < 400:
+                return True
+        except requests.RequestException:
+            continue
+    return False
 
 def isAvailableWebSocketServer(host: str, port: int) -> bool:
     """Return True if the given host/port appear available for binding.
@@ -100,15 +154,16 @@ def getComputeDeviceList() -> List[Dict[str, Any]]:
             "device": "cpu",
             "device_index": 0,
             "device_name": "cpu",
-            "compute_types": ["auto"] + sorted(list(get_supported_compute_types("cpu", 0))),
+            "compute_types": ["auto"] + sorted(_getSupportedComputeTypes("cpu", 0)),
         }
     ]
 
     try:
+        torch = _getTorch()
         if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
             for device_index in range(torch.cuda.device_count()):
                 gpu_device_name = torch.cuda.get_device_name(device_index)
-                gpu_compute_types = ["auto"] + sorted(list(get_supported_compute_types("cuda", device_index)))
+                gpu_compute_types = ["auto"] + sorted(_getSupportedComputeTypes("cuda", device_index))
 
                 # デバイスごとの計算タイプの制限
                 if "GTX" in gpu_device_name:
@@ -137,11 +192,12 @@ def getBestComputeType(device: str, device_index: int) -> str:
     Falls back to "float32" when no preferred type is available.
     """
     try:
-        compute_types = set(get_supported_compute_types(device, device_index))
+        compute_types = set(_getSupportedComputeTypes(device, device_index))
     except Exception:
         compute_types = set()
 
     try:
+        torch = _getTorch()
         device_name = "cpu" if device == "cpu" else (torch.cuda.get_device_name(device_index) if torch is not None else "")
     except Exception:
         device_name = ""
@@ -184,7 +240,7 @@ def encodeBase64(data: str) -> Dict[str, Any]:
 def removeLog() -> None:
     """Truncate the process log file (process.log) if present."""
     try:
-        with open('process.log', 'w', encoding="utf-8") as f:
+        with open(os.path.join(_getLogDir(), 'process.log'), 'w', encoding="utf-8") as f:
             f.write("")
     except Exception:
         errorLogging()
@@ -202,8 +258,9 @@ def setupLogger(name: str, log_file: str, level: int = logging.INFO) -> logging.
     max_log_size = 10 * 1024 * 1024  # 10MB
 
     # ハンドラーを作成
+    log_path = log_file if os.path.isabs(log_file) else os.path.join(_getLogDir(), log_file)
     file_handler = RotatingFileHandler(
-        log_file,
+        log_path,
         maxBytes=max_log_size,
         backupCount=1,
         encoding="utf-8",
@@ -245,15 +302,11 @@ def printResponse(status: int, endpoint: str, result: Any = None) -> None:
     If JSON serialization fails, record the error and emit a generic error payload.
     """
     global process_logger
-    if process_logger is None:
-        process_logger = setupLogger("process", "process.log", logging.INFO)
-
     response = {
         "status": status,
         "endpoint": endpoint,
         "result": result,
     }
-    process_logger.info(response)  # Log the unserialized response
 
     try:
         serialized_response = json.dumps(response)
@@ -273,6 +326,16 @@ def printResponse(status: int, endpoint: str, result: Any = None) -> None:
         print(error_json, flush=True)
     else:
         print(serialized_response, flush=True)
+
+    # The UI is waiting on stdout, so keep file logging best-effort and after the
+    # response is emitted. This prevents a blocked log handler from leaving the UI
+    # spinner stuck even though the handler already finished.
+    try:
+        if process_logger is None:
+            process_logger = setupLogger("process", "process.log", logging.INFO)
+        process_logger.info(response)
+    except Exception:
+        errorLogging()
 
 error_logger: Optional[logging.Logger] = None
 

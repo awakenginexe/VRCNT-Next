@@ -1,15 +1,19 @@
 .button_wrapper {
-    padding: 1.6rem;
-    border-radius: 0.4rem;
+    padding: 1rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.14);
+    border-radius: 0.6rem;
+    background-color: rgba(4, 8, 12, 0.46);
+    transition: var(--transition_ui);
     &:hover {
-        background-color: var(--dark_825_color);
+        background-color: rgba(var(--accent_color_rgb), 0.08);
+        border-color: rgba(var(--accent_color_rgb), 0.3);
     }
     &:active {
-        background-color: var(--dark_900_color);
+        background-color: rgba(2, 5, 8, 0.9);
     }
 }
 
 .button_svg {
-    width: 2.4rem;
-    color: var(--dark_400_color);
+    width: 2rem;
+    color: var(--dark_300_color);
 }

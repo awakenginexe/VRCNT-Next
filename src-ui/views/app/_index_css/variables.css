@@ -1,65 +1,95 @@
 :root {
-    --primary_100_color: #b7ded8;
-    --primary_150_color: #a1d4cc;
-    --primary_200_color: #8acac0;
-    --primary_250_color: #76bfb4;
-    --primary_300_color: #61b4a7;
-    --primary_350_color: #55ac9e;
-    --primary_400_color: #48a495;
-    --primary_450_color: #429c8c;
-    --primary_500_color: #3b9483;
-    --primary_550_color: #398E7D;
-    --primary_600_color: #368777;
-    --primary_650_color: #347f6f;
-    --primary_700_color: #317767;
-    --primary_750_color: #2f6f60;
-    --primary_800_color: #2c6759;
-    --primary_900_color: #214b3f;
+    --accent_color: #00e5ff;
+    --accent_color_rgb: 0, 229, 255;
+    --accent_gradient: linear-gradient(135deg, #00f2fe, #a78bfa);
+    --bg_gradient_start: #0d2836;
+    --bg_gradient_end: #1e1035;
 
-    --primary_600_color_44: #36877744;
+    --primary_100_color: color-mix(in srgb, var(--accent_color) 15%, #ffffff);
+    --primary_150_color: color-mix(in srgb, var(--accent_color) 30%, #ffffff);
+    --primary_200_color: color-mix(in srgb, var(--accent_color) 50%, #ffffff);
+    --primary_250_color: color-mix(in srgb, var(--accent_color) 75%, #ffffff);
+    --primary_300_color: var(--accent_color);
+    --primary_350_color: color-mix(in srgb, var(--accent_color) 85%, #000000);
+    --primary_400_color: color-mix(in srgb, var(--accent_color) 70%, #000000);
+    --primary_450_color: color-mix(in srgb, var(--accent_color) 60%, #000000);
+    --primary_500_color: color-mix(in srgb, var(--accent_color) 50%, #000000);
+    --primary_550_color: color-mix(in srgb, var(--accent_color) 42%, #000000);
+    --primary_600_color: color-mix(in srgb, var(--accent_color) 35%, #000000);
+    --primary_650_color: color-mix(in srgb, var(--accent_color) 28%, #000000);
+    --primary_700_color: color-mix(in srgb, var(--accent_color) 22%, #000000);
+    --primary_750_color: color-mix(in srgb, var(--accent_color) 17%, #000000);
+    --primary_800_color: color-mix(in srgb, var(--accent_color) 12%, #000000);
+    --primary_900_color: color-mix(in srgb, var(--accent_color) 6%, #000000);
 
-    /* primary_300_color 61b4a7 as standard */
-    --sent_400_color: #6197b4;
-    --received_300_color: #a861b4;
+    --primary_600_color_44: color-mix(in srgb, var(--primary_600_color) 44%, transparent);
 
-    --error_bc_color: #bb4448;
-    --error_bc_active_color: #9c3938;
-    --success_bc_color: var(--primary_600_color);
-    --warning_color: #cb944f;
-    --warning_bc_color: #cf7b1b;
+    --sent_400_color: var(--accent_color);
+    --received_300_color: color-mix(in srgb, var(--accent_color) 74%, #ffffff);
 
-    --dark_basic_text_color: #f2f2f2;
-    --dark_100_color: #f5f7fb;
-    --dark_200_color: #f1f2f6;
-    --dark_300_color: #e9eaee;
-    --dark_350_color: #d8d9dd;
-    --dark_400_color: #c7c8cc;
-    --dark_450_color: #b8b9bd;
-    --dark_500_color: #a9aaae;
-    --dark_550_color: #949599;
-    --dark_600_color: #7f8084;
-    --dark_650_color: #75767a;
-    --dark_700_color: #6a6c6f;
-    --dark_725_color: #636467;
-    --dark_750_color: #5b5c5f;
-    --dark_775_color: #535457;
-    --dark_800_color: #4b4c4f;
-    --dark_825_color: #434447;
-    --dark_850_color: #3a3b3e;
-    --dark_863_color: #36373a;
-    --dark_875_color: #323336;
-    --dark_888_color: #2e2f32;
-    --dark_900_color: #292a2d;
-    --dark_925_color: #242528;
-    --dark_950_color: #1f2022;
-    --dark_975_color: #1a1b1d;
-    --dark_1000_color: #151517;
+    --error_bc_color: #ff4a5a;
+    --error_bc_active_color: #d63847;
+    --success_bc_color: #00c896;
+    --warning_color: #ffb03a;
+    --warning_bc_color: #d6871c;
 
-    --dark_550_color_22: #94959922;
-    --dark_825_color_cc: #434447cc;
-    --dark_1000_color_66: #15151766;
-    --dark_1000_color_aa: #151517aa;
-    --dark_1000_color_dd: #151517dd;
+    --dark_basic_text_color: #f1f5f9;
+    --dark_100_color: #ffffff;
+    --dark_200_color: #f8fafc;
+    --dark_300_color: #e2e8f0;
+    --dark_350_color: #cbd5e1;
+    --dark_400_color: #94a3b8;
+    --dark_450_color: #64748b;
+    --dark_500_color: #475569;
+    --dark_550_color: #334155;
+    --dark_600_color: #1e293b;
+    --dark_650_color: #1a2333;
+    --dark_700_color: #131b26;
+    --dark_725_color: #0f1520;
+    --dark_750_color: #0d121c;
+    --dark_775_color: #0b0f17;
+    --dark_800_color: #090c13;
+    --dark_825_color: #07090f;
+    --dark_850_color: #05060a;
+    --dark_863_color: #040508;
+    --dark_875_color: #030406;
+    --dark_888_color: #020304;
+    --dark_900_color: #010203;
+    --dark_925_color: #000102;
+    --dark_950_color: #000001;
+    --dark_975_color: #000000;
+    --dark_1000_color: #000000;
+
+    --dark_550_color_22: rgba(51, 65, 85, 0.22);
+    --dark_825_color_cc: rgba(7, 9, 15, 0.8);
+    --dark_1000_color_66: rgba(0, 0, 0, 0.4);
+    --dark_1000_color_aa: rgba(0, 0, 0, 0.66);
+    --dark_1000_color_dd: rgba(0, 0, 0, 0.85);
+
+    /* Performance Mode reactive variables */
+    --panel_blur: blur(16px);
+    --panel_bg_opacity: 0.72;
+    --panel_border: 0.1rem solid rgba(var(--accent_color_rgb), 0.15);
+    --panel_border_subtle: 0.1rem solid rgba(255, 255, 255, 0.08);
+    --glow_shadow: 0 0 1.2rem rgba(var(--accent_color_rgb), 0.22);
+    --glow_shadow_hover: 0 0 1.8rem rgba(var(--accent_color_rgb), 0.35);
+    --glow_shadow_purple: 0 0 1.2rem rgba(var(--accent_color_rgb), 0.2);
+    --transition_ui: 200ms cubic-bezier(.2, .8, .2, 1);
+    --bg_radial_gradient: radial-gradient(circle at 12% 0%, var(--bg_gradient_start) 0%, transparent 40%), radial-gradient(circle at 88% 100%, var(--bg_gradient_end) 0%, transparent 45%);
+
+    --surface_1_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.08), rgba(9, 15, 24, var(--panel_bg_opacity)));
+    --surface_2_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.12), rgba(14, 23, 36, var(--panel_bg_opacity)));
+    --surface_3_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.16), rgba(20, 32, 50, var(--panel_bg_opacity)));
+    --border_subtle_color: rgba(var(--accent_color_rgb), 0.12);
+    --focus_ring_color: rgba(var(--accent_color_rgb), 0.3);
+    --shadow_soft: 0 1.8rem 4.8rem rgba(0, 0, 0, 0.6);
+    --shadow_lateral: 1rem 0 3.4rem rgba(0, 0, 0, 0.4);
+    --shadow_card: 0 1.8rem 4.2rem rgba(0, 0, 0, 0.18), inset 0 0.1rem 0 rgba(255, 255, 255, 0.07);
+    --shadow_control: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.22);
+    --shadow_control_hover: 0 0 1.8rem rgba(var(--accent_color_rgb), 0.28);
+    --shadow_accent: 0 0 1.8rem rgba(var(--accent_color_rgb), 0.38);
+    --filter_accent_glow: drop-shadow(0 0 1.2rem rgba(var(--accent_color_rgb), 0.36));
+    --filter_accent_glow_strong: drop-shadow(0 0 2rem rgba(var(--accent_color_rgb), 0.45));
 
     /*sent_400_color + #000 10% = */
     --supporters_color_fuwa: #5788a2;
@@ -71,7 +101,64 @@
     --config_page_sidebar_width: 16.8rem;
     --config_page_topbar_height: 8rem;
 
-    --font_family: "Yu Gothic UI";
+    --font_family: "Segoe UI Variable Text", "Inter", "Yu Gothic UI", system-ui, sans-serif;
+}
+
+.performance_mode {
+    --panel_blur: none;
+    --panel_bg_opacity: 0.98;
+    --panel_border: 0.1rem solid #1e293b;
+    --panel_border_subtle: 0.1rem solid #1e293b;
+    --glow_shadow: none;
+    --glow_shadow_hover: none;
+    --glow_shadow_purple: none;
+    --transition_ui: 0ms;
+    --bg_radial_gradient: none;
+    --surface_1_color: color-mix(in srgb, var(--accent_color) 8%, #090f18);
+    --surface_2_color: color-mix(in srgb, var(--accent_color) 10%, #0e1724);
+    --surface_3_color: color-mix(in srgb, var(--accent_color) 12%, #142032);
+    --border_subtle_color: #1e293b;
+    --focus_ring_color: var(--accent_color);
+    --shadow_soft: none;
+    --shadow_lateral: none;
+    --shadow_card: none;
+    --shadow_control: none;
+    --shadow_control_hover: none;
+    --shadow_accent: none;
+    --filter_accent_glow: none;
+    --filter_accent_glow_strong: none;
+}
+
+.theme-neon-cyan {
+    --accent_color: #00e5ff;
+    --accent_color_rgb: 0, 229, 255;
+    --accent_gradient: linear-gradient(135deg, #00f2fe, #a78bfa);
+    --bg_gradient_start: #0d2836;
+    --bg_gradient_end: #1e1035;
+}
+
+.theme-midnight-purple {
+    --accent_color: #a78bfa;
+    --accent_color_rgb: 167, 139, 250;
+    --accent_gradient: linear-gradient(135deg, #8b5cf6, #ec4899);
+    --bg_gradient_start: #0f1026;
+    --bg_gradient_end: #2d0b3d;
+}
+
+.theme-emerald-green {
+    --accent_color: #10b981;
+    --accent_color_rgb: 16, 185, 129;
+    --accent_gradient: linear-gradient(135deg, #10b981, #06b6d4);
+    --bg_gradient_start: #05201a;
+    --bg_gradient_end: #071728;
+}
+
+.theme-sakura-pink {
+    --accent_color: #f472b6;
+    --accent_color_rgb: 244, 114, 182;
+    --accent_gradient: linear-gradient(135deg, #f472b6, #fb7185);
+    --bg_gradient_start: #2a0b1c;
+    --bg_gradient_end: #110e2c;
 }
 /* https://m2.material.io/design/color/the-color-system.html#tools-for-picking-colors */
 /* https://meyerweb.com/eric/tools/color-blend/#::1:hex */

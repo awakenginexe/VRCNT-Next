@@ -8,6 +8,7 @@ export const LanguageSelectorTopBar = (props) => {
     const closeLanguageSelector = () => {
         updateIsOpenedLanguageSelector({
             your_language: false,
+            your_translation_language: false,
             target_language: false,
             target_key: "1"
         });

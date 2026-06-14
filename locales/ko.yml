@@ -43,6 +43,10 @@ main_page:
 
     translator_selector:
         is_selected_same_language: "'{{your_language}}'와 '{{target_language}}'에 동일한 언어가 선택되어 있으므로, 「{{ctranslate2}}」만 사용할 수 있습니다."
+        use_parallel_service: "병렬 서비스 사용"
+        second_translator: "두 번째 번역 엔진"
+        primary_badge: "1st"
+        secondary_badge: "2nd"
 
     message_log:
         all: "전체"
@@ -64,7 +68,7 @@ main_page:
 
 update_modal:
     cpu_desc: "처리 장치로 CPU만을 사용합니다."
-    cuda_desc: "처리 장치로 CPU와 NVIDIA GPU를 선택할 수 있습니다."
+    cuda_desc: "VRCNT-Next에는 CUDA 지원이 포함되어 있으며, 지원되는 NVIDIA GPU가 없어도 CPU로 실행할 수 있습니다."
     cuda_compare_cpu_desc: "GPU 선택 시, CPU에 비해 처리가 빠릅니다."
     cuda_disk_space_desc: "약 {{size}}의 디스크 용량이 필요합니다."
     close_modal: "닫기"
@@ -144,6 +148,9 @@ config_page:
             label: "폰트"
         ui_language:
             label: "UI 언어"
+        performance_mode:
+            label: "성능 모드"
+            desc: "CPU 및 GPU 사용량을 줄이기 위해 배경 흐림(글래스모피즘) 및 발광 효과를 비활성화합니다."
 
     translation:
         ctranslate2_weight_type:
@@ -257,6 +264,9 @@ config_page:
         ui_scaling: "UI 크기 조정"
         display_duration: "표시 시간"
         fadeout_duration: "페이드 아웃 시간"
+        log_order: "로그 순서"
+        oldest_first: "오래된 항목 위"
+        newest_first: "새 항목 위"
         common_settings: "공통 설정"
         tracker: "표시할 트래커의 위치"
         hmd: "HMD"

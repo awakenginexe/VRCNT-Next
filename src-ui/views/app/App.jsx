@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useI18n } from "@useI18n";
 
 import {
@@ -10,7 +11,7 @@ import {
     FontFamilyController,
     TransparencyController,
     CornerRadiusController,
-    PluginsController,
+    PerformanceModeController,
 } from "./_app_controllers";
 
 import styles from "./App.module.scss";
@@ -20,19 +21,33 @@ import { ConfigPage } from "./config_page/ConfigPage";
 
 import {
     WindowTitleBar,
-    SplashComponent,
+    StartupStatusBanner,
+    UpdateNotificationController,
     UpdatingComponent,
     ModalController,
     SnackbarController,
     AppErrorBoundary,
 } from "./others";
 
-import { useIsBackendReady, useIsSoftwareUpdating, useIsVrctAvailable, useWindow } from "@logics_common";
+import { useIsBackendReady, useIsSoftwareUpdating, useWindow } from "@logics_common";
+
+const THEME_ACCENT_CLASSES = [
+    "theme-neon-cyan",
+    "theme-midnight-purple",
+    "theme-emerald-green",
+    "theme-sakura-pink",
+];
 
 export const App = () => {
-    const { currentIsVrctAvailable } = useIsVrctAvailable();
-    const { currentIsBackendReady } = useIsBackendReady();
     const { i18n } = useI18n();
+
+    useEffect(() => {
+        const savedTheme = localStorage.getItem("theme_accent") || "theme-neon-cyan";
+        document.documentElement.classList.remove(...THEME_ACCENT_CLASSES);
+        document.documentElement.classList.add(
+            THEME_ACCENT_CLASSES.includes(savedTheme) ? savedTheme : "theme-neon-cyan"
+        );
+    }, []);
 
     return (
         <div className={styles.container}>
@@ -46,11 +61,8 @@ export const App = () => {
                 <FontFamilyController />
                 <TransparencyController />
                 <CornerRadiusController />
-
-                {(currentIsBackendReady.data === false || currentIsVrctAvailable.data === false)
-                    ? <SplashComponent />
-                    : <Contents key={i18n.language} />
-                }
+                <PerformanceModeController />
+                <Contents key={i18n.language} />
 
                 <SnackbarController />
             </AppErrorBoundary>
@@ -64,9 +76,10 @@ const Contents = () => {
     return (
         <>
             <WindowGeometryController />
-            <PluginsController />
 
             <WindowTitleBar />
+            <StartupStatusBanner />
+            <UpdateNotificationController />
             {currentIsSoftwareUpdating.data === false
             ?
             <div className={styles.pages_wrapper}>

@@ -6,9 +6,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 from device_manager import device_manager
 from config import config
-from model import model
+from model import collapseTranslationEngineSelection, model, normalizeTranslationEngineSelection
 from utils import removeLog, printLog, errorLogging, isConnectedNetwork, isValidIpAddress, isAvailableWebSocketServer
 from errors import ErrorCode, VRCTError
+from models.transcription.transcription_languages import transcription_lang
+from models.transcription.transcription_whisper import DEFAULT_WHISPER_WEIGHT_TYPE
+from models.transcription.transcription_vosk import getVoskModelMeta
+from models.transcription.transcription_parakeet import getParakeetModelMeta
+from models.transcription.transcription_sensevoice import getSenseVoiceModelMeta
+from resource_usage import collect_resource_usage
 
 class Controller:
     def __init__(self) -> None:
@@ -20,25 +26,200 @@ class Controller:
             return None
         self.run: Callable[[int, str, Any], None] = _noop_run
         self.device_access_status: bool = True
-        # Ensure model is initialized at controller startup so existing
-        # attribute-based checks (e.g. model.overlay.initialized) continue to work.
-        try:
-            model.init()
-        except Exception:
-            # In test or headless environments initialization may fail; log and continue.
-            errorLogging()
+
+    def _startupWhisperWeightType(self) -> str:
+        selectable_weights = config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT
+        if config.WHISPER_WEIGHT_TYPE in selectable_weights:
+            return config.WHISPER_WEIGHT_TYPE
+        if DEFAULT_WHISPER_WEIGHT_TYPE in selectable_weights:
+            return DEFAULT_WHISPER_WEIGHT_TYPE
+        return next(iter(selectable_weights), config.WHISPER_WEIGHT_TYPE)
+
+    def _fallbackSelectedWhisperWeight(self, fallback_weight_type: str, fallback_available: bool) -> None:
+        if fallback_available is False or not fallback_weight_type:
+            return
+        selected_weight_type = config.WHISPER_WEIGHT_TYPE
+        if selected_weight_type == fallback_weight_type:
+            return
+        if model.checkTranscriptionWhisperModelWeight(selected_weight_type) is False:
+            config.WHISPER_WEIGHT_TYPE = fallback_weight_type
 
     def _is_overlay_available(self) -> bool:
-        """Safe check whether overlay is present and initialized.
+        """Safe check whether overlay is present and should receive updates.
 
-        This avoids AttributeError when `model` was not fully initialized.
+        If OpenVR drops the overlay, the next update should be allowed to
+        restart it instead of silently skipping all future overlay messages.
         """
         try:
             overlay = getattr(model, "overlay", None)
-            return overlay is not None and getattr(overlay, "initialized", False)
+            if overlay is None:
+                return False
+            if getattr(overlay, "initialized", False) is False:
+                model.startOverlay()
+            return True
         except Exception:
             errorLogging()
             return False
+
+    def _transcriptionLanguageCode(self, engine: str, language_data: dict) -> str:
+        try:
+            language = language_data.get("language")
+            country = language_data.get("country")
+            return transcription_lang[language][country].get(engine, "")
+        except Exception:
+            return ""
+
+    def _transcriptionSupportedLanguageCodes(self, engine: str) -> Optional[set]:
+        if engine == "Vosk":
+            meta = getVoskModelMeta(config.VOSK_WEIGHT_TYPE)
+        elif engine == "Parakeet":
+            meta = getParakeetModelMeta(config.PARAKEET_WEIGHT_TYPE)
+        elif engine == "SenseVoice":
+            meta = getSenseVoiceModelMeta(config.SENSEVOICE_WEIGHT_TYPE)
+        else:
+            return None
+
+        languages = meta.get("languages")
+        if not languages and meta.get("language"):
+            languages = [meta["language"]]
+        return set(languages or [])
+
+    def _isTranscriptionLanguageSupported(self, language_data: dict, engine: Optional[str] = None) -> bool:
+        engine = engine or config.SELECTED_TRANSCRIPTION_ENGINE
+        if engine not in {"Vosk", "Parakeet", "SenseVoice"}:
+            return True
+
+        language_code = self._transcriptionLanguageCode(engine, language_data)
+        supported_codes = self._transcriptionSupportedLanguageCodes(engine)
+        return bool(language_code and supported_codes and language_code in supported_codes)
+
+    def _selectedTabLanguagesSupported(self, selected_languages: dict, only_enabled: bool = True) -> bool:
+        tab_languages = selected_languages.get(config.SELECTED_TAB_NO, {})
+        for language_data in tab_languages.values():
+            if only_enabled and language_data.get("enable") is not True:
+                continue
+            if self._isTranscriptionLanguageSupported(language_data) is False:
+                return False
+        return True
+
+    def _findFirstSupportedTranscriptionLanguage(self) -> Optional[dict]:
+        preferred = [
+            ("English", "United States"),
+            ("Japanese", "Japan"),
+            ("Korean", "South Korea"),
+            ("Chinese Simplified", "China"),
+            ("French", "France"),
+            ("Spanish", "Spain"),
+            ("German", "Germany"),
+        ]
+
+        for language, country in preferred:
+            language_data = {"language": language, "country": country, "enable": True}
+            if self._isTranscriptionLanguageSupported(language_data):
+                return language_data
+
+        for language, countries in transcription_lang.items():
+            for country in countries.keys():
+                language_data = {"language": language, "country": country, "enable": True}
+                if self._isTranscriptionLanguageSupported(language_data):
+                    return language_data
+        return None
+
+    def _findSelectableComputeDevice(self, device_kind: Optional[str] = None) -> Optional[dict]:
+        try:
+            selectable_devices = list(config.SELECTABLE_COMPUTE_DEVICE_LIST)
+        except Exception:
+            selectable_devices = []
+
+        for device in selectable_devices:
+            if device_kind is None or device.get("device") == device_kind:
+                return device
+        return selectable_devices[0] if selectable_devices else None
+
+    def _getTranscriptionRuntimeRule(self, engine: Optional[str] = None) -> dict:
+        engine = engine or config.SELECTED_TRANSCRIPTION_ENGINE
+        if engine == "Parakeet":
+            return {"device_kind": "cuda", "compute_types": ["auto"]}
+        if engine in {"Google", "Vosk", "SenseVoice"}:
+            return {"device_kind": "cpu", "compute_types": ["auto"]}
+        return {"device_kind": None, "compute_types": None}
+
+    def _normalizeTranscriptionRuntimeSelection(self, notify: bool = False) -> bool:
+        changed = False
+        rule = self._getTranscriptionRuntimeRule()
+        selected_device = config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE
+        target_device_kind = rule.get("device_kind")
+
+        if target_device_kind is not None and selected_device.get("device") != target_device_kind:
+            replacement = self._findSelectableComputeDevice(target_device_kind)
+            if replacement is not None:
+                config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE = replacement
+                selected_device = replacement
+                changed = True
+                if notify is True:
+                    self.run(
+                        200,
+                        self.run_mapping["selected_transcription_compute_device"],
+                        config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE,
+                    )
+
+        allowed_compute_types = rule.get("compute_types")
+        if allowed_compute_types is None:
+            allowed_compute_types = selected_device.get("compute_types", []) or ["auto"]
+
+        selected_compute_type = config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE
+        fallback_compute_type = "auto" if "auto" in allowed_compute_types else allowed_compute_types[0]
+        if selected_compute_type not in allowed_compute_types:
+            config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = fallback_compute_type
+            changed = True
+            if notify is True:
+                self.run(
+                    200,
+                    self.run_mapping["selected_transcription_compute_type"],
+                    config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+                )
+
+        return changed
+
+    def _normalizeSelectedYourLanguageForTranscription(self) -> bool:
+        try:
+            selected = config.SELECTED_YOUR_LANGUAGES
+            tab_languages = selected[config.SELECTED_TAB_NO]
+        except Exception:
+            return False
+
+        changed = False
+        engine = config.SELECTED_TRANSCRIPTION_ENGINE
+
+        if engine not in {"Whisper", "SenseVoice"}:
+            for key, language_data in tab_languages.items():
+                if key != "1" and language_data.get("enable") is True:
+                    language_data["enable"] = False
+                    changed = True
+
+        if engine in {"Vosk", "Parakeet", "SenseVoice"}:
+            for key, language_data in tab_languages.items():
+                if language_data.get("enable") is not True:
+                    continue
+                if self._isTranscriptionLanguageSupported(language_data):
+                    continue
+
+                if key == "1":
+                    replacement = self._findFirstSupportedTranscriptionLanguage()
+                    if replacement is not None:
+                        tab_languages[key] = replacement
+                        changed = True
+                else:
+                    language_data["enable"] = False
+                    changed = True
+
+        if changed is False:
+            return False
+
+        config.SELECTED_YOUR_LANGUAGES = selected
+        self.updateTranslationEngineAndEngineList()
+        self.run(200, "/set/data/selected_your_languages", config.SELECTED_YOUR_LANGUAGES)
+        return True
 
     def setInitMapping(self, init_mapping:dict) -> None:
         self.init_mapping = init_mapping
@@ -114,7 +295,18 @@ class Controller:
 
     def updateConfigSettings(self) -> None:
         settings = {}
+        deferred_endpoints = {
+            "/get/data/selectable_mic_host_list",
+            "/get/data/selectable_mic_device_list",
+            "/get/data/selectable_speaker_device_list",
+            "/get/data/connected_lmstudio",
+            "/get/data/connected_ollama",
+            "/get/data/selectable_lmstudio_model_list",
+            "/get/data/selectable_ollama_model_list",
+        }
         for endpoint, dict_data in self.init_mapping.items():
+            if endpoint in deferred_endpoints:
+                continue
             response = dict_data["variable"](None)
             result = response.get("result", None)
             settings[endpoint] = result
@@ -123,6 +315,26 @@ class Controller:
             self.run_mapping["initialization_complete"],
             settings,
         )
+
+    def sendDeferredConfigSettings(self) -> None:
+        deferred_endpoints = (
+            "/get/data/selectable_mic_host_list",
+            "/get/data/selectable_mic_device_list",
+            "/get/data/selectable_speaker_device_list",
+            "/get/data/connected_lmstudio",
+            "/get/data/connected_ollama",
+            "/get/data/selectable_lmstudio_model_list",
+            "/get/data/selectable_ollama_model_list",
+        )
+        for endpoint in deferred_endpoints:
+            dict_data = self.init_mapping.get(endpoint)
+            if dict_data is None:
+                continue
+            try:
+                response = dict_data["variable"](None)
+                self.run(200, endpoint, response.get("result", None))
+            except Exception:
+                errorLogging()
 
     def restartAccessMicDevices(self) -> None:
         if config.ENABLE_TRANSCRIPTION_SEND is True:
@@ -217,7 +429,10 @@ class Controller:
             )
 
         def downloaded(self) -> None:
-            if model.checkTranslatorCTranslate2ModelWeight(self.weight_type) is True:
+            if (
+                model.checkTranslatorCTranslate2ModelWeight(self.weight_type) is True
+                and model.checkTranslatorCTranslate2ModelTokenizer(self.weight_type) is True
+            ):
                 config.SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_DICT[self.weight_type] = True
 
                 self.run(
@@ -268,6 +483,72 @@ class Controller:
                     error_response["status"],
                     self.run_mapping["error_whisper_weight"],
                     error_response["result"],
+                )
+
+    class DownloadVosk:
+        def __init__(self, run_mapping:dict, weight_type:str, run:Callable[[int, str, Any], None]) -> None:
+            self.run_mapping = run_mapping
+            self.weight_type = weight_type
+            self.run = run
+
+        def progressBar(self, progress) -> None:
+            self.run(
+                200,
+                self.run_mapping.get("download_progress_vosk_weight", "download_progress_vosk_weight"),
+                {"weight_type": self.weight_type, "progress": progress},
+            )
+
+        def downloaded(self) -> None:
+            if model.checkTranscriptionVoskModelWeight(self.weight_type) is True:
+                config.SELECTABLE_VOSK_WEIGHT_TYPE_DICT[self.weight_type] = True
+                self.run(
+                    200,
+                    self.run_mapping.get("downloaded_vosk_weight", "downloaded_vosk_weight"),
+                    self.weight_type,
+                )
+
+    class DownloadParakeet:
+        def __init__(self, run_mapping:dict, weight_type:str, run:Callable[[int, str, Any], None]) -> None:
+            self.run_mapping = run_mapping
+            self.weight_type = weight_type
+            self.run = run
+
+        def progressBar(self, progress) -> None:
+            self.run(
+                200,
+                self.run_mapping.get("download_progress_parakeet_weight", "download_progress_parakeet_weight"),
+                {"weight_type": self.weight_type, "progress": progress},
+            )
+
+        def downloaded(self) -> None:
+            if model.checkTranscriptionParakeetModelWeight(self.weight_type) is True:
+                config.SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT[self.weight_type] = True
+                self.run(
+                    200,
+                    self.run_mapping.get("downloaded_parakeet_weight", "downloaded_parakeet_weight"),
+                    self.weight_type,
+                )
+
+    class DownloadSenseVoice:
+        def __init__(self, run_mapping:dict, weight_type:str, run:Callable[[int, str, Any], None]) -> None:
+            self.run_mapping = run_mapping
+            self.weight_type = weight_type
+            self.run = run
+
+        def progressBar(self, progress) -> None:
+            self.run(
+                200,
+                self.run_mapping.get("download_progress_sensevoice_weight", "download_progress_sensevoice_weight"),
+                {"weight_type": self.weight_type, "progress": progress},
+            )
+
+        def downloaded(self) -> None:
+            if model.checkTranscriptionSenseVoiceModelWeight(self.weight_type) is True:
+                config.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT[self.weight_type] = True
+                self.run(
+                    200,
+                    self.run_mapping.get("downloaded_sensevoice_weight", "downloaded_sensevoice_weight"),
+                    self.weight_type,
                 )
 
     def micMessage(self, result: dict) -> None:
@@ -526,7 +807,7 @@ class Controller:
                     )
 
                 if (config.ENABLE_TRANSLATION is True and
-                    config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese"
+                    config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese"
                     ):
                     transliteration_translation.append(
                         model.convertMessageToTransliteration(
@@ -548,7 +829,7 @@ class Controller:
                                 None,
                                 None,
                                 translation,
-                                config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
+                                config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                                 transliteration_message,
                                 transliteration_translation
                             )
@@ -558,7 +839,7 @@ class Controller:
                             message,
                             language,
                             translation,
-                            config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
+                            config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                             transliteration_message,
                             transliteration_translation
                         )
@@ -572,7 +853,7 @@ class Controller:
                                 None,
                                 None,
                                 translation,
-                                config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
+                                config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                                 transliteration_message,
                                 transliteration_translation
                             )
@@ -583,7 +864,7 @@ class Controller:
                             message,
                             language,
                             translation,
-                            config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
+                            config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                             transliteration_message,
                             transliteration_translation
                         )
@@ -621,7 +902,7 @@ class Controller:
                         {
                             "type":"RECEIVED",
                             "src_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
-                            "dst_languages":config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
+                            "dst_languages":config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                             "message":message,
                             "translation":translation,
                             "transliteration":transliteration_translation
@@ -827,6 +1108,30 @@ class Controller:
         return {"status":200, "result":config.COMPUTE_MODE}
 
     @staticmethod
+    def _getSelectedResourceMonitorGpuIndex(data: dict | None = None) -> int | None:
+        if isinstance(data, dict) and data.get("mode") == "manual":
+            try:
+                return int(data.get("device_index"))
+            except (TypeError, ValueError):
+                return None
+
+        for selected_device in (
+            config.SELECTED_TRANSLATION_COMPUTE_DEVICE,
+            config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE,
+        ):
+            if selected_device.get("device") == "cuda":
+                try:
+                    return int(selected_device.get("device_index"))
+                except (TypeError, ValueError):
+                    return None
+
+        return None
+
+    def getResourceUsage(self, data=None, *args, **kwargs) -> dict:
+        selected_gpu_index = self._getSelectedResourceMonitorGpuIndex(data)
+        return {"status": 200, "result": collect_resource_usage(selected_gpu_index)}
+
+    @staticmethod
     def getComputeDeviceList(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTABLE_COMPUTE_DEVICE_LIST}
 
@@ -855,11 +1160,40 @@ class Controller:
         config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE = device
         config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "auto"
         self.run(200, self.run_mapping["selected_transcription_compute_type"], config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE)
+        self._normalizeTranscriptionRuntimeSelection(notify=True)
         return {"status":200,"result":config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE}
 
     @staticmethod
     def getSelectableWhisperWeightTypeDict(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT}
+
+    @staticmethod
+    def getSelectableVoskWeightTypeDict(*args, **kwargs) -> dict:
+        return {"status":200, "result":config.SELECTABLE_VOSK_WEIGHT_TYPE_DICT}
+
+    @staticmethod
+    def getSelectableParakeetWeightTypeDict(*args, **kwargs) -> dict:
+        result = {}
+        for weight_type, is_downloaded in config.SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT.items():
+            meta = getParakeetModelMeta(weight_type)
+            result[weight_type] = {
+                "is_downloaded": is_downloaded,
+                "downloadable": meta.get("downloadable", True),
+                "unavailable_reason": meta.get("unavailable_reason", ""),
+            }
+        return {"status":200, "result":result}
+
+    @staticmethod
+    def getSelectableSenseVoiceWeightTypeDict(*args, **kwargs) -> dict:
+        result = {}
+        for weight_type, is_downloaded in config.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT.items():
+            meta = getSenseVoiceModelMeta(weight_type)
+            result[weight_type] = {
+                "is_downloaded": is_downloaded,
+                "downloadable": meta.get("downloadable", True),
+                "unavailable_reason": meta.get("unavailable_reason", ""),
+            }
+        return {"status":200, "result":result}
 
     # @staticmethod
     # def getMaxMicThreshold(*args, **kwargs) -> dict:
@@ -871,8 +1205,13 @@ class Controller:
 
     def setEnableTranslation(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSLATION is False:
-            if model.isLoadedCTranslate2Model() is False or model.isChangedTranslatorParameters() is True:
+            selected_engine = config.SELECTED_TRANSLATION_ENGINES.get(config.SELECTED_TAB_NO, "CTranslate2")
+            selected_engines = normalizeTranslationEngineSelection(selected_engine)
+            if "CTranslate2" not in selected_engines:
+                config.ENABLE_TRANSLATION = True
+            elif model.isLoadedCTranslate2Model() is False or model.isChangedTranslatorParameters() is True:
                 try:
+                    printLog("Loading CTranslate2 translation model")
                     model.changeTranslatorCTranslate2Model()
                     model.setChangedTranslatorParameters(False)
                     config.ENABLE_TRANSLATION = True
@@ -906,6 +1245,7 @@ class Controller:
                     else:
                         # その他のエラーは通常通り処理
                         errorLogging()
+                        return {"status":500, "result":config.ENABLE_TRANSLATION}
             else:
                 config.ENABLE_TRANSLATION = True
         return {"status":200, "result":config.ENABLE_TRANSLATION}
@@ -935,24 +1275,23 @@ class Controller:
     def setSelectedTabNo(self, selected_tab_no:str, *args, **kwargs) -> dict:
         printLog("setSelectedTabNo", selected_tab_no)
         config.SELECTED_TAB_NO = selected_tab_no
+        self._normalizeSelectedYourLanguageForTranscription()
         self.updateTranslationEngineAndEngineList()
         return {"status":200, "result":config.SELECTED_TAB_NO}
 
     @staticmethod
     def getTranslationEngines(*args, **kwargs) -> dict:
-        engines = model.findTranslationEngines(
+        input_engines = model.findTranslationEngines(
             config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
             config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
             config.SELECTABLE_TRANSLATION_ENGINE_STATUS,
             )
-
-        your_language = config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]
-        for target_language in config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO].values():
-            if your_language["language"] == target_language["language"] and target_language["enable"] is True:
-                if config.SELECTABLE_TRANSLATION_ENGINE_STATUS["CTranslate2"] is True:
-                    engines = ["CTranslate2"]
-                else:
-                    engines = []
+        output_engines = model.findTranslationEngines(
+            config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+            config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
+            config.SELECTABLE_TRANSLATION_ENGINE_STATUS,
+            )
+        engines = [engine for engine in input_engines if engine in output_engines]
 
         return {"status":200, "result":engines}
 
@@ -986,15 +1325,29 @@ class Controller:
         return {"status":200, "result":config.SELECTED_YOUR_LANGUAGES}
 
     def setSelectedYourLanguages(self, select:dict, *args, **kwargs) -> dict:
+        if self._selectedTabLanguagesSupported(select) is False:
+            return {"status":200, "result":config.SELECTED_YOUR_LANGUAGES}
         config.SELECTED_YOUR_LANGUAGES = select
+        self._normalizeSelectedYourLanguageForTranscription()
         self.updateTranslationEngineAndEngineList()
         return {"status":200, "result":config.SELECTED_YOUR_LANGUAGES}
+
+    @staticmethod
+    def getSelectedYourTranslationLanguages(*args, **kwargs) -> dict:
+        return {"status":200, "result":config.SELECTED_YOUR_TRANSLATION_LANGUAGES}
+
+    def setSelectedYourTranslationLanguages(self, select:dict, *args, **kwargs) -> dict:
+        config.SELECTED_YOUR_TRANSLATION_LANGUAGES = select
+        self.updateTranslationEngineAndEngineList()
+        return {"status":200, "result":config.SELECTED_YOUR_TRANSLATION_LANGUAGES}
 
     @staticmethod
     def getSelectedTargetLanguages(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTED_TARGET_LANGUAGES}
 
     def setSelectedTargetLanguages(self, select:dict, *args, **kwargs) -> dict:
+        if config.ENABLE_TRANSCRIPTION_RECEIVE is True and self._selectedTabLanguagesSupported(select) is False:
+            return {"status":200, "result":config.SELECTED_TARGET_LANGUAGES}
         config.SELECTED_TARGET_LANGUAGES = select
         self.updateTranslationEngineAndEngineList()
         return {"status":200, "result":config.SELECTED_TARGET_LANGUAGES}
@@ -1008,9 +1361,10 @@ class Controller:
     def getSelectedTranscriptionEngine(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_ENGINE}
 
-    @staticmethod
-    def setSelectedTranscriptionEngine(data, *args, **kwargs) -> dict:
+    def setSelectedTranscriptionEngine(self, data, *args, **kwargs) -> dict:
         config.SELECTED_TRANSCRIPTION_ENGINE = str(data)
+        self._normalizeTranscriptionRuntimeSelection(notify=True)
+        self._normalizeSelectedYourLanguageForTranscription()
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_ENGINE}
 
     @staticmethod
@@ -1491,15 +1845,6 @@ class Controller:
     def setHotkeys(data, *args, **kwargs) -> dict:
         config.HOTKEYS = data
         return {"status":200, "result":config.HOTKEYS}
-
-    @staticmethod
-    def getPluginsStatus(*args, **kwargs) -> dict:
-        return {"status":200, "result":config.PLUGINS_STATUS}
-
-    @staticmethod
-    def setPluginsStatus(data, *args, **kwargs) -> dict:
-        config.PLUGINS_STATUS = data
-        return {"status":200, "result":config.PLUGINS_STATUS}
 
     @staticmethod
     def getSpeakerAvgLogprob(*args, **kwargs) -> dict:
@@ -2100,6 +2445,11 @@ class Controller:
             config.SELECTED_LMSTUDIO_MODEL = None
             self.run(200, self.run_mapping["selectable_lmstudio_model_list"], config.SELECTABLE_LMSTUDIO_MODEL_LIST)
             self.run(200, self.run_mapping["selected_lmstudio_model"], config.SELECTED_LMSTUDIO_MODEL)
+            self.updateDownloadedCTranslate2ModelWeight(scan_all=True)
+            self.updateDownloadedWhisperModelWeight(scan_all=True)
+            self.updateDownloadedVoskModelWeight(scan_all=True)
+            self.updateDownloadedParakeetModelWeight(scan_all=True)
+            self.updateDownloadedSenseVoiceModelWeight(scan_all=True)
             self.updateTranslationEngineAndEngineList()
             response = VRCTError.create_exception_error_response(
                 e,
@@ -2295,12 +2645,41 @@ class Controller:
         return {"status":200, "result": config.WHISPER_WEIGHT_TYPE}
 
     @staticmethod
+    def getVoskWeightType(*args, **kwargs) -> dict:
+        return {"status":200, "result":config.VOSK_WEIGHT_TYPE}
+
+    def setVoskWeightType(self, data, *args, **kwargs) -> dict:
+        config.VOSK_WEIGHT_TYPE = str(data)
+        self._normalizeSelectedYourLanguageForTranscription()
+        return {"status":200, "result": config.VOSK_WEIGHT_TYPE}
+
+    @staticmethod
+    def getParakeetWeightType(*args, **kwargs) -> dict:
+        return {"status":200, "result":config.PARAKEET_WEIGHT_TYPE}
+
+    def setParakeetWeightType(self, data, *args, **kwargs) -> dict:
+        config.PARAKEET_WEIGHT_TYPE = str(data)
+        self._normalizeTranscriptionRuntimeSelection(notify=True)
+        self._normalizeSelectedYourLanguageForTranscription()
+        return {"status":200, "result": config.PARAKEET_WEIGHT_TYPE}
+
+    @staticmethod
+    def getSenseVoiceWeightType(*args, **kwargs) -> dict:
+        return {"status":200, "result":config.SENSEVOICE_WEIGHT_TYPE}
+
+    def setSenseVoiceWeightType(self, data, *args, **kwargs) -> dict:
+        config.SENSEVOICE_WEIGHT_TYPE = str(data)
+        self._normalizeTranscriptionRuntimeSelection(notify=True)
+        self._normalizeSelectedYourLanguageForTranscription()
+        return {"status":200, "result": config.SENSEVOICE_WEIGHT_TYPE}
+
+    @staticmethod
     def getSelectedTranscriptionComputeType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE}
 
-    @staticmethod
-    def setSelectedTranscriptionComputeType(data, *args, **kwargs) -> dict:
+    def setSelectedTranscriptionComputeType(self, data, *args, **kwargs) -> dict:
         config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = str(data)
+        self._normalizeTranscriptionRuntimeSelection(notify=True)
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE}
 
     @staticmethod
@@ -2359,9 +2738,8 @@ class Controller:
 
     @staticmethod
     def setEnableOverlaySmallLog(*args, **kwargs) -> dict:
+        model.startOverlay()
         if config.OVERLAY_SMALL_LOG is False:
-            if config.OVERLAY_LARGE_LOG is False:
-                model.startOverlay()
             config.OVERLAY_SMALL_LOG = True
         return {"status":200, "result":config.OVERLAY_SMALL_LOG}
 
@@ -2390,9 +2768,8 @@ class Controller:
 
     @staticmethod
     def setEnableOverlayLargeLog(*args, **kwargs) -> dict:
+        model.startOverlay()
         if config.OVERLAY_LARGE_LOG is False:
-            if config.OVERLAY_SMALL_LOG is False:
-                model.startOverlay()
             config.OVERLAY_LARGE_LOG = True
         return {"status":200, "result":config.OVERLAY_LARGE_LOG}
 
@@ -2540,31 +2917,31 @@ class Controller:
 
     @staticmethod
     def openFilepathConfigFile(*args, **kwargs) -> dict:
-        Popen(['explorer', config.PATH_LOCAL.replace('/', '\\')], shell=True)
+        Popen(['explorer', config.PATH_DATA.replace('/', '\\')], shell=True)
         return {"status":200, "result":True}
 
     def setEnableTranscriptionSend(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSCRIPTION_SEND is False:
-            self.startThreadingTranscriptionSendMessage()
             config.ENABLE_TRANSCRIPTION_SEND = True
+            self.startThreadingTranscriptionSendMessage()
         return {"status":200, "result":config.ENABLE_TRANSCRIPTION_SEND}
 
     def setDisableTranscriptionSend(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSCRIPTION_SEND is True:
-            self.stopThreadingTranscriptionSendMessage()
             config.ENABLE_TRANSCRIPTION_SEND = False
+            self.stopThreadingTranscriptionSendMessage()
         return {"status":200, "result":config.ENABLE_TRANSCRIPTION_SEND}
 
     def setEnableTranscriptionReceive(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSCRIPTION_RECEIVE is False:
-            self.startThreadingTranscriptionReceiveMessage()
             config.ENABLE_TRANSCRIPTION_RECEIVE = True
+            self.startThreadingTranscriptionReceiveMessage()
         return {"status":200, "result":config.ENABLE_TRANSCRIPTION_RECEIVE}
 
     def setDisableTranscriptionReceive(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
-            self.stopThreadingTranscriptionReceiveMessage()
             config.ENABLE_TRANSCRIPTION_RECEIVE = False
+            self.stopThreadingTranscriptionReceiveMessage()
         return {"status":200, "result":config.ENABLE_TRANSCRIPTION_RECEIVE}
 
     def sendMessageBox(self, data, *args, **kwargs) -> dict:
@@ -2586,14 +2963,12 @@ class Controller:
     @staticmethod
     def sendTextOverlay(data, *args, **kwargs) -> dict:
         if config.OVERLAY_SMALL_LOG is True:
-            if model.overlay.initialized is True:
-                overlay_image = model.createOverlayImageSmallMessage(data)
-                model.updateOverlaySmallLog(overlay_image)
+            overlay_image = model.createOverlayImageSmallMessage(data)
+            model.updateOverlaySmallLog(overlay_image)
 
         if config.OVERLAY_LARGE_LOG is True:
-            if model.overlay.initialized is True:
-                overlay_image = model.createOverlayImageLargeMessage(data)
-                model.updateOverlayLargeLog(overlay_image)
+            overlay_image = model.createOverlayImageLargeMessage(data)
+            model.updateOverlayLargeLog(overlay_image)
         return {"status":200, "result":data}
 
     @staticmethod
@@ -2614,6 +2989,25 @@ class Controller:
             model.telemetryShutdown()
         return {"status":200, "result":config.ENABLE_TELEMETRY}
 
+    def _restartActiveTranscription(self) -> None:
+        """Restart any running transcription engines so they pick up new language settings.
+
+        This is called after swapping Your Language and Target Language to ensure
+        the transcription models are re-initialized with the updated config, matching
+        the dynamic behavior of Google/Whisper engines.
+        """
+        needs_mic = config.ENABLE_TRANSCRIPTION_SEND
+        needs_speaker = config.ENABLE_TRANSCRIPTION_RECEIVE
+
+        if needs_mic:
+            self.stopTranscriptionSendMessage()
+        if needs_speaker:
+            self.stopTranscriptionReceiveMessage()
+        if needs_mic:
+            self.startTranscriptionSendMessage()
+        if needs_speaker:
+            self.startTranscriptionReceiveMessage()
+
     def swapYourLanguageAndTargetLanguage(self, *args, **kwargs) -> dict:
         your_languages = config.SELECTED_YOUR_LANGUAGES
         your_language_temp = your_languages[config.SELECTED_TAB_NO]["1"]
@@ -2626,10 +3020,19 @@ class Controller:
 
         self.setSelectedYourLanguages(your_languages)
         self.setSelectedTargetLanguages(target_languages)
+
+        # Restart active transcription engines so they re-initialize with the
+        # swapped language settings (critical for Vosk/Parakeet which bind
+        # language at model-init time, not per-call like Google/Whisper).
+        th_restart = Thread(target=self._restartActiveTranscription)
+        th_restart.daemon = True
+        th_restart.start()
+
         return {
             "status":200,
             "result":{
                 "your":config.SELECTED_YOUR_LANGUAGES,
+                "your_translation":config.SELECTED_YOUR_TRANSLATION_LANGUAGES,
                 "target":config.SELECTED_TARGET_LANGUAGES,
                 }
             }
@@ -2638,12 +3041,6 @@ class Controller:
         th_start_update_software = Thread(target=model.updateSoftware)
         th_start_update_software.daemon = True
         th_start_update_software.start()
-        return {"status":200, "result":True}
-
-    def updateCudaSoftware(self, *args, **kwargs) -> dict:
-        th_start_update_cuda_software = Thread(target=model.updateCudaSoftware)
-        th_start_update_cuda_software.daemon = True
-        th_start_update_cuda_software.start()
         return {"status":200, "result":True}
 
     def downloadCtranslate2Weight(self, data:str, asynchronous:bool=True, *args, **kwargs) -> dict:
@@ -2661,8 +3058,9 @@ class Controller:
                 download_ctranslate2.downloaded,
                 )
         else:
-            model.downloadCTranslate2ModelWeight(weight_type, download_ctranslate2.progressBar, download_ctranslate2.downloaded)
-        model.downloadCTranslate2ModelTokenizer(weight_type)
+            if model.downloadCTranslate2ModelWeight(weight_type, download_ctranslate2.progressBar, None):
+                model.downloadCTranslate2ModelTokenizer(weight_type)
+            download_ctranslate2.downloaded()
         return {"status":200, "result":True}
 
     def downloadWhisperWeight(self, data:str, asynchronous:bool=True, *args, **kwargs) -> dict:
@@ -2680,6 +3078,39 @@ class Controller:
                 )
         else:
             model.downloadWhisperModelWeight(weight_type, download_whisper.progressBar, download_whisper.downloaded)
+        return {"status":200, "result":True}
+
+    def downloadVoskWeight(self, data:str, asynchronous:bool=True, *args, **kwargs) -> dict:
+        weight_type = str(data)
+        dl = self.DownloadVosk(self.run_mapping, weight_type, self.run)
+        if asynchronous is True:
+            th = Thread(target=model.downloadVoskModelWeight, args=(weight_type, dl.progressBar, dl.downloaded))
+            th.daemon = True
+            th.start()
+        else:
+            model.downloadVoskModelWeight(weight_type, dl.progressBar, dl.downloaded)
+        return {"status":200, "result":True}
+
+    def downloadParakeetWeight(self, data:str, asynchronous:bool=True, *args, **kwargs) -> dict:
+        weight_type = str(data)
+        dl = self.DownloadParakeet(self.run_mapping, weight_type, self.run)
+        if asynchronous is True:
+            th = Thread(target=model.downloadParakeetModelWeight, args=(weight_type, dl.progressBar, dl.downloaded))
+            th.daemon = True
+            th.start()
+        else:
+            model.downloadParakeetModelWeight(weight_type, dl.progressBar, dl.downloaded)
+        return {"status":200, "result":True}
+
+    def downloadSenseVoiceWeight(self, data:str, asynchronous:bool=True, *args, **kwargs) -> dict:
+        weight_type = str(data)
+        dl = self.DownloadSenseVoice(self.run_mapping, weight_type, self.run)
+        if asynchronous is True:
+            th = Thread(target=model.downloadSenseVoiceModelWeight, args=(weight_type, dl.progressBar, dl.downloaded))
+            th.daemon = True
+            th.start()
+        else:
+            model.downloadSenseVoiceModelWeight(weight_type, dl.progressBar, dl.downloaded)
         return {"status":200, "result":True}
 
     @staticmethod
@@ -2708,7 +3139,8 @@ class Controller:
 
     def changeToCTranslate2Process(self) -> None:
         selected_engines = config.SELECTED_TRANSLATION_ENGINES[config.SELECTED_TAB_NO]
-        config.SELECTABLE_TRANSLATION_ENGINE_STATUS[selected_engines] = False
+        for selected_engine in normalizeTranslationEngineSelection(selected_engines):
+            config.SELECTABLE_TRANSLATION_ENGINE_STATUS[selected_engine] = False
         config.SELECTED_TRANSLATION_ENGINES[config.SELECTED_TAB_NO] = "CTranslate2"
         selectable_engines = self.getTranslationEngines()["result"]
         self.run(200, self.run_mapping["selected_translation_engines"], config.SELECTED_TRANSLATION_ENGINES)
@@ -2735,6 +3167,7 @@ class Controller:
                 )
                 # ここでマイクの音声認識を停止
                 self.stopTranscriptionSendMessage()
+                config.ENABLE_TRANSCRIPTION_SEND = False
                 disable_response = VRCTError.create_error_response(
                     ErrorCode.TRANSCRIPTION_SEND_DISABLED_VRAM,
                     data=False
@@ -2747,6 +3180,8 @@ class Controller:
             else:
                 # その他のエラーは通常通り処理
                 errorLogging()
+                config.ENABLE_TRANSCRIPTION_SEND = False
+                self.run(200, self.run_mapping["enable_transcription_send"], False)
         finally:
             self.device_access_status = True
 
@@ -2786,6 +3221,7 @@ class Controller:
                 )
                 # ここでスピーカーの音声認識を停止
                 self.stopTranscriptionReceiveMessage()
+                config.ENABLE_TRANSCRIPTION_RECEIVE = False
                 disable_response = VRCTError.create_error_response(
                     ErrorCode.TRANSCRIPTION_RECEIVE_DISABLED_VRAM,
                     data=False
@@ -2798,6 +3234,8 @@ class Controller:
             else:
                 # その他のエラーは通常通り処理
                 errorLogging()
+                config.ENABLE_TRANSCRIPTION_RECEIVE = False
+                self.run(200, self.run_mapping["enable_transcription_receive"], False)
         finally:
             self.device_access_status = True
 
@@ -2856,12 +3294,15 @@ class Controller:
         cleaned_text = re.sub(pattern, r'\1', text)
         return cleaned_text
 
-    def updateDownloadedCTranslate2ModelWeight(self) -> None:
+    def updateDownloadedCTranslate2ModelWeight(self, scan_all: bool = False) -> None:
         # キャッシュされた結果を使用（起動時の重複チェックを回避）
         if hasattr(self, '_ctranslate2_available_cache'):
             # 起動時のキャッシュを使用: 選択中の重みタイプのみ設定
             config.SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_DICT[config.CTRANSLATE2_WEIGHT_TYPE] = self._ctranslate2_available_cache
-        
+
+        if scan_all is False:
+            return
+
         # すべての重みタイプをチェック（キャッシュされていないものだけ）
         for weight_type in config.SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_DICT.keys():
             # 選択中のウェイトはキャッシュで設定済みなのでスキップ
@@ -2871,35 +3312,67 @@ class Controller:
 
     def updateTranslationEngineAndEngineList(self):
         engines = config.SELECTED_TRANSLATION_ENGINES
-        engine = engines[config.SELECTED_TAB_NO]
+        selected_engines = normalizeTranslationEngineSelection(engines[config.SELECTED_TAB_NO])
         selectable_engines = self.getTranslationEngines()["result"]
-        if engine not in selectable_engines:
-            engine = "CTranslate2"
-        engines[config.SELECTED_TAB_NO] = engine
+        selected_engines = [engine for engine in selected_engines if engine in selectable_engines]
+        if len(selected_engines) == 0:
+            selected_engines = ["CTranslate2"]
+        engines[config.SELECTED_TAB_NO] = collapseTranslationEngineSelection(selected_engines)
         config.SELECTED_TRANSLATION_ENGINES = engines
-
-        your_language = config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]
-        for target_language in config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO].values():
-            if your_language["language"] == target_language["language"] and target_language["enable"] is True:
-                engines[config.SELECTED_TAB_NO] = "CTranslate2"
-                config.SELECTED_TRANSLATION_ENGINES = engines
-                break
 
         self.run(200, self.run_mapping["selected_translation_engines"], config.SELECTED_TRANSLATION_ENGINES)
         self.run(200, self.run_mapping["translation_engines"], selectable_engines)
 
-    def updateDownloadedWhisperModelWeight(self) -> None:
+    def updateDownloadedWhisperModelWeight(self, scan_all: bool = False) -> None:
         # キャッシュされた結果を使用（起動時の重複チェックを回避）
         if hasattr(self, '_whisper_available_cache'):
-            # 起動時のキャッシュを使用: 選択中の重みタイプのみ設定
-            config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT[config.WHISPER_WEIGHT_TYPE] = self._whisper_available_cache
-        
+            # 起動時のキャッシュを使用: 起動に必要な最小ウェイトのみ設定
+            cached_weight_type = getattr(self, '_whisper_available_cache_key', config.WHISPER_WEIGHT_TYPE)
+            config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT[cached_weight_type] = self._whisper_available_cache
+
+            selected_weight_type = config.WHISPER_WEIGHT_TYPE
+            if selected_weight_type != cached_weight_type:
+                config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT[selected_weight_type] = model.checkTranscriptionWhisperModelWeight(selected_weight_type)
+
+        if scan_all is False:
+            return
+
         # すべての重みタイプをチェック（キャッシュされていないものだけ）
         for weight_type in config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT.keys():
-            # 選択中のウェイトはキャッシュで設定済みなのでスキップ
-            if hasattr(self, '_whisper_available_cache') and weight_type == config.WHISPER_WEIGHT_TYPE:
+            # 起動時に確認済みのウェイトはキャッシュで設定済みなのでスキップ
+            if hasattr(self, '_whisper_available_cache') and weight_type == getattr(self, '_whisper_available_cache_key', config.WHISPER_WEIGHT_TYPE):
                 continue
             config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT[weight_type] = model.checkTranscriptionWhisperModelWeight(weight_type)
+
+    def updateDownloadedVoskModelWeight(self, scan_all: bool = False) -> None:
+        selected_weight_type = config.VOSK_WEIGHT_TYPE
+        config.SELECTABLE_VOSK_WEIGHT_TYPE_DICT[selected_weight_type] = model.checkTranscriptionVoskModelWeight(selected_weight_type)
+        if scan_all is False:
+            return
+        for weight_type in config.SELECTABLE_VOSK_WEIGHT_TYPE_DICT.keys():
+            if weight_type == selected_weight_type:
+                continue
+            config.SELECTABLE_VOSK_WEIGHT_TYPE_DICT[weight_type] = model.checkTranscriptionVoskModelWeight(weight_type)
+
+    def updateDownloadedParakeetModelWeight(self, scan_all: bool = False) -> None:
+        selected_weight_type = config.PARAKEET_WEIGHT_TYPE
+        config.SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT[selected_weight_type] = model.checkTranscriptionParakeetModelWeight(selected_weight_type)
+        if scan_all is False:
+            return
+        for weight_type in config.SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT.keys():
+            if weight_type == selected_weight_type:
+                continue
+            config.SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT[weight_type] = model.checkTranscriptionParakeetModelWeight(weight_type)
+
+    def updateDownloadedSenseVoiceModelWeight(self, scan_all: bool = False) -> None:
+        selected_weight_type = config.SENSEVOICE_WEIGHT_TYPE
+        config.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT[selected_weight_type] = model.checkTranscriptionSenseVoiceModelWeight(selected_weight_type)
+        if scan_all is False:
+            return
+        for weight_type in config.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT.keys():
+            if weight_type == selected_weight_type:
+                continue
+            config.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT[weight_type] = model.checkTranscriptionSenseVoiceModelWeight(weight_type)
 
     def updateTranscriptionEngine(self):
         weight_type = config.WHISPER_WEIGHT_TYPE
@@ -2908,16 +3381,19 @@ class Controller:
         current_engine = config.SELECTED_TRANSCRIPTION_ENGINE
         selected_engines = [key for key, value in config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS.items() if value is True]
 
-        # 選択可能なエンジンがなければ、Whisper に変更
-        if current_engine in {"Whisper", "Google"}:
-            if current_engine not in selected_engines:
-                if weight_available:
-                    alternate = "Google" if current_engine == "Whisper" else "Whisper"
-                    config.SELECTED_TRANSCRIPTION_ENGINE = alternate if alternate in selected_engines else None
-                else:
-                    config.SELECTED_TRANSCRIPTION_ENGINE = "Whisper"
+        if current_engine in selected_engines:
+            self._normalizeSelectedYourLanguageForTranscription()
+            return
+
+        if weight_available and "Whisper" in selected_engines:
+            config.SELECTED_TRANSCRIPTION_ENGINE = "Whisper"
+        elif "Google" in selected_engines:
+            config.SELECTED_TRANSCRIPTION_ENGINE = "Google"
+        elif selected_engines:
+            config.SELECTED_TRANSCRIPTION_ENGINE = selected_engines[0]
         else:
             config.SELECTED_TRANSCRIPTION_ENGINE = "Whisper"
+        self._normalizeSelectedYourLanguageForTranscription()
 
     def startCheckMicEnergy(self) -> None:
         while self.device_access_status is False:
@@ -2963,7 +3439,13 @@ class Controller:
 
     @staticmethod
     def startThreadingDownloadCtranslate2Weight(weight_type:str, callback:Callable[[float], None], end_callback:Optional[Callable[..., None]] = None) -> None:
-        th_download = Thread(target=model.downloadCTranslate2ModelWeight, args=(weight_type, callback, end_callback))
+        def run_download():
+            if model.downloadCTranslate2ModelWeight(weight_type, callback, None):
+                model.downloadCTranslate2ModelTokenizer(weight_type)
+            if end_callback is not None:
+                end_callback()
+
+        th_download = Thread(target=run_download)
         th_download.daemon = True
         th_download.start()
 
@@ -3095,6 +3577,307 @@ class Controller:
     def initializationProgress(self, progress):
         self.run(200, self.run_mapping["initialization_progress"], progress)
 
+    def initializationStatus(self, message: str, detail: str = "", visible: bool = True, phase: str = "starting"):
+        self.run(
+            200,
+            self.run_mapping["initialization_status"],
+            {
+                "message": message,
+                "detail": detail,
+                "visible": visible,
+                "phase": phase,
+            },
+        )
+
+    def _applyFastStartupTranslationStatus(self, connected_network: bool, ctranslate2_available: bool) -> None:
+        online_engines = {"Google", "Bing", "Papago", "DeepL"}
+        for engine in config.SELECTABLE_TRANSLATION_ENGINE_STATUS.keys():
+            if engine == "CTranslate2":
+                config.SELECTABLE_TRANSLATION_ENGINE_STATUS[engine] = ctranslate2_available
+            elif engine in online_engines:
+                config.SELECTABLE_TRANSLATION_ENGINE_STATUS[engine] = connected_network
+            else:
+                config.SELECTABLE_TRANSLATION_ENGINE_STATUS[engine] = False
+
+    def _applyFastStartupTranscriptionStatus(self, connected_network: bool, whisper_available: bool) -> None:
+        for engine in config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS.keys():
+            match engine:
+                case "Whisper":
+                    config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS[engine] = whisper_available
+                case "Vosk":
+                    config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS[engine] = any(
+                        model.checkTranscriptionVoskModelWeight(wt)
+                        for wt in config.SELECTABLE_VOSK_WEIGHT_TYPE_DICT.keys()
+                    )
+                case "Parakeet":
+                    config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS[engine] = any(
+                        model.checkTranscriptionParakeetModelWeight(wt)
+                        for wt in config.SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT.keys()
+                    )
+                case "SenseVoice":
+                    config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS[engine] = any(
+                        model.checkTranscriptionSenseVoiceModelWeight(wt)
+                        for wt in config.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT.keys()
+                    )
+                case _:
+                    config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS[engine] = connected_network
+
+    def _finishInitializationInBackground(self, connected_network: bool) -> None:
+        try:
+            self.initializationStatus(
+                "Loading devices and local services",
+                "Refreshing audio devices and optional local providers.",
+                visible=True,
+                phase="services",
+            )
+            self.sendDeferredConfigSettings()
+
+            self.initializationStatus(
+                "Checking translation services",
+                "Verifying online engines and optional local providers.",
+                visible=True,
+                phase="services",
+            )
+
+            ctranslate2_available = getattr(self, "_ctranslate2_available_cache", False)
+            engines_to_check = list(config.SELECTABLE_TRANSLATION_ENGINE_LIST)
+            engine_results = {}
+
+            def check_translation_engine(engine: str) -> tuple:
+                status = False
+                auth_key_invalid = False
+                model_list = None
+                selected_model = None
+
+                try:
+                    match engine:
+                        case "CTranslate2":
+                            status = ctranslate2_available
+                        case "DeepL_API":
+                            if config.AUTH_KEYS[engine] is None:
+                                status = False
+                            else:
+                                if model.authenticationTranslatorDeepLAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
+                                    status = True
+                                else:
+                                    auth_key_invalid = True
+                        case "Plamo_API":
+                            if config.AUTH_KEYS[engine] is None:
+                                status = False
+                            else:
+                                if model.authenticationTranslatorPlamoAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
+                                    model_list = model.getTranslatorPlamoModelList()
+                                    selected_model = config.SELECTED_PLAMO_MODEL if config.SELECTED_PLAMO_MODEL in model_list else model_list[0]
+                                    status = True
+                                else:
+                                    auth_key_invalid = True
+                        case "Gemini_API":
+                            if config.AUTH_KEYS[engine] is None:
+                                status = False
+                            else:
+                                if model.authenticationTranslatorGeminiAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
+                                    model_list = model.getTranslatorGeminiModelList()
+                                    selected_model = config.SELECTED_GEMINI_MODEL if config.SELECTED_GEMINI_MODEL in model_list else model_list[0]
+                                    status = True
+                                else:
+                                    auth_key_invalid = True
+                        case "OpenAI_API":
+                            if config.AUTH_KEYS[engine] is None:
+                                status = False
+                            else:
+                                if model.authenticationTranslatorOpenAIAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
+                                    model_list = model.getTranslatorOpenAIModelList()
+                                    selected_model = config.SELECTED_OPENAI_MODEL if config.SELECTED_OPENAI_MODEL in model_list else model_list[0]
+                                    status = True
+                                else:
+                                    auth_key_invalid = True
+                        case "Groq_API":
+                            if config.AUTH_KEYS[engine] is None:
+                                status = False
+                            else:
+                                if model.authenticationTranslatorGroqAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
+                                    model_list = model.getTranslatorGroqModelList()
+                                    selected_model = config.SELECTED_GROQ_MODEL if config.SELECTED_GROQ_MODEL in model_list else model_list[0]
+                                    status = True
+                                else:
+                                    auth_key_invalid = True
+                        case "OpenRouter_API":
+                            if config.AUTH_KEYS[engine] is None:
+                                status = False
+                            else:
+                                if model.authenticationTranslatorOpenRouterAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
+                                    model_list = model.getTranslatorOpenRouterModelList()
+                                    selected_model = config.SELECTED_OPENROUTER_MODEL if config.SELECTED_OPENROUTER_MODEL in model_list else model_list[0]
+                                    status = True
+                                else:
+                                    auth_key_invalid = True
+                        case "LMStudio":
+                            if config.LMSTUDIO_URL is not None:
+                                if model.authenticationTranslatorLMStudio(base_url=config.LMSTUDIO_URL) is True:
+                                    model_list = model.getTranslatorLMStudioModelList()
+                                    if len(model_list) > 0:
+                                        selected_model = config.SELECTED_LMSTUDIO_MODEL if config.SELECTED_LMSTUDIO_MODEL in model_list else model_list[0]
+                                        status = True
+                        case "Ollama":
+                            if model.authenticationTranslatorOllama() is True:
+                                model_list = model.getTranslatorOllamaModelList()
+                                if len(model_list) > 0:
+                                    selected_model = config.SELECTED_OLLAMA_MODEL if config.SELECTED_OLLAMA_MODEL in model_list else model_list[0]
+                                    status = True
+                        case _:
+                            status = connected_network is True
+                except Exception as e:
+                    printLog(f"Error checking engine {engine}: {str(e)}")
+                    errorLogging()
+                    status = False
+
+                return engine, status, auth_key_invalid, model_list, selected_model
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_engine = {executor.submit(check_translation_engine, engine): engine for engine in engines_to_check}
+                for future in as_completed(future_to_engine):
+                    engine, status, auth_key_invalid, model_list, selected_model = future.result()
+                    engine_results[engine] = (status, auth_key_invalid, model_list, selected_model)
+
+            for engine in engines_to_check:
+                if engine not in engine_results:
+                    continue
+
+                status, auth_key_invalid, model_list, selected_model = engine_results[engine]
+                config.SELECTABLE_TRANSLATION_ENGINE_STATUS[engine] = status
+
+                if auth_key_invalid:
+                    auth_keys = config.AUTH_KEYS
+                    auth_keys[engine] = None
+                    config.AUTH_KEYS = auth_keys
+                    printLog(f"{engine} auth key is invalid")
+
+                if engine == "LMStudio" and not status:
+                    config.SELECTABLE_LMSTUDIO_MODEL_LIST = []
+                    config.SELECTED_LMSTUDIO_MODEL = None
+                if engine == "Ollama" and not status:
+                    config.SELECTABLE_OLLAMA_MODEL_LIST = []
+                    config.SELECTED_OLLAMA_MODEL = None
+
+                if model_list is not None and status:
+                    match engine:
+                        case "Plamo_API":
+                            config.SELECTABLE_PLAMO_MODEL_LIST = model_list
+                            config.SELECTED_PLAMO_MODEL = selected_model
+                            model.setTranslatorPlamoModel(selected_model)
+                            model.updateTranslatorPlamoClient()
+                        case "Gemini_API":
+                            config.SELECTABLE_GEMINI_MODEL_LIST = model_list
+                            config.SELECTED_GEMINI_MODEL = selected_model
+                            model.setTranslatorGeminiModel(selected_model)
+                            model.updateTranslatorGeminiClient()
+                        case "OpenAI_API":
+                            config.SELECTABLE_OPENAI_MODEL_LIST = model_list
+                            config.SELECTED_OPENAI_MODEL = selected_model
+                            model.setTranslatorOpenAIModel(selected_model)
+                            model.updateTranslatorOpenAIClient()
+                        case "Groq_API":
+                            config.SELECTABLE_GROQ_MODEL_LIST = model_list
+                            config.SELECTED_GROQ_MODEL = selected_model
+                            model.setTranslatorGroqModel(selected_model)
+                            model.updateTranslatorGroqClient()
+                        case "OpenRouter_API":
+                            config.SELECTABLE_OPENROUTER_MODEL_LIST = model_list
+                            config.SELECTED_OPENROUTER_MODEL = selected_model
+                            model.setTranslatorOpenRouterModel(selected_model)
+                            model.updateTranslatorOpenRouterClient()
+                        case "LMStudio":
+                            config.SELECTABLE_LMSTUDIO_MODEL_LIST = model_list
+                            config.SELECTED_LMSTUDIO_MODEL = selected_model
+                            model.setTranslatorLMStudioModel(selected_model)
+                            model.updateTranslatorLMStudioClient()
+                        case "Ollama":
+                            config.SELECTABLE_OLLAMA_MODEL_LIST = model_list
+                            config.SELECTED_OLLAMA_MODEL = selected_model
+                            model.setTranslatorOllamaModel(selected_model)
+                            model.updateTranslatorOllamaClient()
+
+            self.updateTranslationEngineAndEngineList()
+
+            self.initializationStatus(
+                "Starting background services",
+                "Bringing up transliteration, OSC, and overlay.",
+                visible=True,
+                phase="services",
+            )
+            self.initializationProgress(4)
+
+            if config.CONVERT_MESSAGE_TO_ROMAJI is True or config.CONVERT_MESSAGE_TO_HIRAGANA is True:
+                model.startTransliteration()
+
+            model.addKeywords()
+
+            if config.LOGGER_FEATURE is True:
+                model.startLogger()
+
+            def init_osc_receive_background():
+                try:
+                    model.startReceiveOSC()
+                    osc_query_enabled = model.getIsOscQueryEnabled()
+                    if osc_query_enabled is True:
+                        self.enableOscQuery()
+                        if config.VRC_MIC_MUTE_SYNC is True:
+                            self.setEnableVrcMicMuteSync()
+                    else:
+                        mute_sync_info_flag = False
+                        if config.VRC_MIC_MUTE_SYNC is True:
+                            self.setDisableVrcMicMuteSync()
+                            mute_sync_info_flag = True
+                        self.disableOscQuery(mute_sync_info=mute_sync_info_flag)
+                    printLog("[Background] OSC Receive initialization completed")
+                except Exception:
+                    errorLogging()
+                    printLog("[Background] OSC Receive initialization failed")
+
+            bg_thread = Thread(target=init_osc_receive_background)
+            bg_thread.daemon = True
+            bg_thread.start()
+
+            device_manager.setCallbackHostList(self.updateMicHostList)
+            device_manager.setCallbackMicDeviceList(self.updateMicDeviceList)
+            device_manager.setCallbackSpeakerDeviceList(self.updateSpeakerDeviceList)
+
+            if config.AUTO_MIC_SELECT is True:
+                self.applyAutoMicSelect()
+            if config.AUTO_SPEAKER_SELECT is True:
+                self.applyAutoSpeakerSelect()
+
+            if (config.OVERLAY_SMALL_LOG is True or config.OVERLAY_LARGE_LOG is True):
+                model.startOverlay()
+
+            if config.WEBSOCKET_SERVER is True:
+                if isAvailableWebSocketServer(config.WEBSOCKET_HOST, config.WEBSOCKET_PORT) is True:
+                    model.startWebSocketServer(config.WEBSOCKET_HOST, config.WEBSOCKET_PORT)
+                else:
+                    config.WEBSOCKET_SERVER = False
+                    model.stopWebSocketServer()
+                    printLog("WebSocket server host or port is not available")
+
+            config.revalidate_selected_models()
+
+            if config.ENABLE_TELEMETRY is True:
+                model.telemetryInit(enabled=config.ENABLE_TELEMETRY, app_version=config.VERSION)
+
+            if connected_network is True:
+                self.checkSoftwareUpdated()
+
+            self.updateConfigSettings()
+            self.initializationStatus("", "", visible=False, phase="done")
+            self.startWatchdog()
+        except Exception:
+            errorLogging()
+            self.initializationStatus(
+                "Startup hit a background error",
+                "Some services may need another second or a restart.",
+                visible=True,
+                phase="error",
+            )
+
     def enableOscQuery(self):
         self.run(
             200,
@@ -3117,6 +3900,7 @@ class Controller:
     def init(self, *args, **kwargs) -> None:
         removeLog()
         printLog("Start Initialization")
+        self.initializationStatus("Starting VRCNT-Next", "Preparing the core app and local settings.", visible=True, phase="starting")
 
         # Network check
         connected_network = isConnectedNetwork()
@@ -3125,42 +3909,61 @@ class Controller:
         else:
             self.disconnectedNetwork()
         printLog(f"Connected Network: {connected_network}")
+        self.initializationStatus(
+            "Checking local environment",
+            "Detecting connectivity, local models, and startup defaults.",
+            visible=True,
+            phase="local",
+        )
 
         self.initializationProgress(1)
 
         # Download weights
+        startup_whisper_weight_type = self._startupWhisperWeightType()
         if connected_network is True:
             printLog("Download CTranslate2 Model Weight")
             # 後方互換用
             model.backwardCompatibleTranslatorCTranslate2ModelRenameWeightsDir()
 
+            download_threads = []
             weight_type = config.CTRANSLATE2_WEIGHT_TYPE
-            th_download_ctranslate2 = None
-            if model.checkTranslatorCTranslate2ModelWeight(weight_type) is False:
+            if (
+                model.checkTranslatorCTranslate2ModelWeight(weight_type) is False
+                or model.checkTranslatorCTranslate2ModelTokenizer(weight_type) is False
+            ):
                 th_download_ctranslate2 = Thread(target=self.downloadCtranslate2Weight, args=(weight_type, False))
                 th_download_ctranslate2.daemon = True
                 th_download_ctranslate2.start()
+                download_threads.append(th_download_ctranslate2)
 
             printLog("Download Whisper Model Weight")
-            weight_type = config.WHISPER_WEIGHT_TYPE
-            th_download_whisper = None
+            weight_type = startup_whisper_weight_type
             if model.checkTranscriptionWhisperModelWeight(weight_type) is False:
                 th_download_whisper = Thread(target=self.downloadWhisperWeight, args=(weight_type, False))
                 th_download_whisper.daemon = True
                 th_download_whisper.start()
+                download_threads.append(th_download_whisper)
 
-            if isinstance(th_download_ctranslate2, Thread):
-                th_download_ctranslate2.join()
-            if isinstance(th_download_whisper, Thread):
-                th_download_whisper.join()
+            if len(download_threads) > 0:
+                self.initializationStatus(
+                    "Downloading required AI models",
+                    "Preparing the selected local translation and Whisper models.",
+                    visible=True,
+                    phase="download",
+                )
+                for download_thread in download_threads:
+                    download_thread.join()
 
         # Check and disable/enable AI models (parallel)
 
         def check_ctranslate2() -> bool:
-            return model.checkTranslatorCTranslate2ModelWeight(config.CTRANSLATE2_WEIGHT_TYPE) is True
+            return (
+                model.checkTranslatorCTranslate2ModelWeight(config.CTRANSLATE2_WEIGHT_TYPE) is True
+                and model.checkTranslatorCTranslate2ModelTokenizer(config.CTRANSLATE2_WEIGHT_TYPE) is True
+            )
 
         def check_whisper() -> bool:
-            return model.checkTranscriptionWhisperModelWeight(config.WHISPER_WEIGHT_TYPE) is True
+            return model.checkTranscriptionWhisperModelWeight(startup_whisper_weight_type) is True
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_ctranslate2 = executor.submit(check_ctranslate2)
@@ -3170,315 +3973,46 @@ class Controller:
 
         # インスタンス変数にキャッシュ（後続の処理で再利用）
         self._ctranslate2_available_cache = ctranslate2_available
+        self._whisper_available_cache_key = startup_whisper_weight_type
         self._whisper_available_cache = whisper_available
+        self._fallbackSelectedWhisperWeight(startup_whisper_weight_type, whisper_available)
 
         if not ctranslate2_available or not whisper_available:
             self.disableAiModels()
         else:
             self.enableAiModels()
 
-        # Init Translation Engine Status (with parallel processing)
-        printLog("Init Translation Engine Status")
+        self._applyFastStartupTranslationStatus(connected_network, ctranslate2_available)
+        self._applyFastStartupTranscriptionStatus(connected_network, whisper_available)
 
-        def check_translation_engine(engine: str) -> tuple:
-            """翻訳エンジンのステータスをチェック（並列実行用）"""
-            status = False
-            auth_key_invalid = False
-            model_list = None
-            selected_model = None
-
-            try:
-                match engine:
-                    case "CTranslate2":
-                        # 既に前のステップでチェック済み、結果を再利用
-                        status = ctranslate2_available
-                    case "DeepL_API":
-                        if config.AUTH_KEYS[engine] is None:
-                            status = False
-                        else:
-                            if model.authenticationTranslatorDeepLAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
-                                status = True
-                            else:
-                                auth_key_invalid = True
-                    case "Plamo_API":
-                        if config.AUTH_KEYS[engine] is None:
-                            status = False
-                        else:
-                            if model.authenticationTranslatorPlamoAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
-                                model_list = model.getTranslatorPlamoModelList()
-                                selected_model = config.SELECTED_PLAMO_MODEL if config.SELECTED_PLAMO_MODEL in model_list else model_list[0]
-                                status = True
-                            else:
-                                auth_key_invalid = True
-                    case "Gemini_API":
-                        if config.AUTH_KEYS[engine] is None:
-                            status = False
-                        else:
-                            if model.authenticationTranslatorGeminiAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
-                                model_list = model.getTranslatorGeminiModelList()
-                                selected_model = config.SELECTED_GEMINI_MODEL if config.SELECTED_GEMINI_MODEL in model_list else model_list[0]
-                                status = True
-                            else:
-                                auth_key_invalid = True
-                    case "OpenAI_API":
-                        if config.AUTH_KEYS[engine] is None:
-                            status = False
-                        else:
-                            if model.authenticationTranslatorOpenAIAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
-                                model_list = model.getTranslatorOpenAIModelList()
-                                selected_model = config.SELECTED_OPENAI_MODEL if config.SELECTED_OPENAI_MODEL in model_list else model_list[0]
-                                status = True
-                            else:
-                                auth_key_invalid = True
-                    case "Groq_API":
-                        if config.AUTH_KEYS[engine] is None:
-                            status = False
-                        else:
-                            if model.authenticationTranslatorGroqAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
-                                model_list = model.getTranslatorGroqModelList()
-                                selected_model = config.SELECTED_GROQ_MODEL if config.SELECTED_GROQ_MODEL in model_list else model_list[0]
-                                status = True
-                            else:
-                                auth_key_invalid = True
-                    case "OpenRouter_API":
-                        if config.AUTH_KEYS[engine] is None:
-                            status = False
-                        else:
-                            if model.authenticationTranslatorOpenRouterAuthKey(auth_key=config.AUTH_KEYS[engine]) is True:
-                                model_list = model.getTranslatorOpenRouterModelList()
-                                selected_model = config.SELECTED_OPENROUTER_MODEL if config.SELECTED_OPENROUTER_MODEL in model_list else model_list[0]
-                                status = True
-                            else:
-                                auth_key_invalid = True
-                    case "LMStudio":
-                        if config.LMSTUDIO_URL is not None:
-                            if model.authenticationTranslatorLMStudio(base_url=config.LMSTUDIO_URL) is True:
-                                model_list = model.getTranslatorLMStudioModelList()
-                                if len(model_list) > 0:
-                                    selected_model = config.SELECTED_LMSTUDIO_MODEL if config.SELECTED_LMSTUDIO_MODEL in model_list else model_list[0]
-                                    status = True
-                    case "Ollama":
-                        if model.authenticationTranslatorOllama() is True:
-                            model_list = model.getTranslatorOllamaModelList()
-                            if len(model_list) > 0:
-                                selected_model = config.SELECTED_OLLAMA_MODEL if config.SELECTED_OLLAMA_MODEL in model_list else model_list[0]
-                                status = True
-                    case _:
-                        status = connected_network is True
-            except Exception as e:
-                printLog(f"Error checking engine {engine}: {str(e)}")
-                errorLogging()
-                status = False
-
-            return engine, status, auth_key_invalid, model_list, selected_model
-
-        engine_results = {}
-        engines_to_check = list(config.SELECTABLE_TRANSLATION_ENGINE_LIST)
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_engine = {executor.submit(check_translation_engine, engine): engine 
-                              for engine in engines_to_check}
-
-            for future in as_completed(future_to_engine):
-                engine, status, auth_key_invalid, model_list, selected_model = future.result()
-                engine_results[engine] = (status, auth_key_invalid, model_list, selected_model)
-
-        # 結果を順番に適用（メインスレッドで実行）
-        for engine in engines_to_check:
-            if engine not in engine_results:
-                continue
-
-            status, auth_key_invalid, model_list, selected_model = engine_results[engine]
-
-            # ログ出力
-            printLog(f"Start check {engine}")
-
-            # ステータス設定
-            config.SELECTABLE_TRANSLATION_ENGINE_STATUS[engine] = status
-
-            # 認証キー無効化
-            if auth_key_invalid:
-                auth_keys = config.AUTH_KEYS
-                auth_keys[engine] = None
-                config.AUTH_KEYS = auth_keys
-                printLog(f"{engine} auth key is invalid")
-            elif status:
-                printLog(f"{engine} is valid/available")
-
-            if engine == "LMStudio" and not status:
-                config.SELECTABLE_LMSTUDIO_MODEL_LIST = []
-                config.SELECTED_LMSTUDIO_MODEL = None
-            if engine == "Ollama" and not status:
-                config.SELECTABLE_OLLAMA_MODEL_LIST = []
-                config.SELECTED_OLLAMA_MODEL = None
-
-            # モデルリストと選択モデルの設定
-            if model_list is not None and status:
-                match engine:
-                    case "Plamo_API":
-                        config.SELECTABLE_PLAMO_MODEL_LIST = model_list
-                        config.SELECTED_PLAMO_MODEL = selected_model
-                        model.setTranslatorPlamoModel(selected_model)
-                        model.updateTranslatorPlamoClient()
-                    case "Gemini_API":
-                        config.SELECTABLE_GEMINI_MODEL_LIST = model_list
-                        config.SELECTED_GEMINI_MODEL = selected_model
-                        model.setTranslatorGeminiModel(selected_model)
-                        model.updateTranslatorGeminiClient()
-                    case "OpenAI_API":
-                        config.SELECTABLE_OPENAI_MODEL_LIST = model_list
-                        config.SELECTED_OPENAI_MODEL = selected_model
-                        model.setTranslatorOpenAIModel(selected_model)
-                        model.updateTranslatorOpenAIClient()
-                    case "Groq_API":
-                        config.SELECTABLE_GROQ_MODEL_LIST = model_list
-                        config.SELECTED_GROQ_MODEL = selected_model
-                        model.setTranslatorGroqModel(selected_model)
-                        model.updateTranslatorGroqClient()
-                    case "OpenRouter_API":
-                        config.SELECTABLE_OPENROUTER_MODEL_LIST = model_list
-                        config.SELECTED_OPENROUTER_MODEL = selected_model
-                        model.setTranslatorOpenRouterModel(selected_model)
-                        model.updateTranslatorOpenRouterClient()
-                    case "LMStudio":
-                        config.SELECTABLE_LMSTUDIO_MODEL_LIST = model_list
-                        config.SELECTED_LMSTUDIO_MODEL = selected_model
-                        model.setTranslatorLMStudioModel(selected_model)
-                        model.updateTranslatorLMStudioClient()
-                    case "Ollama":
-                        config.SELECTABLE_OLLAMA_MODEL_LIST = model_list
-                        config.SELECTED_OLLAMA_MODEL = selected_model
-                        model.setTranslatorOllamaModel(selected_model)
-                        model.updateTranslatorOllamaClient()
-
-            printLog(f"{engine} check completed")
-
-        printLog("Translation Engine Status Init completed")
-
-        # Init Transcription Engine Status
-        for engine in config.SELECTABLE_TRANSCRIPTION_ENGINE_LIST:
-            match engine:
-                case "Whisper":
-                    # キャッシュされた結果を使用（重複チェックを回避）
-                    config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS[engine] = self._whisper_available_cache
-                case _:
-                    if connected_network is True:
-                        config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS[engine] = True
-                    else:
-                        config.SELECTABLE_TRANSCRIPTION_ENGINE_STATUS[engine] = False
-        self.initializationProgress(2)
-
-        # Set Translation Engine
-        printLog("Set Translation Engine")
         self.updateDownloadedCTranslate2ModelWeight()
-        self.updateTranslationEngineAndEngineList()
-
-        # Set Transcription Engine
-        printLog("Set Transcription Engine")
         self.updateDownloadedWhisperModelWeight()
+        self.updateDownloadedVoskModelWeight()
+        self.updateDownloadedParakeetModelWeight()
+        self.updateDownloadedSenseVoiceModelWeight()
+        self.updateTranslationEngineAndEngineList()
         self.updateTranscriptionEngine()
-
-        # Set Transliteration
-        printLog("Set Transliteration")
-        if config.CONVERT_MESSAGE_TO_ROMAJI is True or config.CONVERT_MESSAGE_TO_HIRAGANA is True:
-            model.startTransliteration()
-
-        self.initializationProgress(3)
-
-        # Set Word Filter
-        printLog("Set Word Filter")
-        model.addKeywords()
-
-        # Check Software Updated (Background)
-        printLog("Check Software Updated (Background)")
-
-        def check_software_updated_background():
-            """ソフトウェア更新チェックをバックグラウンドで実行"""
-            try:
-                self.checkSoftwareUpdated()
-                printLog("[Background] Software update check completed")
-            except Exception:
-                errorLogging()
-                printLog("[Background] Software update check failed")
-
-        bg_thread = Thread(target=check_software_updated_background)
-        bg_thread.daemon = True
-        bg_thread.start()
-
-        # Init Logger
-        printLog("Init Logger")
-        if config.LOGGER_FEATURE is True:
-            model.startLogger()
-
-        self.initializationProgress(4)
-
-        # Init OSC Receive (Background)
-        printLog("Init OSC Receive (Background)")
-
-        def init_osc_receive_background():
-            """OSC Receiveの初期化をバックグラウンドで実行"""
-            try:
-                model.startReceiveOSC()
-                osc_query_enabled = model.getIsOscQueryEnabled()
-                if osc_query_enabled is True:
-                    self.enableOscQuery()
-                    if config.VRC_MIC_MUTE_SYNC is True:
-                        self.setEnableVrcMicMuteSync()
-                else:
-                    # OSC Query is disabled, so disable VRC some features
-                    mute_sync_info_flag = False
-                    if config.VRC_MIC_MUTE_SYNC is True:
-                        self.setDisableVrcMicMuteSync()
-                        mute_sync_info_flag = True
-                    self.disableOscQuery(mute_sync_info=mute_sync_info_flag)
-                printLog("[Background] OSC Receive initialization completed")
-            except Exception:
-                errorLogging()
-                printLog("[Background] OSC Receive initialization failed")
-
-        bg_thread = Thread(target=init_osc_receive_background)
-        bg_thread.daemon = True
-        bg_thread.start()
-
-        # Init Device Manager
-        printLog("Init Device Manager")
         device_manager.setCallbackHostList(self.updateMicHostList)
         device_manager.setCallbackMicDeviceList(self.updateMicDeviceList)
         device_manager.setCallbackSpeakerDeviceList(self.updateSpeakerDeviceList)
 
-        printLog("Init Auto Device Selection")
         if config.AUTO_MIC_SELECT is True:
             self.applyAutoMicSelect()
         if config.AUTO_SPEAKER_SELECT is True:
             self.applyAutoSpeakerSelect()
 
-        # Init Overlay
-        printLog("Init Overlay")
-        if (config.OVERLAY_SMALL_LOG is True or config.OVERLAY_LARGE_LOG is True):
-            model.startOverlay()
-
-        # Init WebSocket Server
-        printLog("Init WebSocket Server")
-        if config.WEBSOCKET_SERVER is True:
-            if isAvailableWebSocketServer(config.WEBSOCKET_HOST, config.WEBSOCKET_PORT) is True:
-                model.startWebSocketServer(config.WEBSOCKET_HOST, config.WEBSOCKET_PORT)
-            else:
-                config.WEBSOCKET_SERVER = False
-                model.stopWebSocketServer()
-                printLog("WebSocket server host or port is not available")
-
-        # Revalidate Selected Models
-        printLog("Revalidate Selected Models")
-        config.revalidate_selected_models()
-
-        # telemetry Init
-        printLog("Telemetry Init")
-        if config.ENABLE_TELEMETRY is True:
-            model.telemetryInit(enabled=config.ENABLE_TELEMETRY, app_version=config.VERSION)
-
-        # Update Settings
-        printLog("Update settings")
+        self.initializationProgress(2)
+        self.initializationStatus(
+            "Opening interface",
+            "The main window is ready. Finishing optional startup tasks in the background.",
+            visible=True,
+            phase="readying_ui",
+        )
         self.updateConfigSettings()
+        self.initializationProgress(3)
 
-        printLog("End Initialization")
-        self.startWatchdog()
+        bg_thread = Thread(target=self._finishInitializationInBackground, args=(connected_network,))
+        bg_thread.daemon = True
+        bg_thread.start()
+
+        printLog("End Initialization (core ready, background tasks running)")

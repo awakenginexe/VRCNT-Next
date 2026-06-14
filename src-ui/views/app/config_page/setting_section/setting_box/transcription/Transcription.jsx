@@ -19,6 +19,10 @@ import {
 } from "../_components";
 
 import { ComputeDevice } from "../_components/compute_device/ComputeDevice";
+import {
+    filterDeviceMapByEngine,
+    getAllowedTranscriptionComputeTypes,
+} from "../../../../main_page/sidebar_section/language_settings/transcriptionRuntimeUtils.js";
 
 export const Transcription = () => {
     return (
@@ -196,11 +200,16 @@ const SpeakerMaxWords_Box = () => {
 
 const TranscriptionEngine_Container = () => {
     const { t } = useI18n();
+    const { currentSelectedTranscriptionEngine } = useTranscription();
+    const engine = currentSelectedTranscriptionEngine?.data ?? currentSelectedTranscriptionEngine;
     return (
         <div>
             <SectionLabelComponent label={t("config_page.transcription.section_label_transcription_engines")} />
             <TranscriptionEngine_Box />
-            <WhisperWeightType_Box />
+            {engine === "Whisper" && <WhisperWeightType_Box />}
+            {engine === "Vosk" && <VoskWeightType_Box />}
+            {engine === "Parakeet" && <ParakeetWeightType_Box />}
+            {engine === "SenseVoice" && <SenseVoiceWeightType_Box />}
             <TranscriptionComputeDevice_Box />
         </div>
     );
@@ -216,10 +225,121 @@ const TranscriptionEngine_Box = () => {
             selectFunction={setSelectedTranscriptionEngine}
             name="select_transcription_engine"
             options={[
-                { id: "Google", label: "Google" },
-                { id: "Whisper", label: "Whisper" },
+                { id: "Google", label: "Google (Cloud, 0 GB VRAM)" },
+                { id: "Whisper", label: "Whisper / faster-whisper (CPU or GPU)" },
+                { id: "Parakeet", label: "NVIDIA Parakeet TDT v3 (GPU, ~3 GB VRAM)" },
+                { id: "Vosk", label: "Vosk (CPU, 0 GB VRAM)" },
+                { id: "SenseVoice", label: "SenseVoice-Small (CPU, zh/en/ja/ko/yue)" },
             ]}
             checked_variable={currentSelectedTranscriptionEngine}
+        />
+    );
+};
+
+const VoskWeightType_Box = () => {
+    const { t } = useI18n();
+    const {
+        currentVoskWeightTypeStatus,
+        pendingVoskWeightTypeStatus,
+        downloadVoskWeightTypeStatus,
+        currentSelectedVoskWeightType,
+        setSelectedVoskWeightType,
+    } = useTranscription();
+
+    if (!currentVoskWeightTypeStatus) return null;
+
+    const selectFunction = (id) => setSelectedVoskWeightType(id);
+    const downloadStartFunction = (id) => {
+        pendingVoskWeightTypeStatus(id);
+        downloadVoskWeightTypeStatus(id);
+    };
+
+    const items = (currentVoskWeightTypeStatus.data || []).map(item => ({
+        ...item,
+        label: `${item.id} (${item.capacity ?? ""})`,
+    }));
+
+    return (
+        <DownloadModelsContainer
+            label="Vosk Model"
+            desc="CPU-only offline STT. One model = one language."
+            name="vosk_weight_type"
+            options={items}
+            checked_variable={currentSelectedVoskWeightType}
+            selectFunction={selectFunction}
+            downloadStartFunction={downloadStartFunction}
+        />
+    );
+};
+
+const ParakeetWeightType_Box = () => {
+    const { t } = useI18n();
+    const {
+        currentParakeetWeightTypeStatus,
+        pendingParakeetWeightTypeStatus,
+        downloadParakeetWeightTypeStatus,
+        currentSelectedParakeetWeightType,
+        setSelectedParakeetWeightType,
+    } = useTranscription();
+
+    if (!currentParakeetWeightTypeStatus) return null;
+
+    const selectFunction = (id) => setSelectedParakeetWeightType(id);
+    const downloadStartFunction = (id) => {
+        pendingParakeetWeightTypeStatus(id);
+        downloadParakeetWeightTypeStatus(id);
+    };
+
+    const items = (currentParakeetWeightTypeStatus.data || []).map(item => ({
+        ...item,
+        label: `${item.id} (${item.capacity ?? ""})`,
+    }));
+
+    return (
+        <DownloadModelsContainer
+            label="NVIDIA Parakeet Model"
+            desc="GPU-accelerated STT via ONNX Runtime. Use parakeet-tdt-0.6b-v3 for the runnable multilingual model."
+            name="parakeet_weight_type"
+            options={items}
+            checked_variable={currentSelectedParakeetWeightType}
+            selectFunction={selectFunction}
+            downloadStartFunction={downloadStartFunction}
+        />
+    );
+};
+
+const SenseVoiceWeightType_Box = () => {
+    const { t } = useI18n();
+    const {
+        currentSenseVoiceWeightTypeStatus,
+        pendingSenseVoiceWeightTypeStatus,
+        downloadSenseVoiceWeightTypeStatus,
+        currentSelectedSenseVoiceWeightType,
+        setSelectedSenseVoiceWeightType,
+    } = useTranscription();
+
+    if (!currentSenseVoiceWeightTypeStatus) return null;
+
+    const selectFunction = (id) => setSelectedSenseVoiceWeightType(id);
+    const downloadStartFunction = (id) => {
+        pendingSenseVoiceWeightTypeStatus(id);
+        downloadSenseVoiceWeightTypeStatus(id);
+    };
+
+    const items = (currentSenseVoiceWeightTypeStatus.data || []).map(item => ({
+        ...item,
+        label: `${item.id} (${item.capacity ?? ""})`,
+    }));
+
+    return (
+            <DownloadModelsContainer
+            label="SenseVoice-Small Model"
+            desc="CPU-only multi-lingual STT (zh, yue, en, ja, ko) via sherpa-onnx. INT8 is recommended for lower RAM usage."
+            name="sensevoice_weight_type"
+            options={items}
+            checked_variable={currentSelectedSenseVoiceWeightType}
+            selectFunction={selectFunction}
+            downloadStartFunction={downloadStartFunction}
         />
     );
 };
@@ -242,10 +362,23 @@ const WhisperWeightType_Box = () => {
         downloadWhisperWeightTypeStatus(id);
     };
 
+    const WHISPER_VRAM = {
+        "tiny": "~0.6 GB VRAM (FP16) / ~0.4 GB (INT8)",
+        "base": "~0.8 GB VRAM (FP16) / ~0.5 GB (INT8)",
+        "small": "~1.8 GB VRAM (FP16) / ~1.1 GB (INT8)",
+        "medium": "~3.5 GB VRAM (FP16) / ~2 GB (INT8)",
+        "large-v1": "~5.5 GB VRAM (FP16) / ~3.2 GB (INT8)",
+        "large-v2": "~5.5 GB VRAM (FP16) / ~3.2 GB (INT8)",
+        "large-v3": "~5.5 GB VRAM (FP16) / ~3.2 GB (INT8)",
+        "large-v3-turbo": "~2.8 GB VRAM (FP16) / ~1.6 GB (INT8)",
+        "large-v3-turbo-int8": "~1.8 GB VRAM (INT8)",
+    };
+
     const whisper_weight_types = currentWhisperWeightTypeStatus.data.map(item => {
+        const vram = WHISPER_VRAM[item.id] ? ` — ${WHISPER_VRAM[item.id]}` : "";
         return {
             ...item,
-            label: `${item.id} (${item.capacity})`,
+            label: `${item.id} (${item.capacity})${vram}`,
         };
     });
 
@@ -270,6 +403,7 @@ const WhisperWeightType_Box = () => {
 const TranscriptionComputeDevice_Box = () => {
     const { t } = useI18n();
     const {
+        currentSelectedTranscriptionEngine,
         currentSelectableTranscriptionComputeDeviceList,
         currentSelectedTranscriptionComputeDevice,
         setSelectedTranscriptionComputeDevice,
@@ -277,15 +411,34 @@ const TranscriptionComputeDevice_Box = () => {
         setSelectedTranscriptionComputeType,
     } = useTranscription();
 
+    const engine = currentSelectedTranscriptionEngine?.data ?? "Whisper";
+    const filteredDeviceList = filterDeviceMapByEngine(
+        currentSelectableTranscriptionComputeDeviceList.data ?? {},
+        engine,
+    );
+    const effectiveDevice =
+        Object.values(filteredDeviceList).find((device) =>
+            device.device === currentSelectedTranscriptionComputeDevice.data?.device &&
+            device.device_index === currentSelectedTranscriptionComputeDevice.data?.device_index
+        ) ?? Object.values(filteredDeviceList)[0] ?? currentSelectedTranscriptionComputeDevice.data;
+    const computeTypesOverride = getAllowedTranscriptionComputeTypes({
+        engine,
+        device: effectiveDevice,
+    });
+
     return (
         <ComputeDevice
             label={t("config_page.transcription.transcription_compute_device.label")}
             dropdownIdPrefix="transcription"
-            currentDeviceList={currentSelectableTranscriptionComputeDeviceList}
+            currentDeviceList={{
+                ...currentSelectableTranscriptionComputeDeviceList,
+                data: filteredDeviceList,
+            }}
             currentSelectedDevice={currentSelectedTranscriptionComputeDevice}
             setSelectedDevice={setSelectedTranscriptionComputeDevice}
             currentSelectedComputeType={currentSelectedTranscriptionComputeType}
             setSelectedComputeType={setSelectedTranscriptionComputeType}
+            computeTypesOverride={computeTypesOverride}
         />
     );
 };

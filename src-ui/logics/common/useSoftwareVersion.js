@@ -17,6 +17,7 @@ export const useSoftwareVersion = () => {
         updateLatestSoftwareVersionInfo(prev => ({
             is_update_available: payload.is_update_available,
             new_version: payload.new_version || prev.data.new_version,
+            release_url: payload.release_url || prev.data.release_url,
         }));
     };
 

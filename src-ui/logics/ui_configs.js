@@ -33,7 +33,7 @@ export const ui_configs = {
         return { ...this._overlay_log_default_settings_base, tracker: "HMD" };
     },
     get overlay_large_log_default_settings() {
-        return { ...this._overlay_log_default_settings_base, tracker: "LeftHand" };
+        return { ...this._overlay_log_default_settings_base, tracker: "LeftHand", log_order: "oldest_first" };
     },
 
     // Shared message format parts base
@@ -61,21 +61,6 @@ export const ui_configs = {
         {id: "zh-Hans", label: "简体中文"},
     ]
 };
-
-// true: src-ui\plugins false: src-tauri\target\debug\plugins
-export const IS_PLUGIN_PATH_DEV_MODE = false;
-
-// true: dev_vrct_plugins_list.json false: vrct_plugins_list.json
-export const IS_PLUGIN_LIST_URL_DEV_MODE = false;
-
-export const getPluginsList = () => {
-    const base_url = "https://raw.githubusercontent.com/ShiinaSakamoto/vrct_plugins_list/main/";
-    const plugins_list_url = (IS_PLUGIN_LIST_URL_DEV_MODE)
-    ? base_url + "dev_vrct_plugins_list.json"
-    : base_url + "vrct_plugins_list.json";
-    return plugins_list_url;
-};
-if (IS_PLUGIN_PATH_DEV_MODE || IS_PLUGIN_LIST_URL_DEV_MODE) console.warn("ui_configs IS_PLUGIN_PATH_DEV_MODE or IS_PLUGIN_LIST_URL_DEV_MODE is true. Turn to 'false' when it's production environment.");
 
 export const translator_status = [
     { id: "CTranslate2", label: `AI\nCTranslate2`, is_available: false, is_default: true },
@@ -112,6 +97,80 @@ export const whisper_weight_type_status = [
     { id: "large-v3-turbo", capacity: "1.58GB"},
 ].map(item => ({ ...item, is_downloaded: false, progress: null }));
 
+export const vosk_weight_type_status = [
+    { id: "small-en", capacity: "40 MB / ~300 MB RAM" },
+    { id: "large-en", capacity: "1.8 GB / ~16 GB RAM" },
+    { id: "small-ja", capacity: "48 MB / ~300 MB RAM" },
+    { id: "small-zh", capacity: "42 MB / ~300 MB RAM" },
+    { id: "small-ko", capacity: "82 MB / ~300 MB RAM" },
+    { id: "small-fr", capacity: "41 MB / ~300 MB RAM" },
+    { id: "small-en-in", capacity: "36 MB / ~300 MB RAM" },
+    { id: "small-de", capacity: "45 MB / ~300 MB RAM" },
+    { id: "small-es", capacity: "39 MB / ~300 MB RAM" },
+    { id: "small-pt", capacity: "31 MB / ~300 MB RAM" },
+    { id: "small-ru", capacity: "45 MB / ~300 MB RAM" },
+    { id: "small-tr", capacity: "35 MB / ~300 MB RAM" },
+    { id: "small-vn", capacity: "32 MB / ~300 MB RAM" },
+    { id: "small-it", capacity: "48 MB / ~300 MB RAM" },
+    { id: "small-nl", capacity: "39 MB / ~300 MB RAM" },
+    { id: "small-ca", capacity: "42 MB / ~300 MB RAM" },
+    { id: "ar-mgb2", capacity: "318 MB / ~800 MB RAM" },
+    { id: "el-gr", capacity: "1.1 GB / ~2 GB RAM" },
+    { id: "small-fa", capacity: "53 MB / ~300 MB RAM" },
+    { id: "tl-ph-generic", capacity: "320 MB / ~800 MB RAM" },
+    { id: "small-uk", capacity: "133 MB / ~500 MB RAM" },
+    { id: "small-kz", capacity: "58 MB / ~300 MB RAM" },
+    { id: "small-sv", capacity: "289 MB / ~700 MB RAM" },
+    { id: "small-eo", capacity: "42 MB / ~300 MB RAM" },
+    { id: "small-hi", capacity: "42 MB / ~300 MB RAM" },
+    { id: "small-cs", capacity: "44 MB / ~300 MB RAM" },
+    { id: "small-pl", capacity: "50 MB / ~300 MB RAM" },
+    { id: "small-uz", capacity: "49 MB / ~300 MB RAM" },
+    { id: "br", capacity: "70 MB / ~300 MB RAM" },
+    { id: "small-gu", capacity: "100 MB / ~300 MB RAM" },
+    { id: "small-tg", capacity: "50 MB / ~300 MB RAM" },
+    { id: "small-te", capacity: "58 MB / ~300 MB RAM" },
+    { id: "small-ky", capacity: "49 MB / ~300 MB RAM" },
+    { id: "small-ka", capacity: "45 MB / ~300 MB RAM" },
+].map(item => ({ ...item, is_downloaded: false, progress: null }));
+
+export const parakeet_weight_type_status = [
+    {
+        id: "parakeet-tdt-0.6b-v3",
+        capacity: "ONNX / ~3 GB VRAM",
+        downloadable: true,
+        unavailable_reason: "",
+    },
+    { id: "parakeet-tdt-0.6b", capacity: "620 MB / ~2 GB VRAM" },
+    { id: "parakeet-tdt-ctc-0.6b", capacity: "620 MB / ~2 GB VRAM" },
+    { id: "parakeet-tdt-1.1b", capacity: "1.1 GB / ~3 GB VRAM" },
+    { id: "canary-1b", capacity: "1.1 GB / ~3 GB VRAM" },
+].map(item => ({
+    ...item,
+    is_downloaded: false,
+    downloadable: item.downloadable ?? false,
+    unavailable_reason: item.unavailable_reason ?? "NVIDIA ships this model as .nemo/safetensors, but this VRCNT-Next backend only supports ONNX Parakeet exports.",
+    progress: null,
+}));
+
+export const sensevoice_weight_type_status = [
+    {
+        id: "sensevoice-small-int8",
+        capacity: "~230 MB / ~0.5 GB VRAM",
+        downloadable: true,
+        unavailable_reason: "",
+    },
+    {
+        id: "sensevoice-small-fp32",
+        capacity: "~938 MB / ~1 GB VRAM",
+        downloadable: true,
+        unavailable_reason: "",
+    },
+].map(item => ({
+    ...item,
+    is_downloaded: false,
+    progress: null,
+}));
 
 export const deepl_auth_key_url = "https://www.deepl.com/ja/your-account/keys";
 export const plamo_auth_key_url = "https://plamo.preferredai.jp/api";

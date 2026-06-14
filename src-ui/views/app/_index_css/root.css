@@ -26,6 +26,8 @@ html, body {
     font-family: var(--font_family); /* If not found the font family where 'root:' that is selected by user*/
     border-radius: 10px; /* fixed by px */
     overflow: hidden;
+    background: var(--bg_radial_gradient);
+    background-color: #060913; /* solid dark background fallback */
 }
 
 
@@ -43,6 +45,15 @@ svg {
 
 p {
     white-space: pre-wrap;
+}
+
+button, a, input, textarea, select {
+    transition:
+        background-color var(--transition_ui),
+        border-color var(--transition_ui),
+        color var(--transition_ui),
+        transform var(--transition_ui),
+        opacity var(--transition_ui);
 }
 img {
     user-select: none;

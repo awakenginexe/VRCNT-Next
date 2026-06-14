@@ -43,6 +43,11 @@ ${StrLoc}
 !define MANUPRODUCTKEY "Software\${MANUFACTURER}\${PRODUCTNAME}"
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
 !define ESTIMATEDSIZE "{{estimated_size}}"
+; The app payload is downloaded at install time, so Tauri's generated estimate is 0.
+; Installed size tracks the current release ZIP's uncompressed payload size in KiB.
+; Required size also includes the temporary ZIP that exists during extraction.
+!define VRCNT_NEXT_EXTERNAL_INSTALLED_SIZE_KB 6823822
+!define VRCNT_NEXT_EXTERNAL_REQUIRED_SIZE_KB 10752577
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -169,6 +174,33 @@ Function PageLeaveChooseLanguage
         StrCpy $SelectedLangage "zh-Hans"
     ${EndIf}
 FunctionEnd
+
+!macro PreserveLegacyUserDataFunction FUNCTION_NAME
+Function ${FUNCTION_NAME}
+  FileOpen $0 "$TEMP\VRCNT-Next-preserve-user-data.ps1" w
+  FileWrite $0 "$$ErrorActionPreference = 'SilentlyContinue'$\r$\n"
+  FileWrite $0 "$$install = $$args[0]$\r$\n"
+  FileWrite $0 "$$data = Join-Path $$env:LOCALAPPDATA 'VRCNT-NextData'$\r$\n"
+  FileWrite $0 "New-Item -ItemType Directory -Force -Path $$data | Out-Null$\r$\n"
+  FileWrite $0 "$$legacyConfig = Join-Path $$install 'config.json'$\r$\n"
+  FileWrite $0 "$$targetConfig = Join-Path $$data 'config.json'$\r$\n"
+  FileWrite $0 "if ((Test-Path -LiteralPath $$legacyConfig) -and -not (Test-Path -LiteralPath $$targetConfig)) { Copy-Item -LiteralPath $$legacyConfig -Destination $$targetConfig -Force }$\r$\n"
+  FileWrite $0 "foreach ($$name in @('weights', 'logs')) {$\r$\n"
+  FileWrite $0 "  $$src = Join-Path $$install $$name$\r$\n"
+  FileWrite $0 "  $$dst = Join-Path $$data $$name$\r$\n"
+  FileWrite $0 "  if (Test-Path -LiteralPath $$src) {$\r$\n"
+  FileWrite $0 "    New-Item -ItemType Directory -Force -Path $$dst | Out-Null$\r$\n"
+  FileWrite $0 "    Copy-Item -Path (Join-Path $$src '*') -Destination $$dst -Recurse -Force$\r$\n"
+  FileWrite $0 "  }$\r$\n"
+  FileWrite $0 "}$\r$\n"
+  FileClose $0
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$TEMP\VRCNT-Next-preserve-user-data.ps1" "$INSTDIR"'
+  Delete "$TEMP\VRCNT-Next-preserve-user-data.ps1"
+FunctionEnd
+!macroend
+
+!insertmacro PreserveLegacyUserDataFunction PreserveLegacyUserData
+!insertmacro PreserveLegacyUserDataFunction un.PreserveLegacyUserData
 
 !insertmacro MUI_PAGE_COMPONENTS
 
@@ -306,6 +338,7 @@ Function PageLeaveReinstall
   StrCmp $R1 "1" reinst_done ; Same version? skip uninstalling
 
   reinst_uninstall:
+    Call PreserveLegacyUserData
     HideWindow
     ClearErrors
 
@@ -584,14 +617,15 @@ SectionEnd
 !macroend
 
 Section Install
+  AddSize ${VRCNT_NEXT_EXTERNAL_REQUIRED_SIZE_KB}
   SetOutPath $INSTDIR
 
   !insertmacro CheckIfAppIsRunning
 
   !addplugindir "..\..\..\..\nsis\plugins\x86-unicode"
   ; 指定のURLからファイルをダウンロード
-  !define SOFTWARE_RELEASE_URL "https://huggingface.co/ms-software/VRCT/resolve/main"
-  !define SOFTWARE_DOWNLOAD_FILENAME "VRCT.zip"
+  !define SOFTWARE_RELEASE_URL "https://huggingface.co/AwakeNgineXE/VRCNT-Next/resolve/v${VERSION}"
+  !define SOFTWARE_DOWNLOAD_FILENAME "VRCNT-Next.zip"
   Var /GLOBAL i
   Var /GLOBAL cmder_dl
   Var /GLOBAL cmder_version
@@ -601,16 +635,36 @@ Section Install
   StrCpy $cmder_dl "${SOFTWARE_RELEASE_URL}/$file_name"
   DetailPrint "Got URL : $cmder_dl"
 
-  DetailPrint "Downloading $file_name..."
-  inetc::get $cmder_dl "$TEMP\$file_name" /end
-  Pop $0
-  StrCmp "$0" "OK" dlok
-  DetailPrint "Download Failed $0"
-  Abort
+  DetailPrint "Downloading and extracting $file_name..."
+  FileOpen $0 "$TEMP\VRCNT-Next-install.ps1" w
+  FileWrite $0 "$$ErrorActionPreference = 'Stop'$\r$\n"
+  FileWrite $0 "$$ProgressPreference = 'SilentlyContinue'$\r$\n"
+  FileWrite $0 "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12$\r$\n"
+  FileWrite $0 "$$url = $$args[0]$\r$\n"
+  FileWrite $0 "$$zipPath = $$args[1]$\r$\n"
+  FileWrite $0 "$$dest = $$args[2]$\r$\n"
+  FileWrite $0 "Write-Output ('Downloading ' + $$url)$\r$\n"
+  FileWrite $0 "Invoke-WebRequest -Uri $$url -OutFile $$zipPath -UseBasicParsing$\r$\n"
+  FileWrite $0 "$$downloadedBytes = (Get-Item -LiteralPath $$zipPath).Length$\r$\n"
+  FileWrite $0 "Write-Output ('Downloaded ' + $$downloadedBytes + ' bytes')$\r$\n"
+  FileWrite $0 "Write-Output ('Extracting to ' + $$dest)$\r$\n"
+  FileWrite $0 "Expand-Archive -LiteralPath $$zipPath -DestinationPath $$dest -Force$\r$\n"
+  FileWrite $0 "Write-Output 'Extraction complete'$\r$\n"
+  FileClose $0
 
-  dlok:
-  DetailPrint "Extracting $file_name ..."
-  nsisunz::UnzipToStack "$TEMP\$file_name" $INSTDIR
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$TEMP\VRCNT-Next-install.ps1" "$cmder_dl" "$TEMP\$file_name" "$INSTDIR"'
+  Pop $0
+  Delete "$TEMP\VRCNT-Next-install.ps1"
+  ${If} $0 != 0
+    DetailPrint "Install Failed: download or extraction failed with exit code $0."
+    Abort
+  ${EndIf}
+
+  ${IfNot} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    DetailPrint "Install Failed: $INSTDIR\${MAINBINARYNAME}.exe was not extracted."
+    Abort
+  ${EndIf}
+  Delete "$TEMP\$file_name"
 
   ; Create uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -636,7 +690,7 @@ Section Install
   WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" "1"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" "1"
-  WriteRegDWORD SHCTX "${UNINSTKEY}" "EstimatedSize" "${ESTIMATEDSIZE}"
+  WriteRegDWORD SHCTX "${UNINSTKEY}" "EstimatedSize" "${VRCNT_NEXT_EXTERNAL_INSTALLED_SIZE_KB}"
 
   ; Create start menu shortcut (GUI)
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
@@ -720,6 +774,7 @@ FunctionEnd
 
 Section Uninstall
   !insertmacro CheckIfAppIsRunning
+  Call un.PreserveLegacyUserData
 
   ; Delete the app directory and its content from disk
   ; Copy main executable
@@ -790,6 +845,7 @@ Section Uninstall
   ; Delete app data
   ${If} $DeleteAppDataCheckboxState == 1
     SetShellVarContext current
+    RmDir /r "$LOCALAPPDATA\VRCNT-NextData"
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
   ${EndIf}

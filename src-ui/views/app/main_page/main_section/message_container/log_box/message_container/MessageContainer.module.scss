@@ -8,8 +8,10 @@
     display: flex;
     user-select: text;
     gap: 0.6rem;
+    padding: 0 1.2rem;
+    box-sizing: border-box;
     &.sent_message.is_shown_resend_button:hover {
-        background-color: var(--dark_950_color);
+        background-color: rgba(255, 255, 255, 0.02);
     }
 }
 
@@ -18,19 +20,19 @@
     width: 100%;
     flex-direction: column;
     justify-content: center;
-    align-items: end;
     user-select: text;
-    padding: 0.6em 0;
+    padding: 0.4em 0;
     &.sent_message {
-        align-items: end;
+        align-items: flex-end;
     }
     &.received_message {
-        align-items: start;
+        align-items: flex-start;
     }
     &.system_message {
         flex-direction: row;
         align-items: center;
         gap: 0.6rem;
+        padding: 0.6em 0;
     }
 }
 
@@ -39,12 +41,13 @@
     display: flex;
     gap: 0.8em;
     justify-content: center;
+    margin-bottom: 0.25rem;
     &.sent_message {
-        align-items: end;
+        align-items: flex-end;
     }
     &.received_message {
         flex-flow: row-reverse;
-        align-items: start;
+        align-items: flex-start;
     }
 }
 
@@ -53,14 +56,15 @@
 }
 
 .time {
-    font-size: 1em;
-    color: var(--dark_600_color);
+    font-size: 0.85em;
+    color: var(--dark_450_color);
 }
 
 .category {
-    font-size: 1em;
+    font-size: 0.85em;
+    font-weight: 700;
     &.sent_message {
-        color: var(--sent_400_color);
+        color: var(--accent_color);
     }
     &.received_message {
         align-items: start;
@@ -71,31 +75,44 @@
 .message_box {
     display: flex;
     flex-direction: column;
+    padding: 0.8em 1.1em;
+    border-radius: 1.2rem;
+    max-width: 82%;
+    box-sizing: border-box;
+    transition: var(--transition_ui);
     &.sent_message {
-        width: 100%;
-        align-items: end;
-        text-align: end;
+        align-items: flex-end;
+        text-align: right;
+        background: linear-gradient(135deg, rgba(var(--accent_color_rgb), 0.12), rgba(var(--accent_color_rgb), 0.03));
+        border: 0.1rem solid rgba(var(--accent_color_rgb), 0.2);
+        border-top-right-radius: 0.3rem;
+        box-shadow: var(--shadow_control);
     }
     &.received_message {
-        width: 100%;
-        align-items: start;
+        align-items: flex-start;
+        text-align: left;
+        background: var(--surface_2_color);
+        border: var(--panel_border_subtle);
+        border-top-left-radius: 0.3rem;
+        box-shadow: var(--shadow_control);
     }
 }
 
 .message_main {
     user-select: text;
     font-size: 1.4em;
+    line-height: 1.4;
     overflow-wrap: break-word;
     max-width: 100%;
-    // Makes all children selectable under main, but not ruby
-    * { user-select: text; } 
-    rt { user-select: none; }  
+    color: var(--dark_100_color);
 }
 
 .message_second {
-    color: var(--dark_450_color);
+    color: var(--dark_400_color);
     user-select: text;
-    font-size: 1em;
+    font-size: 1.05em;
+    line-height: 1.45;
+    margin-bottom: 0.35em;
 }
 
 

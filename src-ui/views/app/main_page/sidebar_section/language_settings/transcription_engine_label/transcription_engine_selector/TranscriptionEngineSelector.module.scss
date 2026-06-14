@@ -1,0 +1,70 @@
+.container {
+    position: absolute;
+    bottom: 100%;
+    width: 100%;
+    height: 20rem;
+    background-color:  var(--dark_1000_color_dd);
+    backdrop-filter: blur(0.1rem);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow-y: auto;
+}
+
+.relative_container {
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+
+.wrapper {
+    padding: 2rem 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 1.4rem;
+}
+
+.column_wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1.2rem;
+}
+
+$box_size: 6.2rem;
+.box {
+    position: relative;
+    width: 9.4rem;
+    height: $box_size;
+    background-color: var(--dark_875_color);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    white-space: pre-wrap;
+    text-align: center;
+    border-radius: 0.2rem;
+    cursor: pointer;
+    &:hover {
+        background-color: var(--dark_825_color);
+    }
+    &:active {
+        background-color: var(--dark_900_color);
+        outline: 0.1rem solid var(--primary_300_color);
+    }
+    &.is_selected {
+        outline: 0.2rem solid var(--primary_300_color);
+    }
+    &:not(.is_available) {
+        pointer-events: none;
+        background-color: var(--dark_950_color);
+        & .engine_name {
+            color: var(--dark_600_color);
+        }
+    }
+}
+
+.engine_name {
+    font-size: 1.4rem;
+}

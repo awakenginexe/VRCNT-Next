@@ -1,19 +1,29 @@
 .container {
     // flex: 0;
-    width: var(--config_page_sidebar_width);
+    width: 19rem;
     height: 100%;
     display: flex;
     justify-content: left;
     align-items: center;
-    padding-left: 2.6rem;
-    gap: 1.4rem;
+    padding-left: 0.6rem;
+    gap: 1rem;
 }
 
-.logo_chato {
+.logo_mark {
     width: 3.2rem;
-    padding-top: 0.6rem;
+    aspect-ratio: 1;
+    object-fit: contain;
+    filter: var(--filter_accent_glow);
 }
 
 .title {
-    font-size: 2.2rem;
+    font-size: 1.55rem;
+    font-weight: 800;
+    color: var(--dark_100_color);
+}
+
+.subtitle {
+    margin-top: 0.2rem;
+    font-size: 1rem;
+    color: var(--dark_600_color);
 }

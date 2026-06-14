@@ -2,7 +2,7 @@
 
 .container {
     display: flex;
-    gap: 0.4rem;
+    gap: 0.6rem;
     position: relative;
     flex-shrink: 0;
     flex-wrap: wrap;
@@ -32,17 +32,23 @@
     flex-shrink: 0;
     align-items: center;
     cursor: pointer;
-    gap: 1rem;
-    padding: 0.6rem 0.8rem;
-    border-radius: 0.4rem;
+    gap: 0.8rem;
+    padding: 0.7rem 0.9rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.12);
+    border-radius: 0.6rem;
+    background-color: rgba(4, 8, 12, 0.38);
+    transition: var(--transition_ui);
     &:hover {
-        background-color: var(--dark_850_color);
+        background-color: rgba(var(--accent_color_rgb), 0.08);
+        border-color: rgba(var(--accent_color_rgb), 0.26);
     }
     &:active {
-        background-color: var(--dark_925_color);
+        background-color: rgba(2, 5, 8, 0.9);
     }
     &.is_selected {
         pointer-events: none;
+        border-color: rgba(var(--accent_color_rgb), 0.34);
+        background-color: rgba(var(--accent_color_rgb), 0.11);
     }
     &.disabled {
         pointer-events: none;
@@ -53,9 +59,9 @@
 .radio_button_input {
     appearance: none;
     margin: 0;
-    width: 2rem;
-    height: 2rem;
-    border: 0.3rem solid var(--dark_600_color);
+    width: 1.7rem;
+    height: 1.7rem;
+    border: 0.2rem solid var(--dark_550_color);
     border-radius: 50%;
     transition: border-color .1s ease, border-width .1s ease;
     flex-shrink: 0;
@@ -70,7 +76,7 @@
 }
 
 .radio_button_label {
-    font-size: 1.4rem;
+    font-size: 1.3rem;
     font-weight: 400;
     flex-shrink: 0;
 }

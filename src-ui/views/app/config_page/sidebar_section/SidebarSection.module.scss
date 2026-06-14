@@ -1,5 +1,5 @@
 .container {
-    width: 12rem;
+    width: var(--config_page_sidebar_width);
     flex-shrink: 0;
     padding: 0;
     position: relative;
@@ -9,7 +9,7 @@
     &.is_small {
         width: 4rem;
         &:hover {
-            width: 12rem;
+        width: 13.6rem;
         }
     }
 }
@@ -20,9 +20,13 @@
     justify-content: space-between;
     height: 100%;
     width: 100%;
-    background-color: var(--dark_900_color);
-    padding-bottom: 0.8rem;
+    background: var(--surface_1_color);
+    backdrop-filter: var(--panel_blur);
+    border: var(--panel_border_subtle);
+    border-radius: 1.4rem;
+    padding: 0.8rem 0 0.8rem;
     overflow: hidden;
+    box-shadow: var(--shadow_control);
 }
 
 .scroll_content {
@@ -31,7 +35,7 @@
     justify-content: space-between;
     overflow-y: auto;
     flex: 1;
-    padding-top: var(--config_page_topbar_height); // Ensure alignment with content area
+    padding-top: 0.4rem;
     max-height: 60rem;
 }
 
@@ -39,38 +43,73 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 0.1rem;
+    gap: 0.4rem;
+    padding: 0 0.6rem;
+    box-sizing: border-box;
 }
 
 .tab_container {
     position: relative;
-    width: 100%;
+    width: auto;
     display: flex;
     justify-content: left;
     align-items: center;
-    padding: 0.6rem 0.8rem;
+    margin: 0.15rem 0;
+    padding: 0.8rem 1rem;
     cursor: pointer;
-    gap: 0.4rem;
+    gap: 0.6rem;
     overflow: hidden;
+    border-radius: 0.95rem;
+    border: 0.1rem solid transparent;
+    transition: var(--transition_ui);
 
     &:hover {
-        background-color: var(--dark_800_color);
+        background-color: var(--surface_3_color);
+        border-color: rgba(255, 255, 255, 0.04);
+        transform: translateX(0.15rem);
     }
     &:active {
-        background-color: var(--dark_900_color);
+        background-color: var(--surface_1_color);
+        transform: scale(0.97);
+    }
+    &:focus-visible {
+        outline: 0.2rem solid rgba(var(--accent_color_rgb), 0.55);
+        outline-offset: 0.2rem;
     }
     &.is_selected {
-        background-color: inherit;
-        color: var(--primary_200_color);
+        background: linear-gradient(135deg, rgba(var(--accent_color_rgb), 0.18), rgba(var(--accent_color_rgb), 0.06));
+        border: 0.1rem solid rgba(var(--accent_color_rgb), 0.22);
+        color: var(--primary_300_color);
         cursor: default;
         pointer-events: none;
+        box-shadow: var(--glow_shadow);
         .tab_icon {
-            fill: var(--primary_200_color);
+            fill: var(--primary_300_color);
         }
         .tab_text {
-            color: var(--primary_200_color);
+            color: var(--primary_300_color);
         }
     }
+}
+
+.tab_tooltip {
+    display: flex;
+    width: 100%;
+    justify-content: flex-start;
+
+    .tab_container {
+        width: 100%;
+    }
+}
+
+.tab_tooltip_content {
+    min-width: 18rem;
+    max-width: 22rem;
+    padding: 0.7rem 0.9rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.18);
+    background: var(--surface_2_color);
+    box-shadow: var(--shadow_control);
+    white-space: normal;
 }
 
 .tab_icon_wrapper {
@@ -92,8 +131,11 @@
         aspect-ratio: 1/1;
     }
     &.about_vrct_icon {
-        width: 1.6rem;
-        margin-top: 0.2rem;
+        width: 2rem;
+        aspect-ratio: 1;
+        object-fit: contain;
+        fill: none;
+        filter: var(--filter_accent_glow);
     }
     &.supporters_icon {
         fill: var(--supporters_crown_color);
@@ -106,17 +148,19 @@
         display: block;
         position: absolute;
         top: 50%;
-        left: 0.4rem;
+        left: 0.2rem;
         transform: translate(-50%, -50%);
         width: 0.2rem;
         height: 2rem;
-        border-radius: 0.1rem;
+        border-radius: 99rem;
         background-color: var(--primary_300_color);
+        box-shadow: 0 0 1.6rem var(--primary_400_color);
     }
 }
 
 .tab_text {
-    font-size: 1.2rem;
+    font-size: 1.15rem;
+    font-weight: 700;
     position: relative;
     white-space: nowrap;
     opacity: 1;

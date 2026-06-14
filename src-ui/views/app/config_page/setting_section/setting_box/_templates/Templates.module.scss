@@ -3,19 +3,35 @@
     width: 100%;
     justify-content: space-between;
     align-items: center;
-    padding: 2rem;
-    gap: 2rem;
+    padding: 1.45rem 1.8rem;
+    gap: 1.8rem;
+    background:
+        linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.055), rgba(var(--accent_color_rgb), 0.018)),
+        rgba(9, 14, 20, 0.72);
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.16);
+    border-radius: 0.8rem;
+    margin-bottom: 0.8rem;
+    box-shadow: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.16);
+    transition: var(--transition_ui);
+    box-sizing: border-box;
+
+    &:hover {
+        background:
+            linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.085), rgba(var(--accent_color_rgb), 0.025)),
+            rgba(12, 18, 25, 0.86);
+        border-color: rgba(var(--accent_color_rgb), 0.28);
+        box-shadow: 0 1.2rem 2.8rem rgba(0, 0, 0, 0.2);
+    }
+
     &.flex_column {
         flex-direction: column;
-    }
-    &:not(.remove_border_bottom) {
-        border-bottom: solid 0.1rem var(--dark_800_color);
+        align-items: stretch;
     }
 
     &.is_break_point {
         flex-direction: column;
-        gap: 2rem;
-        align-items: start;
+        gap: 1.4rem;
+        align-items: stretch;
     }
 }
 

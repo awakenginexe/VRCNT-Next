@@ -111,14 +111,16 @@ export const ComputeDevice = ({
     setSelectedDevice,
     currentSelectedComputeType,
     setSelectedComputeType,
+    computeTypesOverride = null,
 }) => {
     const { t } = useI18n();
 
     const list_for_ui = transformDeviceArray(currentDeviceList.data);
 
-    const target_index = findKeyByDeviceValue(currentDeviceList.data, currentSelectedDevice.data);
+    const fallback_index = Object.keys(currentDeviceList.data ?? {})[0] ?? null;
+    const target_index = findKeyByDeviceValue(currentDeviceList.data, currentSelectedDevice.data) ?? fallback_index;
 
-    const computeTypesArray = currentDeviceList.data[target_index].compute_types;
+    const computeTypesArray = computeTypesOverride ?? currentDeviceList.data?.[target_index]?.compute_types ?? ["auto"];
 
     const ordered_array = sortComputeTypesArray(computeTypesArray, DEFAULT_ORDER);
 

@@ -1,7 +1,7 @@
 {
-  "name": "vrct",
+  "name": "vrcnt-next",
   "private": true,
-  "version": "3.4.3",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "setup-python": "bat\\install.bat",
@@ -18,12 +18,11 @@
     "dev": "npm run task-kill && npm run clean && npm run update-version && npm run build-python && npm run dev-ui",
     "dev-cuda": "npm run task-kill && npm run clean && npm run update-version && npm run build-python-cuda && npm run dev-ui",
     "dev-ui": "npm run task-kill && npm-run-all --parallel vite tauri-dev",
+    "test:ui": "node --test src-ui/logics/common/__tests__/*.test.js src-ui/views/app/config_page/sidebar_section/__tests__/*.test.js src-ui/views/app/main_page/sidebar_section/main_function_switch/__tests__/*.test.js",
     "analyze-error": "node utils/analyze_ui_error.js",
     "build": "npm run task-kill && npm run clean && npm run update-version && npm run build-python && npm run vite-build && npm run tauri build",
     "build-cuda": "npm run task-kill && npm run clean && npm run update-version && npm run build-python-cuda && npm run vite-build && npm run tauri build",
-    "release": "npm run update-version && npm run build && python utils\\zip.py --zip_name VRCT.zip",
-    "release-cuda": "npm run update-version && npm run build-cuda && python utils\\zip.py --zip_name VRCT_cuda.zip",
-    "release-all": "npm run update-version && npm run release && npm run release-cuda"
+    "release": "npm run update-version && npm run build-cuda && python utils\\zip.py --zip_name VRCNT-Next.zip"
   },
   "dependencies": {
     "@babel/standalone": "7.27.0",
@@ -32,8 +31,11 @@
     "@tauri-apps/plugin-global-shortcut": "2.2.0",
     "@tauri-apps/plugin-http": "2.4.3",
     "@tauri-apps/plugin-opener": "2.2.6",
+    "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "2.2.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "clsx": "2.1.1",
+    "flag-icons": "^7.3.2",
     "i18next": "25.0.1",
     "jotai": "2.12.3",
     "js-base64": "3.7.7",

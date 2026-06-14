@@ -12,7 +12,7 @@ export const useIsVrctAvailable = () => {
             const ErrorComponent = () => {
                 return (
                     <div>
-                        <p>AI models have not been detected. Check the network connection and restart VRCT (it will download automatically, normally).</p>
+                        <p>AI models have not been detected. Check the network connection and restart VRCNT-Next (it will download automatically, normally).</p>
                         <p>If this error occurs frequently, try the following:</p>
                         <HomepageLinkButton
                             homepage_link="https://github.com/misyaguziya/VRCT/wiki/Manual-Installation-of-AI-Model-Weights"

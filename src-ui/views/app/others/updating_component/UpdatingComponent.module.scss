@@ -7,6 +7,9 @@
     flex-direction: column;
     gap: 4rem;
     position: relative;
+    background:
+        linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.08), transparent 34%),
+        linear-gradient(135deg, #03070b, var(--dark_950_color));
 }
 
 .label {
@@ -14,7 +17,9 @@
     top: 60%;
     left: 50%;
     transform: translate(-50%, -50%);
-    font-size: 2rem;
+    color: var(--dark_100_color);
+    font-size: 1.65rem;
+    font-weight: 700;
 }
 
 .circular_box {
@@ -39,7 +44,10 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 4.8rem;
+    width: 6rem;
+    aspect-ratio: 1;
+    object-fit: contain;
+    filter: var(--filter_accent_glow_strong);
     animation: infinite-rotation 20s linear infinite 0.5s;
 }
 @keyframes infinite-rotation {

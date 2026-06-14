@@ -1,11 +1,14 @@
 import sys
 import copy
+import importlib
+import os
+import shutil
+from os import environ as os_environ
 from os import path as os_path, makedirs as os_makedirs
 from json import load as json_load
 from json import dump as json_dump
 import threading
 from typing import Optional, Dict, Any
-import torch
 
 # Guard optional, potentially heavy or platform-specific imports so importing
 # config.py doesn't raise in environments missing those packages.
@@ -32,11 +35,73 @@ except Exception:  # pragma: no cover - optional runtime
     transcription_lang = {}  # type: ignore
 
 try:
-    from models.transcription.transcription_whisper import _MODELS as whisper_models
+    from models.transcription.transcription_whisper import _MODELS as whisper_models, DEFAULT_WHISPER_WEIGHT_TYPE
 except Exception:  # pragma: no cover - optional runtime
     whisper_models = {}  # type: ignore
+    DEFAULT_WHISPER_WEIGHT_TYPE = "tiny"
+
+try:
+    from models.transcription.transcription_vosk import _MODELS as vosk_models
+except Exception:  # pragma: no cover - optional runtime
+    vosk_models = {}  # type: ignore
+
+try:
+    from models.transcription.transcription_parakeet import _MODELS as parakeet_models
+except Exception:  # pragma: no cover - optional runtime
+    parakeet_models = {}  # type: ignore
+
+try:
+    from models.transcription.transcription_sensevoice import _MODELS as sensevoice_models
+except Exception:  # pragma: no cover - optional runtime
+    sensevoice_models = {}  # type: ignore
 
 from utils import errorLogging, validateDictStructure, getComputeDeviceList
+
+
+def _getTorch():
+    try:
+        return importlib.import_module("torch")
+    except Exception:
+        return None
+
+def _getUserDataPath(app_name: str = "VRCNT-Next") -> str:
+    base_path = (
+        os_environ.get("LOCALAPPDATA")
+        or os_environ.get("APPDATA")
+        or os_path.expanduser("~")
+    )
+    return os_path.join(base_path, f"{app_name}Data")
+
+def _copytree_merge(src: str, dst: str) -> None:
+    if not os_path.isdir(src):
+        return
+    src_abs = os_path.abspath(src)
+    dst_abs = os_path.abspath(dst)
+    if src_abs == dst_abs:
+        return
+    for current_root, directory_names, filenames in os.walk(src):
+        relative_root = os_path.relpath(current_root, src)
+        target_root = dst if relative_root == "." else os_path.join(dst, relative_root)
+        os_makedirs(target_root, exist_ok=True)
+        for directory_name in directory_names:
+            os_makedirs(os_path.join(target_root, directory_name), exist_ok=True)
+        for filename in filenames:
+            source_file = os_path.join(current_root, filename)
+            target_file = os_path.join(target_root, filename)
+            try:
+                if os_path.exists(target_file) and os_path.samefile(source_file, target_file):
+                    continue
+            except Exception:
+                pass
+            shutil.copy2(source_file, target_file)
+
+def _load_json_file(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            data = json_load(fp)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 json_serializable_vars = {}
 def json_serializable(var_name):
@@ -375,12 +440,14 @@ def _overlay_small_validator(val, inst):
     return new
 
 def _overlay_large_validator(val, inst):
-    if not (isinstance(val, dict) and set(val.keys()) == set(inst.OVERLAY_LARGE_LOG_SETTINGS.keys())):
+    if not isinstance(val, dict):
         return None
     base = inst.OVERLAY_LARGE_LOG_SETTINGS
     new = dict(base)
     for key, v in val.items():
         if key == 'tracker' and isinstance(v, str) and v in ['HMD', 'LeftHand', 'RightHand']:
+            new[key] = v
+        elif key == 'log_order' and isinstance(v, str) and v in ['oldest_first', 'newest_first']:
             new[key] = v
         elif key in ['x_pos','y_pos','z_pos','x_rotation','y_rotation','z_rotation'] and isinstance(v,(int,float)):
             new[key] = float(v)
@@ -423,12 +490,21 @@ def _mic_word_filter_validator(val, inst):
             result.append(item)
     return result
 
-def _plugins_status_validator(val, inst):
-    if not isinstance(val, list):
-        return None
-    if not all(isinstance(item, dict) for item in val):
-        return None
-    return [dict(item) for item in val]
+def _normalize_translation_engine_selection(value, selectable_engines):
+    selectable_engines = list(selectable_engines)
+    if isinstance(value, str):
+        return [value] if value in selectable_engines else []
+    if isinstance(value, list):
+        engines = []
+        for engine in value:
+            if (
+                isinstance(engine, str)
+                and engine in selectable_engines
+                and engine not in engines
+            ):
+                engines.append(engine)
+        return engines[:2]
+    return []
 
 def _selected_translation_engines_validator(val, inst):
     if not isinstance(val, dict):
@@ -436,8 +512,11 @@ def _selected_translation_engines_validator(val, inst):
     old_value = inst.SELECTED_TRANSLATION_ENGINES
     new = {}
     for k, v in val.items():
-        if v in inst.SELECTABLE_TRANSLATION_ENGINE_LIST:
-            new[k] = v
+        engines = _normalize_translation_engine_selection(v, inst.SELECTABLE_TRANSLATION_ENGINE_LIST)
+        if len(engines) == 1:
+            new[k] = engines[0]
+        elif len(engines) > 1:
+            new[k] = engines
         else:
             new[k] = old_value.get(k)
     return new
@@ -446,6 +525,25 @@ def _selected_your_languages_validator(val, inst):
     if not isinstance(val, dict):
         return None
     old = inst.SELECTED_YOUR_LANGUAGES
+    new = {}
+    for k0, v0 in val.items():
+        new[k0] = {}
+        for k1, v1 in v0.items():
+            language = v1.get("language")
+            country = v1.get("country")
+            enable = v1.get("enable")
+            if (language not in list(transcription_lang.keys()) or
+                country not in list(transcription_lang.get(language, {}).keys()) or
+                not isinstance(enable, bool)):
+                new[k0][k1] = old.get(k0, {}).get(k1)
+            else:
+                new[k0][k1] = {"language": language, "country": country, "enable": enable}
+    return new
+
+def _selected_your_translation_languages_validator(val, inst):
+    if not isinstance(val, dict):
+        return None
+    old = inst.SELECTED_YOUR_TRANSLATION_LANGUAGES
     new = {}
     for k0, v0 in val.items():
         new[k0] = {}
@@ -598,10 +696,13 @@ class Config:
     # Read Only
     VERSION = ManagedProperty('VERSION', readonly=True, serialize=False)
     PATH_LOCAL = ManagedProperty('PATH_LOCAL', readonly=True, serialize=False)
+    PATH_DATA = ManagedProperty('PATH_DATA', readonly=True, serialize=False)
+    PATH_WEIGHTS = ManagedProperty('PATH_WEIGHTS', readonly=True, serialize=False)
     PATH_CONFIG = ManagedProperty('PATH_CONFIG', readonly=True, serialize=False)
     PATH_LOGS = ManagedProperty('PATH_LOGS', readonly=True, serialize=False)
     GITHUB_URL = ManagedProperty('GITHUB_URL', readonly=True, serialize=False)
     UPDATER_URL = ManagedProperty('UPDATER_URL', readonly=True, serialize=False)
+    LATEST_JSON_URL = ManagedProperty('LATEST_JSON_URL', readonly=True, serialize=False)
     MAX_MIC_THRESHOLD = ManagedProperty('MAX_MIC_THRESHOLD', readonly=True, serialize=False)
     MAX_SPEAKER_THRESHOLD = ManagedProperty('MAX_SPEAKER_THRESHOLD', readonly=True, serialize=False)
     WATCHDOG_TIMEOUT = ManagedProperty('WATCHDOG_TIMEOUT', readonly=True, serialize=False)
@@ -610,6 +711,9 @@ class Config:
     SELECTED_TAB_TARGET_LANGUAGES_NO_LIST = ManagedProperty('SELECTED_TAB_TARGET_LANGUAGES_NO_LIST', readonly=True, serialize=False)
     SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_LIST = ManagedProperty('SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_LIST', readonly=True, serialize=False)
     SELECTABLE_WHISPER_WEIGHT_TYPE_LIST = ManagedProperty('SELECTABLE_WHISPER_WEIGHT_TYPE_LIST', readonly=True, serialize=False)
+    SELECTABLE_VOSK_WEIGHT_TYPE_LIST = ManagedProperty('SELECTABLE_VOSK_WEIGHT_TYPE_LIST', readonly=True, serialize=False)
+    SELECTABLE_PARAKEET_WEIGHT_TYPE_LIST = ManagedProperty('SELECTABLE_PARAKEET_WEIGHT_TYPE_LIST', readonly=True, serialize=False)
+    SELECTABLE_SENSEVOICE_WEIGHT_TYPE_LIST = ManagedProperty('SELECTABLE_SENSEVOICE_WEIGHT_TYPE_LIST', readonly=True, serialize=False)
     SELECTABLE_TRANSLATION_ENGINE_LIST = ManagedProperty('SELECTABLE_TRANSLATION_ENGINE_LIST', readonly=True, serialize=False)
     SELECTABLE_TRANSCRIPTION_ENGINE_LIST = ManagedProperty('SELECTABLE_TRANSCRIPTION_ENGINE_LIST', readonly=True, serialize=False)
     SELECTABLE_UI_LANGUAGE_LIST = ManagedProperty('SELECTABLE_UI_LANGUAGE_LIST', readonly=True, serialize=False)
@@ -630,6 +734,9 @@ class Config:
     # These are dynamically generated in init_config() based on installed packages/APIs
     SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_DICT = ManagedProperty('SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_DICT', type_=dict, serialize=False, mutable_tracking=True)
     SELECTABLE_WHISPER_WEIGHT_TYPE_DICT = ManagedProperty('SELECTABLE_WHISPER_WEIGHT_TYPE_DICT', type_=dict, serialize=False, mutable_tracking=True)
+    SELECTABLE_VOSK_WEIGHT_TYPE_DICT = ManagedProperty('SELECTABLE_VOSK_WEIGHT_TYPE_DICT', type_=dict, serialize=False, mutable_tracking=True)
+    SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT = ManagedProperty('SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT', type_=dict, serialize=False, mutable_tracking=True)
+    SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT = ManagedProperty('SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT', type_=dict, serialize=False, mutable_tracking=True)
     SELECTABLE_TRANSLATION_ENGINE_STATUS = ManagedProperty('SELECTABLE_TRANSLATION_ENGINE_STATUS', type_=dict, serialize=False, mutable_tracking=True)
     SELECTABLE_TRANSCRIPTION_ENGINE_STATUS = ManagedProperty('SELECTABLE_TRANSCRIPTION_ENGINE_STATUS', type_=dict, serialize=False, mutable_tracking=True)
     SELECTABLE_PLAMO_MODEL_LIST = ManagedProperty('SELECTABLE_PLAMO_MODEL_LIST', type_=list, serialize=False, mutable_tracking=True)
@@ -734,6 +841,9 @@ class Config:
     USE_EXCLUDE_WORDS = ManagedProperty('USE_EXCLUDE_WORDS', type_=bool)
     CTRANSLATE2_WEIGHT_TYPE = ManagedProperty('CTRANSLATE2_WEIGHT_TYPE', type_=str, allowed=lambda v, inst: v in inst.SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_LIST)
     WHISPER_WEIGHT_TYPE = ManagedProperty('WHISPER_WEIGHT_TYPE', type_=str, allowed=lambda v, inst: v in inst.SELECTABLE_WHISPER_WEIGHT_TYPE_LIST)
+    VOSK_WEIGHT_TYPE = ManagedProperty('VOSK_WEIGHT_TYPE', type_=str, allowed=lambda v, inst: v in inst.SELECTABLE_VOSK_WEIGHT_TYPE_LIST)
+    PARAKEET_WEIGHT_TYPE = ManagedProperty('PARAKEET_WEIGHT_TYPE', type_=str, allowed=lambda v, inst: v in inst.SELECTABLE_PARAKEET_WEIGHT_TYPE_LIST)
+    SENSEVOICE_WEIGHT_TYPE = ManagedProperty('SENSEVOICE_WEIGHT_TYPE', type_=str, allowed=lambda v, inst: v in inst.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_LIST)
     SELECTED_PLAMO_MODEL = ManagedProperty('SELECTED_PLAMO_MODEL', type_=str, allowed=_allowed_in_populated('SELECTABLE_PLAMO_MODEL_LIST'))
     SELECTED_GEMINI_MODEL = ManagedProperty('SELECTED_GEMINI_MODEL', type_=str, allowed=_allowed_in_populated('SELECTABLE_GEMINI_MODEL_LIST'))
     SELECTED_OPENAI_MODEL = ManagedProperty('SELECTED_OPENAI_MODEL', type_=str, allowed=_allowed_in_populated('SELECTABLE_OPENAI_MODEL_LIST'))
@@ -744,9 +854,9 @@ class Config:
 
     # --- Translation and language settings ---
     MIC_WORD_FILTER = ValidatedProperty('MIC_WORD_FILTER', _mic_word_filter_validator)
-    PLUGINS_STATUS = ValidatedProperty('PLUGINS_STATUS', _plugins_status_validator, immediate_save=True)
     SELECTED_TRANSLATION_ENGINES = ValidatedProperty('SELECTED_TRANSLATION_ENGINES', _selected_translation_engines_validator)
     SELECTED_YOUR_LANGUAGES = ValidatedProperty('SELECTED_YOUR_LANGUAGES', _selected_your_languages_validator)
+    SELECTED_YOUR_TRANSLATION_LANGUAGES = ValidatedProperty('SELECTED_YOUR_TRANSLATION_LANGUAGES', _selected_your_translation_languages_validator)
     SELECTED_TARGET_LANGUAGES = ValidatedProperty('SELECTED_TARGET_LANGUAGES', _selected_target_languages_validator)
     SELECTED_TRANSLATION_COMPUTE_TYPE = ValidatedProperty('SELECTED_TRANSLATION_COMPUTE_TYPE', _selected_translation_compute_type_validator)
 
@@ -764,16 +874,21 @@ class Config:
 
     def init_config(self):
         # Read Only
-        self._VERSION = "3.4.3"
+        self._VERSION = "1.0.0"
         if getattr(sys, 'frozen', False):
             self._PATH_LOCAL = os_path.dirname(sys.executable)
         else:
             self._PATH_LOCAL = os_path.dirname(os_path.abspath(__file__))
-        self._PATH_CONFIG = os_path.join(self._PATH_LOCAL, "config.json")
-        self._PATH_LOGS = os_path.join(self._PATH_LOCAL, "logs")
+        self._PATH_DATA = _getUserDataPath("VRCNT-Next")
+        self._PATH_WEIGHTS = os_path.join(self._PATH_DATA, "weights")
+        self._PATH_CONFIG = os_path.join(self._PATH_DATA, "config.json")
+        self._PATH_LOGS = os_path.join(self._PATH_DATA, "logs")
+        os_makedirs(self._PATH_DATA, exist_ok=True)
+        self._migrateLegacyUserData()
         os_makedirs(self._PATH_LOGS, exist_ok=True)
-        self._GITHUB_URL = "https://api.github.com/repos/misyaguziya/VRCT/releases/latest"
-        self._UPDATER_URL = "https://api.github.com/repos/misyaguziya/VRCT_updater/releases/latest"
+        self._GITHUB_URL = "https://raw.githubusercontent.com/awakenginexe/VRCNT-Next/main/package.json"
+        self._UPDATER_URL = "https://github.com/awakenginexe/VRCNT-Next/releases"
+        self._LATEST_JSON_URL = "https://huggingface.co/AwakeNgineXE/VRCNT-Next/resolve/main/latest.json"
 
         self._MAX_MIC_THRESHOLD = 2000
         self._MAX_SPEAKER_THRESHOLD = 4000
@@ -784,6 +899,9 @@ class Config:
         # these external mappings may be empty dicts if the optional modules failed to import
         self._SELECTABLE_CTRANSLATE2_WEIGHT_TYPE_LIST = getattr(ctranslate2_weights, 'keys', lambda: [])()
         self._SELECTABLE_WHISPER_WEIGHT_TYPE_LIST = getattr(whisper_models, 'keys', lambda: [])()
+        self._SELECTABLE_VOSK_WEIGHT_TYPE_LIST = getattr(vosk_models, 'keys', lambda: [])()
+        self._SELECTABLE_PARAKEET_WEIGHT_TYPE_LIST = getattr(parakeet_models, 'keys', lambda: [])()
+        self._SELECTABLE_SENSEVOICE_WEIGHT_TYPE_LIST = getattr(sensevoice_models, 'keys', lambda: [])()
         translation_lang = loadTranslationLanguages(self.PATH_LOCAL)
         self._SELECTABLE_TRANSLATION_ENGINE_LIST = getattr(translation_lang, 'keys', lambda: [])()
         try:
@@ -793,7 +911,8 @@ class Config:
         except Exception:
             self._SELECTABLE_TRANSCRIPTION_ENGINE_LIST = []
         self._SELECTABLE_UI_LANGUAGE_LIST = ["en", "ja", "ko", "zh-Hant", "zh-Hans"]
-        self._COMPUTE_MODE = "cuda" if torch.cuda.is_available() else "cpu"
+        torch = _getTorch()
+        self._COMPUTE_MODE = "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
         self._SELECTABLE_COMPUTE_DEVICE_LIST = getComputeDeviceList()
         self._SEND_MESSAGE_BUTTON_TYPE_LIST = ["show", "hide", "show_and_disable_enter_key"]
 
@@ -810,6 +929,15 @@ class Config:
         self._SELECTABLE_WHISPER_WEIGHT_TYPE_DICT = {}
         for weight_type in self.SELECTABLE_WHISPER_WEIGHT_TYPE_LIST:
             self._SELECTABLE_WHISPER_WEIGHT_TYPE_DICT[weight_type] = False
+        self._SELECTABLE_VOSK_WEIGHT_TYPE_DICT = {}
+        for weight_type in self.SELECTABLE_VOSK_WEIGHT_TYPE_LIST:
+            self._SELECTABLE_VOSK_WEIGHT_TYPE_DICT[weight_type] = False
+        self._SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT = {}
+        for weight_type in self.SELECTABLE_PARAKEET_WEIGHT_TYPE_LIST:
+            self._SELECTABLE_PARAKEET_WEIGHT_TYPE_DICT[weight_type] = False
+        self._SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT = {}
+        for weight_type in self.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_LIST:
+            self._SELECTABLE_SENSEVOICE_WEIGHT_TYPE_DICT[weight_type] = False
         self._SELECTABLE_TRANSLATION_ENGINE_STATUS = {}
         for engine in self.SELECTABLE_TRANSLATION_ENGINE_LIST:
             self._SELECTABLE_TRANSLATION_ENGINE_STATUS[engine] = False
@@ -838,7 +966,18 @@ class Config:
                     "country": "Japan",
                     "enable": True,
                 },
+                "2": {
+                    "language": "English",
+                    "country": "United States",
+                    "enable": False,
+                },
+                "3": {
+                    "language": "Chinese Simplified",
+                    "country": "China",
+                    "enable": False,
+                },
             }
+        self._SELECTED_YOUR_TRANSLATION_LANGUAGES = copy.deepcopy(self._SELECTED_YOUR_LANGUAGES)
         self._SELECTED_TARGET_LANGUAGES = {}
         self._SELECTED_TAB_TARGET_LANGUAGES_NO_LIST = ["1", "2", "3"]
         for tab_no in self.SELECTABLE_TAB_NO_LIST:
@@ -898,7 +1037,6 @@ class Config:
             "toggle_transcription_send": None,
             "toggle_transcription_receive": None,
         }
-        self._PLUGINS_STATUS = []
         self._MIC_AVG_LOGPROB = -0.8
         self._MIC_NO_SPEECH_PROB = 0.6
         self._MIC_NO_REPEAT_NGRAM_SIZE = 0
@@ -961,7 +1099,13 @@ class Config:
         self._SELECTED_LMSTUDIO_MODEL = None
         self._SELECTED_OLLAMA_MODEL = None
         self._SELECTED_TRANSLATION_COMPUTE_TYPE = "auto"
-        self._WHISPER_WEIGHT_TYPE = "base"
+        if DEFAULT_WHISPER_WEIGHT_TYPE in self.SELECTABLE_WHISPER_WEIGHT_TYPE_LIST:
+            self._WHISPER_WEIGHT_TYPE = DEFAULT_WHISPER_WEIGHT_TYPE
+        else:
+            self._WHISPER_WEIGHT_TYPE = next(iter(self.SELECTABLE_WHISPER_WEIGHT_TYPE_LIST), "")
+        self._VOSK_WEIGHT_TYPE = next(iter(self.SELECTABLE_VOSK_WEIGHT_TYPE_LIST), "")
+        self._PARAKEET_WEIGHT_TYPE = next(iter(self.SELECTABLE_PARAKEET_WEIGHT_TYPE_LIST), "")
+        self._SENSEVOICE_WEIGHT_TYPE = next(iter(self.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_LIST), "")
         self._SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "auto"
         self._AUTO_CLEAR_MESSAGE_BOX = True
         self._SEND_ONLY_TRANSLATED_MESSAGES = False
@@ -992,6 +1136,7 @@ class Config:
             "opacity": 1.0,
             "ui_scaling": 1.0,
             "tracker": "LeftHand",
+            "log_order": "oldest_first",
         }
         self._OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES = False
         self._SEND_MESSAGE_TO_VRC = True
@@ -1031,6 +1176,94 @@ class Config:
         self._ENABLE_CLIPBOARD = False
         self._ENABLE_TELEMETRY = True
 
+    def _migrateLegacyUserData(self) -> None:
+        if getattr(sys, 'frozen', False) is False:
+            return
+
+        self._migrateLegacyLocalData()
+        self._migrateLegacyAppData()
+
+    def _migrateLegacyLocalData(self) -> None:
+        if os_path.abspath(self._PATH_LOCAL) == os_path.abspath(self._PATH_DATA):
+            return
+
+        legacy_config_path = os_path.join(self._PATH_LOCAL, "config.json")
+        if os_path.isfile(legacy_config_path) and os_path.isfile(self._PATH_CONFIG) is False:
+            try:
+                shutil.copy2(legacy_config_path, self._PATH_CONFIG)
+            except Exception:
+                errorLogging()
+
+        for directory_name in ("weights", "logs"):
+            legacy_path = os_path.join(self._PATH_LOCAL, directory_name)
+            target_path = os_path.join(self._PATH_DATA, directory_name)
+            if os_path.isdir(legacy_path) is False:
+                continue
+            try:
+                if os_path.exists(target_path) is False:
+                    shutil.move(legacy_path, target_path)
+                else:
+                    _copytree_merge(legacy_path, target_path)
+            except Exception:
+                errorLogging()
+
+    def _shouldCopyLegacyAppConfig(self, legacy_config_path: str, migration_marker_path: str) -> bool:
+        if os_path.isfile(legacy_config_path) is False:
+            return False
+        if os_path.isfile(self._PATH_CONFIG) is False:
+            return True
+        if os_path.isfile(migration_marker_path):
+            return False
+
+        target_config = _load_json_file(self._PATH_CONFIG)
+        legacy_config = _load_json_file(legacy_config_path)
+        if len(target_config) == 0 or len(legacy_config) == 0:
+            return False
+        if target_config == legacy_config:
+            return False
+
+        generated_default_signals = {
+            "FONT_FAMILY": "Yu Gothic UI",
+            "TEXTBOX_UI_SCALING": 100,
+            "SELECTED_TRANSCRIPTION_ENGINE": "Google",
+            "WHISPER_WEIGHT_TYPE": DEFAULT_WHISPER_WEIGHT_TYPE,
+        }
+        target_looks_generated = all(
+            target_config.get(key) == value
+            for key, value in generated_default_signals.items()
+        )
+        legacy_has_user_state = any(
+            legacy_config.get(key) != target_config.get(key)
+            for key in generated_default_signals
+        )
+        return target_looks_generated and legacy_has_user_state
+
+    def _migrateLegacyAppData(self) -> None:
+        legacy_data_path = _getUserDataPath("VRCNT")
+        if os_path.isdir(legacy_data_path) is False:
+            return
+        if os_path.abspath(legacy_data_path) == os_path.abspath(self._PATH_DATA):
+            return
+
+        migration_marker_path = os_path.join(self._PATH_DATA, ".migrated-from-vrcntdata")
+        legacy_config_path = os_path.join(legacy_data_path, "config.json")
+        try:
+            if self._shouldCopyLegacyAppConfig(legacy_config_path, migration_marker_path):
+                if os_path.isfile(self._PATH_CONFIG):
+                    shutil.copy2(self._PATH_CONFIG, self._PATH_CONFIG + ".before-vrcnt-migration")
+                shutil.copy2(legacy_config_path, self._PATH_CONFIG)
+
+            for directory_name in ("weights", "logs"):
+                legacy_path = os_path.join(legacy_data_path, directory_name)
+                target_path = os_path.join(self._PATH_DATA, directory_name)
+                if os_path.isdir(legacy_path):
+                    _copytree_merge(legacy_path, target_path)
+
+            with open(migration_marker_path, "w", encoding="utf-8") as fp:
+                fp.write(legacy_data_path)
+        except Exception:
+            errorLogging()
+
     def load_config(self):
         self._config_data = {}
         if os_path.isfile(self.PATH_CONFIG) is not False:
@@ -1057,6 +1290,9 @@ class Config:
                                 continue
                         except Exception:
                             errorLogging()
+
+        if "SELECTED_YOUR_TRANSLATION_LANGUAGES" not in self._config_data:
+            self._SELECTED_YOUR_TRANSLATION_LANGUAGES = copy.deepcopy(self._SELECTED_YOUR_LANGUAGES)
 
         self.saveConfigToFile()
 

@@ -2,13 +2,45 @@
     position: relative;
     width: 100%;
     height: 100%;
-    display: flex;
-    flex-direction: column;
-    // justify-content: space-between;
-    overflow-y: auto;
+    display: grid;
+    grid-template-rows: var(--main_page_topbar_height) minmax(0, 1fr);
+    overflow: hidden;
+    padding-right: 1.2rem;
 }
 
 .language_selector_container {
     width: 100%;
     height: 100%;
+}
+
+.workspace_grid {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(24rem, 29rem) minmax(0, 1fr);
+    gap: 1rem;
+    padding: 0.8rem 0.4rem 1.2rem 1rem;
+}
+
+.setup_panel {
+    min-height: 0;
+    overflow: auto;
+    border: var(--panel_border_subtle);
+    border-radius: 1.4rem;
+    background: var(--surface_1_color);
+    backdrop-filter: var(--panel_blur);
+    box-shadow: var(--shadow_soft);
+}
+
+.chat_panel {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.9rem;
+}
+
+@media (max-width: 90rem) {
+    .workspace_grid {
+        grid-template-columns: minmax(21rem, 25rem) minmax(0, 1fr);
+    }
 }

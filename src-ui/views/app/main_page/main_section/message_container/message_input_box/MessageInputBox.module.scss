@@ -8,9 +8,15 @@
     width: 100%;
     height: 100%;
     padding: 0.8rem;
-    background-color: var(--dark_875_color);
-    border: 0.1rem solid var(--dark_750_color);
-    border-radius: 0.4rem;
+    background: var(--surface_2_color);
+    border: var(--panel_border_subtle);
+    border-radius: 1.2rem;
+    box-shadow: var(--shadow_control);
+    transition: var(--transition_ui);
+    &:focus-within {
+        border-color: var(--accent_color);
+        box-shadow: var(--shadow_control_hover);
+    }
 }
 
 .message_box_input_area {
@@ -27,18 +33,22 @@
     max-width: 10rem;
     height: 100%;
     font-size: 1.2rem;
-    background-color: var(--dark_850_color);
-    border-radius: 0.4rem;
+    background: var(--accent_gradient);
+    border-radius: 1.2rem;
+    box-shadow: var(--shadow_control);
     aspect-ratio: 1 / 1;
+    transition: var(--transition_ui);
     &:hover {
-        background-color: var(--dark_825_color);
+        transform: translateY(-0.1rem) scale(1.02);
+        box-shadow: var(--shadow_accent);
     }
     &:active {
-        background-color: var(--dark_900_color);
+        transform: translateY(0.05rem) scale(0.98);
+        filter: brightness(0.9);
     }
 }
 
 .message_send_icon {
     width: 2rem;
-    color: var(--dark_400_color);
+    color: var(--dark_100_color);
 }

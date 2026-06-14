@@ -1,21 +1,103 @@
 .container {
     display: flex;
-    gap: 3.2rem;
     flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    width: 100%;
-}
-.supportersWrapper {
-    opacity: 0;
-    animation: fadeIn 0.8s ease-in-out 1.6s forwards;
+    gap: 1.6rem;
+    width: min(82rem, 100%);
+    margin: 0 auto;
+    padding: 1rem 0 8rem;
 }
 
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-    }
-    to {
-        opacity: 1;
-    }
+.hero,
+.notice,
+.info_card,
+.disclaimer {
+    border: 0.1rem solid var(--border_subtle_color);
+    border-radius: 1rem;
+    background: linear-gradient(180deg, var(--surface_2_color), var(--surface_1_color));
+    box-shadow: var(--shadow_soft), inset 0 0.1rem 0 #ffffff10;
+}
+
+.hero {
+    display: flex;
+    align-items: center;
+    gap: 1.8rem;
+    padding: 2.4rem;
+}
+
+.logo_mark {
+    width: min(14rem, 28%);
+    max-height: 7rem;
+    flex-shrink: 0;
+    object-fit: contain;
+    filter: var(--filter_accent_glow_strong);
+}
+
+.hero_text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.kicker,
+.notice_label,
+.card_label {
+    color: var(--primary_200_color);
+    font-size: 1.1rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08rem;
+}
+
+.title {
+    color: var(--dark_100_color);
+    font-size: 3.2rem;
+    font-weight: 900;
+    line-height: 1.1;
+}
+
+.description {
+    color: var(--dark_300_color);
+    font-size: 1.5rem;
+}
+
+.notice {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 1.8rem 2rem;
+}
+
+.notice_text,
+.card_text,
+.disclaimer {
+    color: var(--dark_350_color);
+    font-size: 1.35rem;
+    line-height: 1.55;
+}
+
+.info_grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.2rem;
+}
+
+.info_card {
+    padding: 1.6rem;
+}
+
+.card_title {
+    margin-top: 0.7rem;
+    color: var(--dark_100_color);
+    font-size: 1.8rem;
+    font-weight: 850;
+}
+
+.card_text {
+    margin-top: 0.7rem;
+}
+
+.disclaimer {
+    padding: 1.4rem 1.6rem;
+    color: var(--dark_600_color);
 }

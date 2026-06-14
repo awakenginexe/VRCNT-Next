@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+
 
 a = Analysis(
     ['..\\src-python\\mainloop.py'],
@@ -12,9 +14,33 @@ a = Analysis(
         ('./../.venv/Lib/site-packages/zeroconf', 'zeroconf/'),
         ('./../.venv/Lib/site-packages/openvr', 'openvr/'),
         ('./../.venv/Lib/site-packages/faster_whisper', 'faster_whisper/'),
-        ('./../.venv/Lib/site-packages/hf_xet', 'hf_xet/')
+        ('./../.venv/Lib/site-packages/hf_xet', 'hf_xet/'),
+        ('./../.venv/Lib/site-packages/sherpa_onnx', 'sherpa_onnx/'),
+        ('./../.venv/Lib/site-packages/vosk', 'vosk/'),
+        ('./../.venv/Lib/site-packages/onnx_asr', 'onnx_asr/'),
+        ('./../.venv/Lib/site-packages/onnxruntime', 'onnxruntime/'),
+        *collect_data_files('translators'),
+        *copy_metadata('sherpa-onnx'),
+        *copy_metadata('onnx-asr'),
+        *copy_metadata('translators'),
         ],
-    hiddenimports=[],
+    hiddenimports=[
+        'ctranslate2',
+        'translators',
+        'models.translation.translation_plamo',
+        'models.translation.translation_gemini',
+        'models.translation.translation_openai',
+        'models.translation.translation_groq',
+        'models.translation.translation_openrouter',
+        'models.translation.translation_lmstudio',
+        'models.translation.translation_ollama',
+        'sherpa_onnx',
+        'vosk',
+        'onnx_asr',
+        'onnxruntime',
+        'onnxruntime.capi._pybind_state',
+        *collect_submodules('translators'),
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -284,12 +284,12 @@ export const _useBackendErrorHandling = () => {
             case "GENERAL_UNKNOWN":
                 console.error(`Error occurred at endpoint: ${endpoint}\nerror_code: ${error_code}\nmessage: ${message}\nresult: ${JSON.stringify(result)}`);
                 showNotification_Error(message, { category_id: error_code });
-                showNotification_Error(`An error occurred. Please contact the developers and restart VRCT. Error: ${error_code} - ${message || JSON.stringify(result)}`, { hide_duration: null, category_id: error_code });
+                showNotification_Error(`An error occurred. Please contact the developers and restart VRCNT-Next. Error: ${error_code} - ${message || JSON.stringify(result)}`, { hide_duration: null, category_id: error_code });
                 return;
 
             default:
                 console.error(`Invalid error_code or message: ${error_code}\nendpoint: ${endpoint}\nmessage: ${message}\nresult: ${JSON.stringify(result)}`);
-                showNotification_Error(`An error occurred. Please contact the developers and restart VRCT. Error: ${error_code} - ${message || JSON.stringify(result)}`, { hide_duration: null, category_id: error_code });
+                showNotification_Error(`An error occurred. Please contact the developers and restart VRCNT-Next. Error: ${error_code} - ${message || JSON.stringify(result)}`, { hide_duration: null, category_id: error_code });
                 return;
         }
 

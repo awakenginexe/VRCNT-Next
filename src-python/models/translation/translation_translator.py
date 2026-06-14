@@ -1,43 +1,49 @@
 from os import path as os_path
+import importlib
+import sys
 from deepl import DeepLClient
-try:
-    from translators import translate_text as other_web_Translator
-    ENABLE_TRANSLATORS = True
-except Exception:
-    other_web_Translator = None  # type: ignore
-    ENABLE_TRANSLATORS = False
 
 try:
     from .translation_languages import translation_lang
-    from .translation_utils import ctranslate2_weights
-    from .translation_plamo import PlamoClient
-    from .translation_gemini import GeminiClient
-    from .translation_openai import OpenAIClient
-    from .translation_lmstudio import LMStudioClient
-    from .translation_ollama import OllamaClient
-    from .translation_groq import GroqClient
-    from .translation_openrouter import OpenRouterClient
+    from .translation_utils import ctranslate2_weights, _prepareCtrTranslate2Runtime, loadCTranslate2Tokenizer
 except Exception:
-    import sys
     sys.path.append(os_path.dirname(os_path.dirname(os_path.dirname(os_path.abspath(__file__)))))
     from translation_languages import translation_lang
-    from translation_utils import ctranslate2_weights
-    from translation_plamo import PlamoClient
-    from translation_gemini import GeminiClient
-    from translation_openai import OpenAIClient
-    from translation_lmstudio import LMStudioClient
-    from translation_ollama import OllamaClient
-    from translation_groq import GroqClient
-    from translation_openrouter import OpenRouterClient
+    from translation_utils import ctranslate2_weights, _prepareCtrTranslate2Runtime, loadCTranslate2Tokenizer
 
-import ctranslate2
-import transformers
 from utils import errorLogging, getBestComputeType
 
 import warnings
 from typing import Any, Optional, Tuple
 
 warnings.filterwarnings("ignore")
+
+
+def _getCtrTranslate2():
+    _prepareCtrTranslate2Runtime()
+    return importlib.import_module("ctranslate2")
+
+
+def _getTransformers():
+    return importlib.import_module("transformers")
+
+
+def _getWebTranslator():
+    try:
+        return importlib.import_module("translators").translate_text
+    except Exception:
+        errorLogging()
+        return None
+
+
+def _getRelativeClientModule(module_name: str):
+    try:
+        return importlib.import_module(f".{module_name}", __package__)
+    except Exception:
+        root_dir = os_path.dirname(os_path.dirname(os_path.dirname(os_path.abspath(__file__))))
+        if root_dir not in sys.path:
+            sys.path.append(root_dir)
+        return importlib.import_module(module_name)
 
 
 class Translator:
@@ -51,20 +57,21 @@ class Translator:
 
     def __init__(self) -> None:
         self.deepl_client: Optional[DeepLClient] = None
-        self.plamo_client: Optional[PlamoClient] = None
-        self.gemini_client: Optional[GeminiClient] = None
-        self.openai_client: Optional[OpenAIClient] = None
-        self.groq_client: Optional[GroqClient] = None
-        self.openrouter_client: Optional[OpenRouterClient] = None
-        self.lmstudio_client: LMStudioClient[LMStudioClient] = None
+        self.plamo_client: Any = None
+        self.gemini_client: Any = None
+        self.openai_client: Any = None
+        self.groq_client: Any = None
+        self.openrouter_client: Any = None
+        self.lmstudio_client: Any = None
         self.lmstudio_connected: bool = False
-        self.ollama_client: OllamaClient[OllamaClient] = None
+        self.ollama_client: Any = None
         self.ollama_connected: bool = False
         self.ctranslate2_translator: Any = None
         self.ctranslate2_tokenizer: Any = None
         self.is_loaded_ctranslate2_model: bool = False
         self.is_changed_translator_parameters: bool = False
-        self.is_enable_translators: bool = ENABLE_TRANSLATORS
+        self._web_translator = None
+        self.is_enable_translators: bool = True
 
     def authenticationDeepLAuthKey(self, auth_key: str) -> bool:
         """Authenticate DeepL API with the provided key.
@@ -87,7 +94,7 @@ class Translator:
 
         Returns True on success, False on failure.
         """
-        self.plamo_client = PlamoClient(root_path=root_path)
+        self.plamo_client = _getRelativeClientModule("translation_plamo").PlamoClient(root_path=root_path)
         if self.plamo_client.setAuthKey(auth_key):
             return True
         else:
@@ -121,7 +128,7 @@ class Translator:
 
         Returns True on success, False on failure.
         """
-        self.gemini_client = GeminiClient(root_path=root_path)
+        self.gemini_client = _getRelativeClientModule("translation_gemini").GeminiClient(root_path=root_path)
         if self.gemini_client.setAuthKey(auth_key):
             return True
         else:
@@ -156,7 +163,7 @@ class Translator:
         base_url を指定することで互換エンドポイント (例: Azure OpenAI 互換, Proxy) にも対応可能。
         Returns True on success, False on failure.
         """
-        self.openai_client = OpenAIClient(base_url=base_url, root_path=root_path)
+        self.openai_client = _getRelativeClientModule("translation_openai").OpenAIClient(base_url=base_url, root_path=root_path)
         if self.openai_client.setAuthKey(auth_key):
             return True
         else:
@@ -190,7 +197,7 @@ class Translator:
 
         Returns True on success, False on failure.
         """
-        self.groq_client = GroqClient(root_path=root_path)
+        self.groq_client = _getRelativeClientModule("translation_groq").GroqClient(root_path=root_path)
         if self.groq_client.setAuthKey(auth_key):
             return True
         else:
@@ -224,7 +231,7 @@ class Translator:
 
         Returns True on success, False on failure.
         """
-        self.openrouter_client = OpenRouterClient(root_path=root_path)
+        self.openrouter_client = _getRelativeClientModule("translation_openrouter").OpenRouterClient(root_path=root_path)
         if self.openrouter_client.setAuthKey(auth_key):
             return True
         else:
@@ -265,7 +272,7 @@ class Translator:
 
         Returns True on success, False on failure.
         """
-        self.lmstudio_client = LMStudioClient(base_url=base_url, root_path=root_path)
+        self.lmstudio_client = _getRelativeClientModule("translation_lmstudio").LMStudioClient(base_url=base_url, root_path=root_path)
         result = self.lmstudio_client.setBaseURL(base_url)
         if result is False:
             self.lmstudio_client = None
@@ -306,7 +313,7 @@ class Translator:
 
         Returns True if Ollama is reachable, False otherwise.
         """
-        self.ollama_client = OllamaClient(root_path=root_path)
+        self.ollama_client = _getRelativeClientModule("translation_ollama").OllamaClient(root_path=root_path)
         result = self.ollama_client.authenticationCheck()
         if result is False:
             self.ollama_client = None
@@ -345,13 +352,11 @@ class Translator:
         """
         self.is_loaded_ctranslate2_model = False
         directory_name = ctranslate2_weights[model_type]["directory_name"]
-        tokenizer = ctranslate2_weights[model_type]["tokenizer"]
         weight_path = os_path.join(path, "weights", "ctranslate2", directory_name)
-        tokenizer_path = os_path.join(path, "weights", "ctranslate2", directory_name, "tokenizer")
 
         if compute_type == "auto":
             compute_type = getBestComputeType(device, device_index)
-        self.ctranslate2_translator = ctranslate2.Translator(
+        self.ctranslate2_translator = _getCtrTranslate2().Translator(
             weight_path,
             device=device,
             device_index=device_index,
@@ -360,11 +365,10 @@ class Translator:
             intra_threads=4,
         )
         try:
-            self.ctranslate2_tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer, cache_dir=tokenizer_path)
+            self.ctranslate2_tokenizer = loadCTranslate2Tokenizer(path, model_type, local_files_only=True)
         except Exception:
             errorLogging()
-            tokenizer_path = os_path.join("./weights", "ctranslate2", directory_name, "tokenizer")
-            self.ctranslate2_tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer, cache_dir=tokenizer_path)
+            self.ctranslate2_tokenizer = loadCTranslate2Tokenizer(path, model_type, local_files_only=False, repair_cache=True)
         self.is_loaded_ctranslate2_model = True
 
     def isLoadedCTranslate2Model(self) -> bool:
@@ -447,12 +451,16 @@ class Translator:
             if source_language == target_language:
                 return message
 
-            result: Any = ""
+            result: Any = False
+            if self._web_translator is None:
+                self._web_translator = _getWebTranslator()
+                if self._web_translator is None:
+                    self.is_enable_translators = False
             source_language, target_language = self.getLanguageCode(translator_name, weight_type, target_country, source_language, target_language)
             match translator_name:
                 case "DeepL":
-                    if self.is_enable_translators is True and other_web_Translator is not None:
-                        result = other_web_Translator(
+                    if self.is_enable_translators is True and self._web_translator is not None:
+                        result = self._web_translator(
                             query_text=message,
                             translator="deepl",
                             from_language=source_language,
@@ -546,24 +554,24 @@ class Translator:
                             output_lang=target_language,
                         )
                 case "Google":
-                    if self.is_enable_translators is True and other_web_Translator is not None:
-                        result = other_web_Translator(
+                    if self.is_enable_translators is True and self._web_translator is not None:
+                        result = self._web_translator(
                             query_text=message,
                             translator="google",
                             from_language=source_language,
                             to_language=target_language,
                         )
                 case "Bing":
-                    if self.is_enable_translators is True and other_web_Translator is not None:
-                        result = other_web_Translator(
+                    if self.is_enable_translators is True and self._web_translator is not None:
+                        result = self._web_translator(
                             query_text=message,
                             translator="bing",
                             from_language=source_language,
                             to_language=target_language,
                         )
                 case "Papago":
-                    if self.is_enable_translators is True and other_web_Translator is not None:
-                        result = other_web_Translator(
+                    if self.is_enable_translators is True and self._web_translator is not None:
+                        result = self._web_translator(
                             query_text=message,
                             translator="papago",
                             from_language=source_language,

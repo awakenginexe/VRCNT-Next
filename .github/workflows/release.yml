@@ -1,13 +1,13 @@
-name: Release VRCT
+name: Release VRCNT-Next
 
 on:
   push:
     tags:
-      - 'v*' # タグが 'v' で始まる場合にトリガー (例: v1.0.0)
+      - 'v*' # Trigger when tag starts with 'v' (e.g. v1.0.0)
 
 jobs:
   release:
-    name: Build VRCT
+    name: Build and publish VRCNT-Next
     runs-on: windows-latest
     permissions:
       contents: write
@@ -39,54 +39,208 @@ jobs:
         run: npm run setup-python
 
       - name: Install Python script dependencies
-        run: pip install tqdm
+        run: pip install tqdm huggingface_hub==0.34.4
 
-      - name: Build and package
-        run: npm run release-all
-
-      - name: Get version from tag
-        id: get_version
-        shell: pwsh
-        run: |
-          $TAG_WITH_V = $env:GITHUB_REF -replace "^refs/tags/", ""
-          $VERSION_NUM = $TAG_WITH_V -replace "^v", ""
-          echo "VERSION=$VERSION_NUM" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Upload to Hugging Face Hub
+      - name: Read release configuration
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         shell: pwsh
         run: |
-          pip install huggingface_hub==0.34.4
+          $tag = $env:GITHUB_REF -replace "^refs/tags/", ""
+          $version = $tag -replace "^v", ""
+          $releaseConfig = Get-Content -Raw ./release.config.json | ConvertFrom-Json
 
-          $UPLOAD_DIR = "./hf_upload_temp"
-          New-Item -ItemType Directory -Force -Path $UPLOAD_DIR
-          Copy-Item -Path ./VRCT.zip -Destination "$UPLOAD_DIR/VRCT.zip"
-          Copy-Item -Path ./VRCT_cuda.zip -Destination "$UPLOAD_DIR/VRCT_cuda.zip"
+          if (
+            [string]::IsNullOrWhiteSpace($releaseConfig.githubOwner) -or
+            [string]::IsNullOrWhiteSpace($releaseConfig.githubRepo) -or
+            [string]::IsNullOrWhiteSpace($releaseConfig.hfRepoId) -or
+            $releaseConfig.githubOwner -eq "OWNER_TODO" -or
+            $releaseConfig.githubRepo -eq "REPO_TODO" -or
+            $releaseConfig.hfRepoId -eq "HF_REPO_TODO"
+          ) {
+            throw "release.config.json still has placeholder GitHub or Hugging Face values."
+          }
 
-          hf upload --repo-type model --commit-message "👍️[Update] ${{ env.VERSION }} Release" ms-software/VRCT $UPLOAD_DIR
+          if ([string]::IsNullOrWhiteSpace($env:HF_TOKEN)) {
+            throw "HF_TOKEN secret is required to upload release files to Hugging Face."
+          }
 
-          hf repo tag create ms-software/VRCT ${{ github.ref_name }} --repo-type model --message "Release ${{ github.ref_name }}"
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_OWNER=$($releaseConfig.githubOwner)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_REPO=$($releaseConfig.githubRepo)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HF_REPO_ID=$($releaseConfig.hfRepoId)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_ZIP_NAME=$($releaseConfig.releaseAssetZipName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LATEST_JSON_NAME=$($releaseConfig.latestJsonAssetName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "INSTALLER_NAME_PATTERN=$($releaseConfig.installerNamePattern)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          Remove-Item -Recurse -Force $UPLOAD_DIR
+      - name: Validate release version
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content -Raw ./package.json | ConvertFrom-Json).version
+          if ($packageVersion -ne $env:VERSION) {
+            throw "Tag $env:RELEASE_TAG does not match package.json version $packageVersion. Use tag v$packageVersion or update package.json intentionally."
+          }
 
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Build and package
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: ${{ env.VERSION }}
-          draft: false
-          prerelease: false
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run release
 
-      - name: Upload Release Asset (NSIS Installer)
-        uses: actions/upload-release-asset@v1
+      - name: Locate release assets
+        shell: pwsh
+        run: |
+          $installerName = $env:INSTALLER_NAME_PATTERN.Replace('${version}', $env:VERSION)
+          $installer = Get-ChildItem -Path ./src-tauri/target/release/bundle/nsis -Filter $installerName -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            $installer = Get-ChildItem -Path ./src-tauri/target/release/bundle/nsis -Filter "*_x64-setup.exe" -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1
+          }
+
+          if (-not $installer) {
+            Get-ChildItem -Path ./src-tauri/target/release/bundle -Recurse -ErrorAction SilentlyContinue
+            throw "NSIS installer was not generated."
+          }
+
+          $zipPath = Join-Path (Get-Location) $env:RELEASE_ZIP_NAME
+          if (-not (Test-Path $zipPath)) {
+            Get-ChildItem -Path . -Filter "*.zip" -ErrorAction SilentlyContinue
+            throw "Portable release zip $env:RELEASE_ZIP_NAME was not generated."
+          }
+
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path $signaturePath)) {
+            Get-ChildItem -Path ./src-tauri/target/release/bundle/nsis -Recurse -ErrorAction SilentlyContinue
+            throw "Updater signature was not generated for $($installer.Name). Ensure TAURI_SIGNING_PRIVATE_KEY is configured."
+          }
+
+          "INSTALLER_PATH=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "INSTALLER_NAME=$($installer.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "INSTALLER_SIGNATURE_PATH=$signaturePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "INSTALLER_SIGNATURE_NAME=$($installer.Name).sig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_ZIP_PATH=$zipPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Generate latest.json
+        shell: pwsh
+        run: |
+          $signature = (Get-Content -Raw "$env:INSTALLER_SIGNATURE_PATH").Trim()
+          $installerUrl = "https://huggingface.co/$env:HF_REPO_ID/resolve/$env:RELEASE_TAG/$env:INSTALLER_NAME"
+          $latest = [ordered]@{
+            version = $env:VERSION
+            notes = "Release $env:RELEASE_TAG"
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $signature
+                url = $installerUrl
+              }
+            }
+          }
+          $latestPath = Join-Path (Get-Location) $env:LATEST_JSON_NAME
+          $latest | ConvertTo-Json -Depth 5 | Set-Content -Path $latestPath -Encoding utf8
+          "LATEST_JSON_PATH=$latestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VRCNT_INSTALLER_URL=$installerUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VRCNT_ZIP_URL=https://huggingface.co/$env:HF_REPO_ID/resolve/$env:RELEASE_TAG/$env:RELEASE_ZIP_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VRCNT_LATEST_JSON_URL=https://huggingface.co/$env:HF_REPO_ID/resolve/main/$env:LATEST_JSON_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload release files to Hugging Face
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./src-tauri/target/release/bundle/nsis/VRCT_${{ env.VERSION }}_x64-setup.exe
-          asset_name: VRCT_${{ env.VERSION }}_x64-setup.exe
-          asset_content_type: application/octet-stream
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        shell: pwsh
+        run: |
+          $uploadDir = Join-Path (Get-Location) "hf_upload_temp"
+          if (Test-Path $uploadDir) {
+            Remove-Item -LiteralPath $uploadDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $uploadDir | Out-Null
+
+          Copy-Item -LiteralPath "$env:RELEASE_ZIP_PATH" -Destination (Join-Path $uploadDir $env:RELEASE_ZIP_NAME)
+          Copy-Item -LiteralPath "$env:INSTALLER_PATH" -Destination (Join-Path $uploadDir $env:INSTALLER_NAME)
+          Copy-Item -LiteralPath "$env:INSTALLER_SIGNATURE_PATH" -Destination (Join-Path $uploadDir $env:INSTALLER_SIGNATURE_NAME)
+          Copy-Item -LiteralPath "$env:LATEST_JSON_PATH" -Destination (Join-Path $uploadDir $env:LATEST_JSON_NAME)
+
+          $script = @'
+          import os
+          from huggingface_hub import HfApi
+          from huggingface_hub.errors import HfHubHTTPError, RevisionNotFoundError
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          repo_id = os.environ["HF_REPO_ID"]
+          release_tag = os.environ["RELEASE_TAG"]
+          version = os.environ["VERSION"]
+
+          try:
+              api.repo_info(repo_id=repo_id, repo_type="model")
+          except HfHubHTTPError as exc:
+              raise SystemExit(f"Hugging Face repo {repo_id} is not accessible with HF_TOKEN: {exc}") from exc
+
+          commit_info = api.upload_folder(
+              repo_id=repo_id,
+              repo_type="model",
+              folder_path="hf_upload_temp",
+              path_in_repo=".",
+              commit_message=f"Release {release_tag}",
+          )
+
+          try:
+              api.delete_tag(repo_id=repo_id, repo_type="model", tag=release_tag)
+          except RevisionNotFoundError:
+              pass
+
+          api.create_tag(
+              repo_id=repo_id,
+              repo_type="model",
+              tag=release_tag,
+              revision=commit_info.oid,
+              tag_message=f"Release {version}",
+          )
+          print(f"Uploaded release files to {repo_id} and tagged {release_tag} at {commit_info.oid}")
+          '@
+          $script | python -
+
+      - name: Verify Hugging Face release URLs
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        shell: pwsh
+        run: |
+          $headers = @{ Authorization = "Bearer $env:HF_TOKEN" }
+          $urls = @(
+            $env:VRCNT_ZIP_URL,
+            $env:VRCNT_INSTALLER_URL,
+            "$env:VRCNT_INSTALLER_URL.sig",
+            $env:VRCNT_LATEST_JSON_URL
+          )
+
+          foreach ($url in $urls) {
+            $response = Invoke-WebRequest -Uri $url -Method Head -Headers $headers -MaximumRedirection 5 -UseBasicParsing
+            if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 400) {
+              throw "Hugging Face URL check failed for $url with status $($response.StatusCode)"
+            }
+          }
+
+      - name: Create or update GitHub Release page
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = $env:RELEASE_TAG
+          $notes = @"
+          Release $tag
+
+          Large release files are hosted on Hugging Face:
+          - Installer: $env:VRCNT_INSTALLER_URL
+          - Portable payload: $env:VRCNT_ZIP_URL
+          - Updater manifest: $env:VRCNT_LATEST_JSON_URL
+          "@
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $tag --title $env:VERSION --draft=false --prerelease=false --notes "$notes"
+          } else {
+            gh release create $tag --title $env:VERSION --notes "$notes" --verify-tag
+          }

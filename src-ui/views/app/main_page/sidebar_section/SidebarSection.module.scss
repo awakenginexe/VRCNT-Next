@@ -1,23 +1,31 @@
 .container {
     position: relative;
-    min-width: 23rem;
+    width: 8.8rem;
+    min-width: 8.8rem;
+    max-width: 8.8rem;
+    flex: 0 0 8.8rem;
     height: 100%;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    background-color: var(--dark_850_color);
+    background: var(--surface_1_color);
+    backdrop-filter: var(--panel_blur);
+    border-right: var(--panel_border_subtle);
+    box-shadow: var(--shadow_lateral);
+    transition: var(--transition_ui);
     &.is_compact_mode {
-        min-width: auto;
-        .scroll_container {
-            // overflow-y: hidden;
-            // width: auto;
-        }
+        width: 8.8rem;
+        min-width: 8.8rem;
+        max-width: 8.8rem;
+        flex-basis: 8.8rem;
     }
 }
 
 .scroll_container {
-    width: calc(100% + 0.8rem);
+    width: 100%;
     overflow-y: scroll;
     overflow-x: hidden;
+    padding: 0.8rem 0.2rem 0;
     margin-bottom: calc(2rem + 1.6rem + 2rem); // config button's sizes (svg + padding + margin).
     pointer-events: auto;
     z-index: 1;
@@ -25,26 +33,26 @@
         width: 0.8rem;
     }
     &::-webkit-scrollbar-track {
-        background-color: var(--dark_888_color);
+        background-color: transparent;
         border-radius: 0.4rem;
     }
     &::-webkit-scrollbar-thumb {
-        background-color: var(--dark_888_color);
+        background-color: transparent;
         border-radius: 0.4rem;
     }
 
     &.is_opened {
         &::-webkit-scrollbar-track {
-            background-color: var(--dark_875_color);
+            background-color: var(--surface_2_color);
         }
         &::-webkit-scrollbar-thumb {
-            background-color: var(--dark_875_color);
+            background-color: var(--surface_3_color);
         }
     }
 
     &:hover {
         &::-webkit-scrollbar-thumb {
-            background-color: var(--dark_800_color);
+            background-color: var(--primary_650_color);
         }
     }
 

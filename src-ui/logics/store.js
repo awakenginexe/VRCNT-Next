@@ -12,16 +12,57 @@ import {
     translator_status,
 } from "@ui_configs";
 
+import { EMPTY_RESOURCE_USAGE } from "./common/resourceUsageUtils.js";
+
 export const store = {
     backend_subprocess: null,
     setting_box_scroll_container: null,
     log_box_ref: null,
     text_area_ref: null,
-    is_initialized_load_plugin: false,
-    is_fetched_plugins_info_already: false,
-    is_initialized_fetched_plugin_info: false,
     last_executed_time_startTyping: 0,
 };
+
+const createLanguageSlot = (language = "", country = "", enable = true) => ({
+    language,
+    country,
+    enable,
+});
+
+const createYourLanguagePresetMap = () => ({
+    1: {
+        1: createLanguageSlot(),
+        2: createLanguageSlot("English", "United States", false),
+        3: createLanguageSlot("Chinese Simplified", "China", false),
+    },
+    2: {
+        1: createLanguageSlot(),
+        2: createLanguageSlot("English", "United States", false),
+        3: createLanguageSlot("Chinese Simplified", "China", false),
+    },
+    3: {
+        1: createLanguageSlot(),
+        2: createLanguageSlot("English", "United States", false),
+        3: createLanguageSlot("Chinese Simplified", "China", false),
+    },
+});
+
+const createTargetLanguagePresetMap = () => ({
+    1: {
+        1: createLanguageSlot(),
+        2: createLanguageSlot("", "", false),
+        3: createLanguageSlot("", "", false),
+    },
+    2: {
+        1: createLanguageSlot(),
+        2: createLanguageSlot("", "", false),
+        3: createLanguageSlot("", "", false),
+    },
+    3: {
+        1: createLanguageSlot(),
+        2: createLanguageSlot("", "", false),
+        3: createLanguageSlot("", "", false),
+    },
+});
 
 const generatePropertyNames = (base_name) => ({
     error: `error${base_name}`,
@@ -142,6 +183,7 @@ export const { atomInstance: Atom_IsBackendReady, useHook: useStore_IsBackendRea
 export const { atomInstance: Atom_IsVrctAvailable, useHook: useStore_IsVrctAvailable } = createAtomWithHook(true, "IsVrctAvailable");
 export const { atomInstance: Atom_IsOscAvailable, useHook: useStore_IsOscAvailable } = createAtomWithHook(true, "IsOscAvailable");
 export const { atomInstance: Atom_ComputeMode, useHook: useStore_ComputeMode } = createAtomWithHook("", "ComputeMode");
+export const { atomInstance: Atom_ResourceUsage, useHook: useStore_ResourceUsage } = createAtomWithHook(EMPTY_RESOURCE_USAGE, "ResourceUsage", {is_state_ok: true});
 export const { atomInstance: Atom_IsOpenedConfigPage, useHook: useStore_IsOpenedConfigPage } = createAtomWithHook(false, "IsOpenedConfigPage");
 export const { atomInstance: Atom_MainFunctionsStateMemory, useHook: useStore_MainFunctionsStateMemory } = createAtomWithHook({
     transcription_send: false,
@@ -151,8 +193,15 @@ export const { atomInstance: Atom_OpenedQuickSetting, useHook: useStore_OpenedQu
 export const { atomInstance: Atom_LatestSoftwareVersionInfo, useHook: useStore_LatestSoftwareVersionInfo } = createAtomWithHook({
     is_update_available: false,
     new_version: "0.0.0",
+    release_url: "https://github.com/awakenginexe/VRCNT-Next/releases",
 }, "LatestSoftwareVersionInfo");
 export const { atomInstance: Atom_InitProgress, useHook: useStore_InitProgress } = createAtomWithHook(0, "InitProgress");
+export const { atomInstance: Atom_InitStatus, useHook: useStore_InitStatus } = createAtomWithHook({
+    visible: true,
+    message: "Starting VRCNT-Next",
+    detail: "Preparing startup.",
+    phase: "starting",
+}, "InitStatus");
 export const { atomInstance: Atom_IsBreakPoint, useHook: useStore_IsBreakPoint } = createAtomWithHook(false, "IsBreakPoint");
 export const { atomInstance: Atom_IsSoftwareUpdating, useHook: useStore_IsSoftwareUpdating } = createAtomWithHook(false, "IsSoftwareUpdating");
 export const { atomInstance: Atom_NotificationStatus, useHook: useStore_NotificationStatus } = createAtomWithHook({
@@ -163,6 +212,7 @@ export const { atomInstance: Atom_NotificationStatus, useHook: useStore_Notifica
 }, "NotificationStatus");
 export const { atomInstance: Atom_IsLMStudioConnected, useHook: useStore_IsLMStudioConnected } = createAtomWithHook(false, "IsLMStudioConnected");
 export const { atomInstance: Atom_IsOllamaConnected, useHook: useStore_IsOllamaConnected } = createAtomWithHook(false, "IsOllamaConnected");
+export const { atomInstance: Atom_EnablePerformanceMode, useHook: useStore_EnablePerformanceMode } = createAtomWithHook(localStorage.getItem("enable_performance_mode") === "true", "EnablePerformanceMode", {is_state_ok: true});
 
 // Main Page
 // Common
@@ -175,16 +225,18 @@ export const { atomInstance: Atom_TranscriptionReceiveStatus, useHook: useStore_
 export const { atomInstance: Atom_ForegroundStatus, useHook: useStore_ForegroundStatus } = createAtomWithHook(false, "ForegroundStatus", {is_state_ok: true});
 
 export const { atomInstance: Atom_SelectedPresetTabNumber, useHook: useStore_SelectedPresetTabNumber } = createAtomWithHook("1", "SelectedPresetTabNumber");
-export const { atomInstance: Atom_SelectedYourLanguages, useHook: useStore_SelectedYourLanguages } = createAtomWithHook({}, "SelectedYourLanguages");
-export const { atomInstance: Atom_SelectedTargetLanguages, useHook: useStore_SelectedTargetLanguages } = createAtomWithHook({}, "SelectedTargetLanguages");
+export const { atomInstance: Atom_SelectedYourLanguages, useHook: useStore_SelectedYourLanguages } = createAtomWithHook(createYourLanguagePresetMap(), "SelectedYourLanguages");
+export const { atomInstance: Atom_SelectedYourTranslationLanguages, useHook: useStore_SelectedYourTranslationLanguages } = createAtomWithHook(createYourLanguagePresetMap(), "SelectedYourTranslationLanguages");
+export const { atomInstance: Atom_SelectedTargetLanguages, useHook: useStore_SelectedTargetLanguages } = createAtomWithHook(createTargetLanguagePresetMap(), "SelectedTargetLanguages");
 
 export const { atomInstance: Atom_TranslationEngines, useHook: useStore_TranslationEngines } = createAtomWithHook(translator_status, "TranslationEngines");
 export const { atomInstance: Atom_SelectedTranslationEngines, useHook: useStore_SelectedTranslationEngines } = createAtomWithHook({1:"", 2:"", 3:""}, "SelectedTranslationEngines");
 export const { atomInstance: Atom_IsOpenedTranslatorSelector, useHook: useStore_IsOpenedTranslatorSelector } = createAtomWithHook(false, "IsOpenedTranslatorSelector");
+export const { atomInstance: Atom_IsOpenedTranscriptionEngineSelector, useHook: useStore_IsOpenedTranscriptionEngineSelector } = createAtomWithHook(false, "IsOpenedTranscriptionEngineSelector");
 
 // Language Selector
 export const { atomInstance: Atom_IsOpenedLanguageSelector, useHook: useStore_IsOpenedLanguageSelector } = createAtomWithHook(
-    { your_language: false, target_language: false, target_key: "1" },
+    { your_language: false, your_translation_language: false, target_language: false, target_key: "1" },
     "IsOpenedLanguageSelector"
 );
 export const { atomInstance: Atom_SelectableLanguageList, useHook: useStore_SelectableLanguageList } = createAtomWithHook([], "SelectableLanguageList");
@@ -229,12 +281,6 @@ export const { atomInstance: Atom_Hotkeys, useHook: useStore_Hotkeys } = createA
     toggle_transcription_send: null,
     toggle_transcription_receive: null,
 }, "Hotkeys");
-
-// Plugins
-export const { atomInstance: Atom_FetchedPluginsInfo, useHook: useStore_FetchedPluginsInfo } = createAtomWithHook([], "FetchedPluginsInfo");
-export const { atomInstance: Atom_LoadedPlugins, useHook: useStore_LoadedPlugins } = createAtomWithHook([], "LoadedPlugins");
-export const { atomInstance: Atom_SavedPluginsStatus, useHook: useStore_SavedPluginsStatus } = createAtomWithHook([], "SavedPluginsStatus");
-export const { atomInstance: Atom_PluginsData, useHook: useStore_PluginsData } = createAtomWithHook([], "PluginsData");
 
 // Supporters
 export const { atomInstance: Atom_SupportersData, useHook: useStore_SupportersData } = createAtomWithHook(null, "SupportersData", {is_state_ok: true});

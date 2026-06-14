@@ -11,15 +11,18 @@
 
 .download_button {
     pointer-events: auto;
-    background-color: var(--dark_800_color);
-    padding: 0.8rem;
+    background-color: rgba(4, 8, 12, 0.58);
+    padding: 0.8rem 1rem;
     flex-shrink: 0;
-    border-radius: 0.2rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.18);
+    border-radius: 0.6rem;
+    transition: var(--transition_ui);
     &:hover {
-        background-color: var(--dark_750_color);
+        background-color: rgba(var(--accent_color_rgb), 0.1);
+        border-color: rgba(var(--accent_color_rgb), 0.32);
     }
     &:active {
-        background-color: var(--dark_800_color);
+        background-color: rgba(2, 5, 8, 0.9);
     }
 }
 .download_button_label {
@@ -31,16 +34,25 @@
     font-size: 1rem;
 }
 
+.unavailable_label {
+    font-size: 1.1rem;
+    color: var(--dark_500_color);
+    text-align: center;
+    cursor: help;
+}
+
 .update_button {
     pointer-events: auto;
-    background-color: var(--primary_400_color);
-    padding: 0.8rem;
+    background-color: rgba(var(--accent_color_rgb), 0.18);
+    padding: 0.8rem 1rem;
     flex-shrink: 0;
-    border-radius: 0.2rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.36);
+    border-radius: 0.6rem;
+    transition: var(--transition_ui);
     &:hover {
-        background-color: var(--primary_450_color);
+        background-color: rgba(var(--accent_color_rgb), 0.26);
     }
     &:active {
-        background-color: var(--primary_500_color);
+        background-color: rgba(var(--accent_color_rgb), 0.12);
     }
 }

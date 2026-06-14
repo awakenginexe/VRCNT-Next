@@ -194,4 +194,3 @@ if __name__ == "__main__":
     
     telemetry.shutdown()
     print("telemetry demo finished")
-

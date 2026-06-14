@@ -2,22 +2,68 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    width: 100%;
+    padding: 0 0.8rem 0.8rem;
+    gap: 0.8rem;
 }
 
 .title {
-    font-size: 1.4rem;
+    font-size: 1.1rem;
     padding-top: 1rem;
-    padding-bottom: 0.8rem;
-    color: var(--dark_400_color);
+    color: var(--primary_150_color);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08rem;
 }
 
 .preset_container {
     width: 100%;
-    padding-top: 0.8rem;
-    background-color: var(--dark_800_color);
+    padding-top: 0.4rem;
+    background-color: transparent;
     display: flex;
     flex-direction: column;
     align-items: center;
+    gap: 0.8rem;
+}
+
+.language_panel,
+.engine_panel {
+    width: 100%;
+    padding: 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    border: var(--panel_border_subtle);
+    border-radius: 1.2rem;
+    background: var(--surface_2_color);
+    box-shadow: var(--shadow_soft);
+}
+
+.section_header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    width: 100%;
+}
+
+.section_title {
+    color: var(--dark_150_color);
+    font-size: 1.2rem;
+    font-weight: 800;
+}
+
+.section_hint {
+    color: var(--dark_500_color);
+    font-size: 1.05rem;
+    line-height: 1.35;
+}
+
+.selector_stack,
+.engine_controls {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
 }
 
 .target_language_containers {
@@ -25,5 +71,5 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.2rem;
+    gap: 0.6rem;
 }

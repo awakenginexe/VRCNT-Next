@@ -1,17 +1,22 @@
 import { useI18n } from "@useI18n";
 import clsx from "clsx";
+import { useEffect, useState } from "react";
 import styles from "./MainFunctionSwitch.module.scss";
 import TranslationSvg from "@images/translation.svg?react";
 import MicSvg from "@images/mic.svg?react";
 import HeadphonesSvg from "@images/headphones.svg?react";
 import ForegroundSvg from "@images/foreground.svg?react";
+import { Tooltip } from "@common_components";
 import {
     useIsMainPageCompactMode,
     useMainFunction,
 } from "@logics_main";
+import { useIsBackendReady as useCommonIsBackendReady } from "@logics_common";
+import { getMainFunctionTooltipMeta } from "./mainFunctionTooltipMeta.js";
 
-export const MainFunctionSwitch = () => {
+export const MainFunctionSwitch = ({ forceCompact = false }) => {
     const { t } = useI18n();
+    const { currentIsBackendReady } = useCommonIsBackendReady();
 
     const {
         toggleTranslation, currentTranslationStatus,
@@ -28,6 +33,7 @@ export const MainFunctionSwitch = () => {
             SvgComponent: TranslationSvg,
             currentState: currentTranslationStatus,
             toggleFunction: toggleTranslation,
+            isDisabled: currentIsBackendReady.data !== true,
         },
         {
             switch_id: "transcription_send",
@@ -35,6 +41,7 @@ export const MainFunctionSwitch = () => {
             SvgComponent: MicSvg,
             currentState: currentTranscriptionSendStatus,
             toggleFunction: toggleTranscriptionSend,
+            isDisabled: currentIsBackendReady.data !== true,
         },
         {
             switch_id: "transcription_receive",
@@ -42,6 +49,7 @@ export const MainFunctionSwitch = () => {
             SvgComponent: HeadphonesSvg,
             currentState: currentTranscriptionReceiveStatus,
             toggleFunction: toggleTranscriptionReceive,
+            isDisabled: currentIsBackendReady.data !== true,
         },
         {
             switch_id: "foreground",
@@ -49,6 +57,7 @@ export const MainFunctionSwitch = () => {
             SvgComponent: ForegroundSvg,
             currentState: currentForegroundStatus,
             toggleFunction: toggleForeground,
+            isDisabled: false,
         },
     ];
 
@@ -62,6 +71,8 @@ export const MainFunctionSwitch = () => {
                     currentState={item.currentState}
                     toggleFunction={item.toggleFunction}
                     SvgComponent={item.SvgComponent}
+                    isDisabled={item.isDisabled}
+                    forceCompact={forceCompact}
                 >
                 </SwitchContainer>
             ))}
@@ -69,18 +80,19 @@ export const MainFunctionSwitch = () => {
     );
 };
 
-import { useState } from "react";
-
-export const SwitchContainer = ({ switchLabel, switch_id, children, currentState, toggleFunction, SvgComponent }) => {
+export const SwitchContainer = ({ switchLabel, switch_id, children, currentState, toggleFunction, SvgComponent, isDisabled = false, forceCompact = false }) => {
     const [is_hovered, setIsHovered] = useState(false);
     const [is_mouse_down, setIsMouseDown] = useState(false);
+    const [pending_seconds, setPendingSeconds] = useState(0);
 
     const { currentIsMainPageCompactMode } = useIsMainPageCompactMode();
+    const isCompact = forceCompact || currentIsMainPageCompactMode.data;
 
     const getClassNames = (baseClass) => clsx(baseClass, {
-        [styles.is_compact_mode]: currentIsMainPageCompactMode.data,
+        [styles.is_compact_mode]: isCompact,
         [styles.is_active]: (currentState.data === true),
         [styles.is_pending]: (currentState.state === "pending"),
+        [styles.is_disabled]: isDisabled,
         [styles.is_hovered]: is_hovered,
         [styles.is_mouse_down]: is_mouse_down,
     });
@@ -89,30 +101,94 @@ export const SwitchContainer = ({ switchLabel, switch_id, children, currentState
     const onMouseLeave = () => setIsHovered(false);
     const onMouseDown = () => setIsMouseDown(true);
     const onMouseUp = () => setIsMouseDown(false);
+    const onClick = () => {
+        if (isDisabled || currentState.state === "pending") return;
+        toggleFunction();
+    };
+
+    useEffect(() => {
+        if (currentState.state !== "pending") {
+            setPendingSeconds(0);
+            return;
+        }
+        const startedAt = Date.now();
+        const timer = setInterval(() => {
+            setPendingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [currentState.state]);
+
+    const pending_messages = {
+        translation: {
+            start: "Starting translator",
+            warm: "Connecting translator",
+            long: "Still loading translator",
+        },
+        transcription_send: {
+            start: "Starting Speaking",
+            warm: "Loading speech model",
+            long: "Still loading Speaking",
+        },
+        transcription_receive: {
+            start: "Starting Listening",
+            warm: "Loading speech model",
+            long: "Still loading Listening",
+        },
+        foreground: {
+            start: "Updating window",
+            warm: "Updating window",
+            long: "Still updating",
+        },
+    };
+
+    const getPendingMessage = () => {
+        const messages = pending_messages[switch_id] ?? pending_messages.foreground;
+        if (pending_seconds >= 30) return messages.long;
+        if (pending_seconds >= 5) return messages.warm;
+        return messages.start;
+    };
+    const tooltipMeta = getMainFunctionTooltipMeta(switch_id);
 
     return (
-        <div className={getClassNames(styles.switch_container)}
-            onMouseEnter={onMouseEnter}
-            onMouseLeave={onMouseLeave}
-            onMouseDown={onMouseDown}
-            onMouseUp={onMouseUp}
-            onClick={toggleFunction}
+        <Tooltip
+            title={tooltipMeta.tooltipTitle}
+            detail={tooltipMeta.tooltipDetail}
+            placement="right"
+            className={styles.switch_tooltip}
+            contentClassName={styles.switch_tooltip_content}
+            usePortal
         >
-            <div className={styles.label_wrapper}>
-                <SvgComponent className={getClassNames(styles.switch_svg)} />
-                <p className={getClassNames(styles.switch_label)}>{switchLabel}</p>
-                {children}
-            </div>
+            <div className={getClassNames(styles.switch_container)}
+                onMouseEnter={onMouseEnter}
+                onMouseLeave={onMouseLeave}
+                onMouseDown={onMouseDown}
+                onMouseUp={onMouseUp}
+                onClick={onClick}
+            >
+                <div className={styles.label_wrapper}>
+                    <SvgComponent className={getClassNames(styles.switch_svg)} />
+                    <div className={styles.label_text_wrapper}>
+                        <p className={getClassNames(styles.switch_label)}>{switchLabel}</p>
+                        {currentState.state === "pending" && (
+                            <p className={getClassNames(styles.pending_status)}>{getPendingMessage()}</p>
+                        )}
+                        {isDisabled && currentState.state !== "pending" && (
+                            <p className={getClassNames(styles.pending_status)}>Waiting for backend startup</p>
+                        )}
+                    </div>
+                    {children}
+                </div>
 
-            <div className={getClassNames(styles.toggle_control)}>
-                <span className={getClassNames(styles.control)}></span>
-            </div>
+                <div className={getClassNames(styles.toggle_control)}>
+                    <span className={getClassNames(styles.control)}></span>
+                </div>
 
-            <div className={getClassNames(styles.switch_indicator)}></div>
-            {(currentState.state === "pending")
-                ? <span className={styles.loader}></span>
-                : null
-            }
-        </div>
+                <div className={getClassNames(styles.switch_indicator)}></div>
+                {(currentState.state === "pending")
+                    ? <span className={styles.loader}></span>
+                    : null
+                }
+            </div>
+        </Tooltip>
     );
 };

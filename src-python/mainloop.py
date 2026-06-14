@@ -41,6 +41,14 @@ run_mapping = {
     "download_progress_whisper_weight":"/run/download_progress_whisper_weight",
     "downloaded_whisper_weight":"/run/downloaded_whisper_weight",
     "error_whisper_weight":"/run/error_whisper_weight",
+    "download_progress_vosk_weight":"/run/download_progress_vosk_weight",
+    "downloaded_vosk_weight":"/run/downloaded_vosk_weight",
+    "error_vosk_weight":"/run/error_vosk_weight",
+    "download_progress_parakeet_weight":"/run/download_progress_parakeet_weight",
+    "error_parakeet_weight":"/run/error_parakeet_weight",
+    "download_progress_sensevoice_weight":"/run/download_progress_sensevoice_weight",
+    "downloaded_sensevoice_weight":"/run/downloaded_sensevoice_weight",
+    "error_sensevoice_weight":"/run/error_sensevoice_weight",
 
     "selected_mic_host":"/run/selected_mic_host",
     "selected_mic_device":"/run/selected_mic_device",
@@ -51,6 +59,7 @@ run_mapping = {
 
     "selected_translation_compute_type":"/run/selected_translation_compute_type",
     "selected_transcription_compute_type":"/run/selected_transcription_compute_type",
+    "selected_transcription_compute_device":"/run/selected_transcription_compute_device",
 
     "selectable_plamo_model_list":"/run/selectable_plamo_model_list",
     "selected_plamo_model":"/run/selected_plamo_model",
@@ -75,6 +84,7 @@ run_mapping = {
 
     "initialization_progress":"/run/initialization_progress",
     "initialization_complete":"/run/initialization_complete",
+    "initialization_status":"/run/initialization_status",
 
     "enable_osc_query":"/run/enable_osc_query",
 }
@@ -115,6 +125,8 @@ mapping = {
 
     "/get/data/selected_your_languages": {"status": True, "variable":controller.getSelectedYourLanguages},
     "/set/data/selected_your_languages": {"status": True, "variable":controller.setSelectedYourLanguages},
+    "/get/data/selected_your_translation_languages": {"status": True, "variable":controller.getSelectedYourTranslationLanguages},
+    "/set/data/selected_your_translation_languages": {"status": True, "variable":controller.setSelectedYourTranslationLanguages},
 
     "/get/data/selected_target_languages": {"status": True, "variable":controller.getSelectedTargetLanguages},
     "/set/data/selected_target_languages": {"status": True, "variable":controller.setSelectedTargetLanguages},
@@ -137,7 +149,7 @@ mapping = {
     "/run/swap_your_language_and_target_language": {"status": True, "variable":controller.swapYourLanguageAndTargetLanguage},
 
     "/run/update_software": {"status": True, "variable":controller.updateSoftware},
-    "/run/update_cuda_software": {"status": True, "variable":controller.updateCudaSoftware},
+    "/run/software_update_info": {"status": True, "variable":controller.checkSoftwareUpdated},
 
     # Config Window
     # Appearance
@@ -173,6 +185,7 @@ mapping = {
 
     # Compute device
     "/get/data/compute_mode": {"status": True, "variable":controller.getComputeMode},
+    "/get/data/resource_usage": {"status": True, "variable":controller.getResourceUsage},
     "/get/data/selectable_translation_compute_device_list": {"status": True, "variable":controller.getComputeDeviceList},
     "/get/data/selected_translation_compute_device": {"status": True, "variable":controller.getSelectedTranslationComputeDevice},
     "/set/data/selected_translation_compute_device": {"status": True, "variable":controller.setSelectedTranslationComputeDevice},
@@ -290,9 +303,6 @@ mapping = {
     "/get/data/hotkeys": {"status": True, "variable":controller.getHotkeys},
     "/set/data/hotkeys": {"status": True, "variable":controller.setHotkeys},
 
-    "/get/data/plugins_status": {"status": True, "variable":controller.getPluginsStatus},
-    "/set/data/plugins_status": {"status": True, "variable":controller.setPluginsStatus},
-
     "/get/data/mic_avg_logprob": {"status": True, "variable":controller.getMicAvgLogprob},
     "/set/data/mic_avg_logprob": {"status": True, "variable":controller.setMicAvgLogprob},
 
@@ -338,14 +348,26 @@ mapping = {
     "/set/disable/check_speaker_threshold": {"status": True, "variable":controller.setDisableCheckSpeakerThreshold},
 
     "/get/data/selectable_whisper_weight_type_dict": {"status": True, "variable":controller.getSelectableWhisperWeightTypeDict},
+    "/get/data/selectable_vosk_weight_type_dict": {"status": True, "variable":controller.getSelectableVoskWeightTypeDict},
+    "/get/data/selectable_parakeet_weight_type_dict": {"status": True, "variable":controller.getSelectableParakeetWeightTypeDict},
+    "/get/data/selectable_sensevoice_weight_type_dict": {"status": True, "variable":controller.getSelectableSenseVoiceWeightTypeDict},
 
     "/get/data/selected_whisper_weight_type": {"status": True, "variable":controller.getWhisperWeightType},
     "/set/data/selected_whisper_weight_type": {"status": True, "variable":controller.setWhisperWeightType},
+    "/get/data/selected_vosk_weight_type": {"status": True, "variable":controller.getVoskWeightType},
+    "/set/data/selected_vosk_weight_type": {"status": True, "variable":controller.setVoskWeightType},
+    "/get/data/selected_parakeet_weight_type": {"status": True, "variable":controller.getParakeetWeightType},
+    "/set/data/selected_parakeet_weight_type": {"status": True, "variable":controller.setParakeetWeightType},
+    "/get/data/selected_sensevoice_weight_type": {"status": True, "variable":controller.getSenseVoiceWeightType},
+    "/set/data/selected_sensevoice_weight_type": {"status": True, "variable":controller.setSenseVoiceWeightType},
 
     "/get/data/selected_transcription_compute_type": {"status": True, "variable":controller.getSelectedTranscriptionComputeType},
     "/set/data/selected_transcription_compute_type": {"status": True, "variable":controller.setSelectedTranscriptionComputeType},
 
     "/run/download_whisper_weight": {"status": True, "variable":controller.downloadWhisperWeight},
+    "/run/download_vosk_weight": {"status": True, "variable":controller.downloadVoskWeight},
+    "/run/download_parakeet_weight": {"status": True, "variable":controller.downloadParakeetWeight},
+    "/run/download_sensevoice_weight": {"status": True, "variable":controller.downloadSenseVoiceWeight},
 
     # VR
     "/get/data/overlay_small_log": {"status": True, "variable":controller.getOverlaySmallLog},

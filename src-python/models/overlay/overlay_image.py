@@ -1,6 +1,8 @@
 from os import path as os_path
 from datetime import datetime
 from typing import Tuple, List, Optional
+import os
+import unicodedata
 from PIL import Image, ImageDraw, ImageFont
 try:
     from utils import errorLogging
@@ -11,11 +13,12 @@ except ImportError:
 
 class OverlayImage:
     LANGUAGES = {
-        "Default": "NotoSansJP-Regular.ttf",
-        "Japanese": "NotoSansJP-Regular.ttf",
-        "Korean": "NotoSansKR-Regular.ttf",
-        "Chinese Simplified": "NotoSansSC-Regular.ttf",
-        "Chinese Traditional": "NotoSansTC-Regular.ttf",
+        "Default": ("NotoSansJP-Regular.ttf",),
+        "Japanese": ("NotoSansJP-Regular.ttf",),
+        "Korean": ("NotoSansKR-Regular.ttf",),
+        "Chinese Simplified": ("NotoSansSC-Regular.ttf",),
+        "Chinese Traditional": ("NotoSansTC-Regular.ttf",),
+        "Thai": ("LeelawUI.ttf", "leelawad.ttf", "Nirmala.ttc", "tahoma.ttf", "NotoSansJP-Regular.ttf"),
     }
 
     def __init__(self, root_path: Optional[str] = None) -> None:
@@ -39,6 +42,7 @@ class OverlayImage:
             raise FileNotFoundError("Font directory not found.")
         # Simple in-memory font cache to avoid repeated truetype loading cost.
         self._font_cache = {}
+        self._system_font_dir = os_path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
 
     @staticmethod
     def concatenateImagesVertically(img1: Image, img2: Image, margin: int = 0) -> Image:
@@ -73,12 +77,96 @@ class OverlayImage:
         }
         return colors
 
-    def _get_font(self, font_family: str, size: int) -> ImageFont.FreeTypeFont:
-        font_path = os_path.join(self.root_path, font_family)
+    def _resolve_font_path(self, font_family: str | Tuple[str, ...] | List[str]) -> str:
+        candidates = (font_family,) if isinstance(font_family, str) else tuple(font_family)
+        for candidate in candidates:
+            if not candidate:
+                continue
+            if os_path.isabs(candidate) and os_path.exists(candidate):
+                return candidate
+            bundled_path = os_path.join(self.root_path, candidate)
+            if os_path.exists(bundled_path):
+                return bundled_path
+            system_path = os_path.join(self._system_font_dir, candidate)
+            if os_path.exists(system_path):
+                return system_path
+        default_candidate = self.LANGUAGES["Default"][0]
+        fallback_path = os_path.join(self.root_path, default_candidate)
+        if os_path.exists(fallback_path):
+            return fallback_path
+        raise FileNotFoundError(f"Unable to resolve overlay font from candidates: {candidates}")
+
+    def _get_font(self, font_family: str | Tuple[str, ...] | List[str], size: int) -> ImageFont.FreeTypeFont:
+        font_path = self._resolve_font_path(font_family)
         key = (font_path, size)
         if key not in self._font_cache:
             self._font_cache[key] = ImageFont.truetype(font_path, size)
         return self._font_cache[key]
+
+    @staticmethod
+    def _line_height(font: ImageFont.FreeTypeFont) -> int:
+        bbox = font.getbbox("Ay")
+        return max(1, bbox[3] - bbox[1])
+
+    def _measure_text(self, text: str, font: ImageFont.FreeTypeFont) -> int:
+        if not text:
+            return 0
+        img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        return max(1, int(draw.textlength(text, font)))
+
+    def _wrap_text_by_character(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
+        if not text:
+            return [""]
+        lines: List[str] = []
+        current = ""
+        for char in text:
+            if not current:
+                current = char
+                continue
+            # Keep combining marks attached to their previous base glyph.
+            if unicodedata.combining(char):
+                current += char
+                continue
+            candidate = current + char
+            if self._measure_text(candidate, font) <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = char
+        if current:
+            lines.append(current)
+        return lines or [""]
+
+    def _wrap_text_to_width(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
+        if max_width <= 0:
+            return [text or ""]
+        wrapped_lines: List[str] = []
+        raw_lines = (text or "").splitlines() or [text or ""]
+        for raw_line in raw_lines:
+            if raw_line == "":
+                wrapped_lines.append("")
+                continue
+            if " " not in raw_line:
+                wrapped_lines.extend(self._wrap_text_by_character(raw_line, font, max_width))
+                continue
+
+            current = ""
+            for word in raw_line.split():
+                candidate = word if not current else f"{current} {word}"
+                if self._measure_text(candidate, font) <= max_width:
+                    current = candidate
+                    continue
+                if current:
+                    wrapped_lines.append(current)
+                if self._measure_text(word, font) <= max_width:
+                    current = word
+                else:
+                    wrapped_lines.extend(self._wrap_text_by_character(word, font, max_width))
+                    current = ""
+            if current:
+                wrapped_lines.append(current)
+        return wrapped_lines or [""]
 
     def createTextboxSmallLog(self, text: str, language: str, text_color: Tuple[int, int, int], base_width: int, base_height: int, font_size: int) -> Image:
         if text is None:
@@ -327,53 +415,47 @@ class OverlayImage:
     @staticmethod
     def getUiSizeLargeLog() -> dict:
         return {
-            "width": 960,
-            "font_size_large": 30,
-            "font_size_small": 20,
-            "margin": 25,
-            "radius": 25,
-            "padding": 10,
-            "clause_margin": 20,
+            "width": 1240,
+            "font_size_large": 46,
+            "font_size_small": 26,
+            "margin": 36,
+            "radius": 32,
+            "padding": 18,
+            "clause_margin": 26,
         }
 
     @staticmethod
     def getUiColorLargeLog() -> dict:
         return {
-            "background_color": (41, 42, 45),
-            "background_outline_color": (41, 42, 45),
-            "text_color_large": (223, 223, 223),
-            "text_color_small": (190, 190, 190),
-            "text_color_send": (97, 151, 180),
-            "text_color_receive": (168, 97, 180),
-            "text_color_time": (120, 120, 120)
+            "background_color": (12, 18, 26, 236),
+            "background_outline_color": (72, 154, 196, 220),
+            "text_color_large": (244, 247, 250, 255),
+            "text_color_small": (176, 186, 198, 255),
+            "text_color_send": (99, 208, 255, 255),
+            "text_color_receive": (230, 128, 220, 255),
+            "text_color_time": (117, 133, 150, 255)
         }
 
     def createTextImageLargeLog(self, message_type: str, size: str, text: str, language: str) -> Image:
         ui_size = self.getUiSizeLargeLog()
         font_size = ui_size["font_size_large"] if size == "large" else ui_size["font_size_small"]
         text_color = self.getUiColorLargeLog()[f"text_color_{size}"]
-        anchor = "lm" if message_type == "receive" else "rm"
-        text_x = 0 if message_type == "receive" else ui_size["width"]
-        align = "left" if message_type == "receive" else "right"
         font_family = self.LANGUAGES.get(language, self.LANGUAGES["Default"])
-
-        img = Image.new("RGBA", (0, 0), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-
-        font_path = os_path.join(self.root_path, font_family)
-        font = ImageFont.truetype(font_path, font_size)
-
-        # 改行を含んだtextの最大の文字数を計算する
-        text_width = max(draw.textlength(line, font) for line in text.split("\n"))
-        character_width = text_width // len(text)
-        character_line_num = int((ui_size["width"] // character_width) - 1)
-        if len(text) > character_line_num:
-            text = "\n".join([text[i:i + character_line_num] for i in range(0, len(text), character_line_num)])
-        text_height = font_size * len(text.split("\n")) + ui_size["padding"]
+        font = self._get_font(font_family, font_size)
+        outer_padding = ui_size["padding"] * (2 if size == "large" else 1)
+        inner_width = ui_size["width"] - (outer_padding * 2)
+        line_spacing = max(6, font_size // 4)
+        lines = self._wrap_text_to_width(text or "", font, inner_width)
+        line_height = self._line_height(font)
+        text_height = (outer_padding * 2) + (line_height * len(lines)) + (line_spacing * max(0, len(lines) - 1))
         img = Image.new("RGBA", (ui_size["width"], text_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        text_y = text_height // 2
-        draw.multiline_text((text_x, text_y), text, text_color, anchor=anchor, stroke_width=0, font=font, align=align)
+        for index, line in enumerate(lines):
+            text_y = outer_padding + (index * (line_height + line_spacing))
+            if message_type == "receive":
+                draw.text((outer_padding, text_y), line, text_color, anchor="lt", stroke_width=0, font=font)
+            else:
+                draw.text((ui_size["width"] - outer_padding, text_y), line, text_color, anchor="rt", stroke_width=0, font=font)
         return img
 
     def createTextboxLargeLogWithRubyTokens(self, message_type: str, size: str, message: str, transliteration: List[dict], language: str, ruby_font_scale: float, ruby_line_spacing: int) -> Image:
@@ -487,31 +569,26 @@ class OverlayImage:
     def createTextImageMessageType(self, message_type: str, date_time: str) -> Image:
         ui_size = self.getUiSizeLargeLog()
         font_size = ui_size["font_size_small"]
-        ui_padding = ui_size["padding"]
+        ui_padding = ui_size["padding"] * 2
 
         ui_color = self.getUiColorLargeLog()
         text_color = ui_color[f"text_color_{message_type}"]
         text_color_time = ui_color["text_color_time"]
 
-        anchor = "lm" if message_type == "receive" else "rm"
         text = "Receive" if message_type == "receive" else "Send"
-
-        img = Image.new("RGBA", (0, 0), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-
-        font_path = os_path.join(self.root_path, self.LANGUAGES["Default"])
-        font = ImageFont.truetype(font_path, font_size)
-
-        text_height = font_size + ui_padding
-        text_width = draw.textlength(date_time, font)
-        character_width = text_width // len(date_time)
+        font = self._get_font(self.LANGUAGES["Default"], font_size)
+        label_gap = max(16, font_size // 2)
+        text_height = self._line_height(font) + ui_padding
+        time_width = self._measure_text(date_time, font)
         img = Image.new("RGBA", (ui_size["width"], text_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        text_y = text_height // 2
-        text_time_x = 0 if message_type == "receive" else ui_size["width"] - (text_width + character_width)
-        text_x = (text_width + character_width) if message_type == "receive" else ui_size["width"]
-        draw.text((text_time_x, text_y), date_time, text_color_time, anchor=anchor, stroke_width=0, font=font)
-        draw.text((text_x, text_y), text, text_color, anchor=anchor, stroke_width=0, font=font)
+        text_y = ui_padding // 2
+        if message_type == "receive":
+            draw.text((ui_padding, text_y), date_time, text_color_time, anchor="lt", stroke_width=0, font=font)
+            draw.text((ui_padding + time_width + label_gap, text_y), text, text_color, anchor="lt", stroke_width=0, font=font)
+        else:
+            draw.text((ui_size["width"] - ui_padding, text_y), text, text_color, anchor="rt", stroke_width=0, font=font)
+            draw.text((ui_size["width"] - ui_padding - self._measure_text(text, font) - label_gap, text_y), date_time, text_color_time, anchor="rt", stroke_width=0, font=font)
         return img
 
     def createTextboxLargeLog(self, message_type: str, message: Optional[str] = None, your_language: Optional[str] = None, translation: List[str] = [], target_language: List[str] = [], date_time: Optional[str] = None, transliteration_message: Optional[List[dict]] = None, transliteration_translation: Optional[List[List[dict]]] = None, ruby_font_scale: float = 0.5, ruby_line_spacing: int = 4) -> Image:
@@ -549,7 +626,7 @@ class OverlayImage:
 
         return combined_img
 
-    def createOverlayImageLargeLog(self, message_type: str, message: Optional[str] = None, your_language: Optional[str] = None, translation: List[str] = [], target_language: List[str] = [], transliteration_message: List[dict] = [], transliteration_translation: List[List[dict]] = [], ruby_font_scale: float = 0.5, ruby_line_spacing: int = 4) -> Image:
+    def createOverlayImageLargeLog(self, message_type: str, message: Optional[str] = None, your_language: Optional[str] = None, translation: List[str] = [], target_language: List[str] = [], transliteration_message: List[dict] = [], transliteration_translation: List[List[dict]] = [], ruby_font_scale: float = 0.5, ruby_line_spacing: int = 4, newest_first: bool = False) -> Image:
         ui_color = self.getUiColorLargeLog()
         background_color = ui_color["background_color"]
         background_outline_color = ui_color["background_outline_color"]
@@ -570,9 +647,10 @@ class OverlayImage:
             "datetime": datetime.now().strftime("%H:%M")
         })
 
-        if len(self.message_log) > 5:
-            self.message_log = self.message_log[-5:]
+        if len(self.message_log) > 3:
+            self.message_log = self.message_log[-3:]
 
+        visible_logs = list(reversed(self.message_log)) if newest_first is True else self.message_log
         imgs = [
             self.createTextboxLargeLog(
                 log["message_type"],
@@ -585,7 +663,7 @@ class OverlayImage:
                 transliteration_translation=log.get("transliteration_translation", [{}]),
                 ruby_font_scale=ruby_font_scale,
                 ruby_line_spacing=ruby_line_spacing,
-            ) for log in self.message_log
+            ) for log in visible_logs
             ]
 
         img = imgs[0]

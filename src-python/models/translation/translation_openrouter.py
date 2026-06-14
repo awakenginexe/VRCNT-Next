@@ -23,7 +23,7 @@ def _authentication_check(api_key: str) -> bool:
         "Authorization": f"Bearer {api_key}"
     }
 
-    r = requests.get(url, headers=headers, timeout=10)
+    r = requests.get(url, headers=headers, timeout=3)
 
     return r.status_code == 200
 

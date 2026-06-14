@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@useI18n";
 import styles from "./Appearance.module.scss";
 import { ui_configs } from "@ui_configs";
-import { useStore_SelectableFontFamilyList } from "@store";
+import { useStore_SelectableFontFamilyList, useStore_EnablePerformanceMode } from "@store";
 
 import {
     useWindow,
@@ -20,16 +20,27 @@ import {
     CheckboxContainer,
 } from "../_templates/Templates";
 
+const THEME_ACCENTS = {
+    "theme-neon-cyan": "Neon Cyan",
+    "theme-midnight-purple": "Midnight Purple",
+    "theme-emerald-green": "Emerald Green",
+    "theme-sakura-pink": "Sakura Pink",
+};
+
+const THEME_ACCENT_CLASSES = Object.keys(THEME_ACCENTS);
+
 export const Appearance = () => {
     return (
         <>
             <UiLanguageContainer />
+            <ThemeAccentContainer />
             <UiScalingContainer />
             <MessageLogUiScalingContainer />
             <SendMessageButtonTypeContainer />
             <ShowResendButtonContainer />
             <FontFamilyContainer />
             <TransparencyContainer />
+            <PerformanceModeContainer />
         </>
     );
 };
@@ -159,6 +170,53 @@ const TransparencyContainer = () => {
             max={100}
             step={1}
             label_format="value %"
+        />
+    );
+};
+
+const PerformanceModeContainer = () => {
+    const { t } = useI18n();
+    const { currentEnablePerformanceMode, updateEnablePerformanceMode } = useStore_EnablePerformanceMode();
+
+    const toggleFunction = () => {
+        const nextVal = !currentEnablePerformanceMode.data;
+        updateEnablePerformanceMode(nextVal);
+        localStorage.setItem("enable_performance_mode", nextVal ? "true" : "false");
+    };
+
+    return (
+        <CheckboxContainer
+            label={t("config_page.appearance.performance_mode.label")}
+            desc={t("config_page.appearance.performance_mode.desc")}
+            variable={currentEnablePerformanceMode}
+            toggleFunction={toggleFunction}
+        />
+    );
+};
+
+const ThemeAccentContainer = () => {
+    const [selectedTheme, setSelectedTheme] = useState(() => {
+        const savedTheme = localStorage.getItem("theme_accent");
+        return THEME_ACCENT_CLASSES.includes(savedTheme) ? savedTheme : "theme-neon-cyan";
+    });
+
+    const selectFunction = (selected_data) => {
+        const newTheme = selected_data.selected_id;
+        if (!THEME_ACCENT_CLASSES.includes(newTheme)) return;
+        setSelectedTheme(newTheme);
+        localStorage.setItem("theme_accent", newTheme);
+        document.documentElement.classList.remove(...THEME_ACCENT_CLASSES);
+        document.documentElement.classList.add(newTheme);
+    };
+
+    return (
+        <DropdownMenuContainer
+            dropdown_id="theme_accent"
+            label="Theme Accent Color"
+            selected_id={selectedTheme}
+            list={THEME_ACCENTS}
+            selectFunction={selectFunction}
+            state="ok"
         />
     );
 };

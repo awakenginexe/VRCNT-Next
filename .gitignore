@@ -1,51 +1,76 @@
-tmp/
-build/
+# Superpower and Design Documentation
+docs/superpowers/
+docs/plans/
+.agent/
+.superpowers/
+
+# Node / frontend
+node_modules/
 dist/
-/config.json
-memo.txt
-*.pyc
-logs/
-.venv/
-.venv_cuda/
-weights/
-.vscode
-error.log
-*.exe
-*.ipynb
-VRCT.zip
-VRCT_cuda.zip
-
-.qoder/
-
-# Added by WebUI migration
-# Logs
-logs
-*.log
+dist-ssr/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.venv_cuda/
 
-# Editor directories and files
-.vscode/*
-.vscode
+# Testing Files
+src-python/tests/
+test_*.py
+*_test.py
+.pytest_cache/
+.coverage
+*.cover
+coverage.xml
+
+# Compiled Specs
+*.spec
+spec/
+
+# Tauri / Rust / packaged output
+src-tauri/target/
+build/
+tmp/
+*.exe
+*.d
+VRCNT-Next.zip
+
+# Runtime data
+logs/
+weights/
+config.json
+runtime-backup-*/
+memo.txt
+error.log
+error.txt
+*.log
+
+# Personal Data & Environment
+.env
+.env.local
+.env.*.local
+.env*.private
+
+# Local editor / OS files
+.vscode/
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
-.venv
 
-# Customize
-/build
-error.txt
-config.json
+# Scratch / notebooks
+*.ipynb
+*.local
+.qoder/

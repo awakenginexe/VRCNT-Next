@@ -1,8 +1,9 @@
 .container {
     width: 100%;
-    background-color: var(--dark_900_color);
+    background-color: var(--dark_1000_color);
     flex-shrink: 0;
     display: flex;
+    border-bottom: 0.1rem solid #ffffff08;
 }
 
 .wrapper {
@@ -16,17 +17,30 @@
 }
 
 .title_wrapper {
-    padding-left: 1rem;
+    padding-left: 1.2rem;
     height: 100%;
     display: flex;
-    justify-content: center;
+    justify-content: flex-start;
     align-items: center;
+    gap: 0.8rem;
 }
-.title_svg {
-    color: var(--dark_800_color);
-    width: 4rem;
-    height: 100%;
 
+.title_logo {
+    width: 1.65rem;
+    aspect-ratio: 1;
+    object-fit: contain;
+    filter: var(--filter_accent_glow);
+}
+
+.title_text {
+    color: var(--primary_200_color);
+    font-size: 1.15rem;
+    font-weight: 800;
+}
+
+.title_subtitle {
+    color: var(--dark_600_color);
+    font-size: 1rem;
 }
 
 .window_control_wrapper {
@@ -53,7 +67,7 @@
 }
 .minimize_button, .maximize_button {
     &:hover {
-        background-color: var(--dark_800_color);
+        background-color: var(--surface_3_color);
     }
     &:active {
         background-color: var(--dark_950_color);
@@ -81,4 +95,42 @@
 .line_svg {
     padding-top: 0.1rem;
     width: 1.8rem;
+}
+
+.performance_button {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    width: 2.8rem;
+    margin-bottom: 0.4rem;
+    cursor: pointer;
+    border-radius: 0.4rem;
+    transition: var(--transition_ui);
+
+    &:hover {
+        background-color: var(--surface_3_color);
+        .performance_svg {
+            color: var(--accent_color);
+            filter: var(--filter_accent_glow);
+        }
+    }
+    
+    &:active {
+        background-color: var(--dark_950_color);
+    }
+
+    &.is_active {
+        .performance_svg {
+            color: var(--accent_color);
+            filter: var(--filter_accent_glow);
+        }
+    }
+}
+
+.performance_svg {
+    color: var(--dark_450_color);
+    height: 1.3rem;
+    width: 1.3rem;
+    transition: var(--transition_ui);
 }

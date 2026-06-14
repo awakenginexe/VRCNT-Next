@@ -1096,5 +1096,3 @@ UI に以下を表示：
 - [Aptabase Python SDK](https://github.com/aptabase/aptabase-python)
 - [Aptabase Dashboard](https://aptabase.com)
 - [Privacy by Design](https://en.wikipedia.org/wiki/Privacy_by_design)
-
-

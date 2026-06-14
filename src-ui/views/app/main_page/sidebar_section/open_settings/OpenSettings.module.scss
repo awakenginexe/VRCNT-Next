@@ -3,7 +3,7 @@
     bottom: 0;
     left: 0;
     width: 100%;
-    background-color: var(--dark_850_color);
+    background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent_color) 8%, #071017) 42%);
 }
 
 .open_config_page_button {
@@ -12,17 +12,39 @@
     padding: 0.8rem 0;
     display: flex;
     justify-content: center;
-    border-radius: 0.6rem;
+    border-radius: 0.95rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.26);
+    background:
+        linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.14), rgba(var(--accent_color_rgb), 0.045)),
+        var(--surface_2_color);
     cursor: pointer;
     &:hover {
-        background-color: var(--dark_800_color);
+        background:
+            linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.2), rgba(var(--accent_color_rgb), 0.07)),
+            var(--surface_3_color);
     }
     &:active {
         background-color: var(--dark_875_color);
     }
 }
 
+.settings_tooltip {
+    display: flex;
+    width: 100%;
+    justify-content: center;
+}
+
+.settings_tooltip_content {
+    min-width: 18rem;
+    max-width: 22rem;
+    padding: 0.7rem 0.9rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.18);
+    background: var(--surface_2_color);
+    box-shadow: var(--shadow_control);
+    white-space: normal;
+}
+
 .configuration_svg {
     width: 2rem;
-    color: var(--dark_500_color);
+    color: var(--primary_200_color);
 }

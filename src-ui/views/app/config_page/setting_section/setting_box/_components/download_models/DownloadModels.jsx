@@ -6,7 +6,7 @@ import { _DownloadButton } from "../_atoms/_download_button/_DownloadButton";
 export const DownloadModels = (props) => {
     const options = props.options.map(item => ({
         ...item,
-        disabled: !item.is_downloaded
+        disabled: item.disabled === true || item.downloadable === false || !item.is_downloaded
     }));
 
     return (

@@ -42,12 +42,12 @@ def zip_files_and_directory(zip_name, file_paths, dir_paths, verbose=False):
 if __name__ == "__main__":
     start_time = time.time()
     parser = argparse.ArgumentParser(description="Create a zip file from specified files and directories.")
-    parser.add_argument("--zip_name", type=str, default="VRCT.zip", help="Name of the output zip file.")
+    parser.add_argument("--zip_name", type=str, default="VRCNT-Next.zip", help="Name of the output zip file.")
     parser.add_argument(
         "--file_paths",
         type=str,
         nargs="*",
-        default=["src-tauri/target/release/VRCT.exe", "src-tauri/target/release/VRCT-sidecar.exe"],
+        default=["src-tauri/target/release/VRCNT-Next.exe", "src-tauri/target/release/VRCT-sidecar.exe"],
         help="List of file paths to include in the zip."
     )
     parser.add_argument(

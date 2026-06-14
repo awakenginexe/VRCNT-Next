@@ -154,7 +154,7 @@ const OverlaySettingsContainer = ({
                 )}
             <SendSampleTextToggleButton />
             </div>
-            <OtherControls settings={settings} onChangeFunction={onChangeFunction} ui_configs={ui_configs} />
+            <OtherControls settings={settings} onChangeFunction={onChangeFunction} selectFunction={selectFunction} ui_configs={ui_configs} />
             <RadioButtonContainer
                 label={t("config_page.vr.tracker")}
                 selectFunction={(value) => selectFunction("tracker", value)}
@@ -449,11 +449,10 @@ const AdjustButtonContainer = ({ wrapper_class_name, is_max, is_min, countUp, co
 };
 
 
-const OtherControls = ({settings, onChangeFunction, ui_configs}) => {
+const OtherControls = ({settings, onChangeFunction, selectFunction, ui_configs}) => {
     const { t } = useI18n();
 
-    const ui_variable_opacity = (settings.opacity * 100).toFixed(0);
-    const ui_variable_ui_scaling = (settings.ui_scaling * 100).toFixed(0);
+    const has_log_order = settings.log_order !== undefined;
 
     return(
         <div className={styles.other_controls}>
@@ -519,6 +518,19 @@ const OtherControls = ({settings, onChangeFunction, ui_configs}) => {
                     setter_timing="on_change"
                 />
             </div>
+            {has_log_order && (
+                <RadioButtonContainer
+                    label={t("config_page.vr.log_order")}
+                    selectFunction={(value) => selectFunction("log_order", value)}
+                    name="overlay_large_log_order"
+                    options={[
+                        { id: "oldest_first", label: t("config_page.vr.oldest_first") },
+                        { id: "newest_first", label: t("config_page.vr.newest_first") },
+                    ]}
+                    checked_variable={{data: settings.log_order}}
+                    column={true}
+                />
+            )}
         </div>
     );
 };

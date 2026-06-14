@@ -1,17 +1,21 @@
+import os
+import shutil
 from os import path as os_path
 from os import makedirs as os_makedirs
 from os import rename as os_rename
+from os import replace as os_replace
+from os import remove as os_remove
+import importlib
+import importlib.util
+import sys
 from requests import get as requests_get
 from typing import Callable
-import transformers
-import ctranslate2
 from huggingface_hub import hf_hub_url, list_repo_files
 import yaml
 
 try:
     from utils import errorLogging, getBestComputeType
 except Exception:
-    import sys
     print(os_path.dirname(os_path.dirname(os_path.dirname(os_path.abspath(__file__)))))
     sys.path.append(os_path.dirname(os_path.dirname(os_path.dirname(os_path.abspath(__file__)))))
     from utils import errorLogging, getBestComputeType
@@ -48,6 +52,71 @@ ctranslate2_weights = {
     },
 }
 
+
+_REQUIRED_CTRANSLATE2_FILES = (
+    "config.json",
+    "generation_config.json",
+    "model.bin",
+    "sentencepiece.bpe.model",
+    "shared_vocabulary.json",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+
+_CTRANSLATE2_RUNTIME_PREPARED = False
+_CTRANSLATE2_DLL_DIR_HANDLES = []
+
+
+def _addDllDirectory(directory: str) -> None:
+    if directory and os_path.isdir(directory) and hasattr(os, "add_dll_directory"):
+        try:
+            _CTRANSLATE2_DLL_DIR_HANDLES.append(os.add_dll_directory(directory))
+        except Exception:
+            pass
+
+
+def _prepareCtrTranslate2Runtime() -> None:
+    global _CTRANSLATE2_RUNTIME_PREPARED
+    if _CTRANSLATE2_RUNTIME_PREPARED is True:
+        return
+
+    candidates = []
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        candidates.extend([
+            os_path.join(frozen_root, "ctranslate2"),
+            os_path.join(frozen_root, "torch", "lib"),
+        ])
+
+    for package_name, relative_dir in (("ctranslate2", ""), ("torch", "lib")):
+        try:
+            spec = importlib.util.find_spec(package_name)
+            if spec is None or spec.origin is None:
+                continue
+            package_dir = os_path.dirname(spec.origin)
+            candidates.append(os_path.join(package_dir, relative_dir) if relative_dir else package_dir)
+        except Exception:
+            pass
+
+    path_parts = os.environ.get("PATH", "").split(os.pathsep)
+    for directory in candidates:
+        if os_path.isdir(directory):
+            _addDllDirectory(directory)
+            if directory not in path_parts:
+                path_parts.insert(0, directory)
+    os.environ["PATH"] = os.pathsep.join(path_parts)
+    _CTRANSLATE2_RUNTIME_PREPARED = True
+
+
+def _getCtrTranslate2():
+    _prepareCtrTranslate2Runtime()
+    return importlib.import_module("ctranslate2")
+
+
+def _getTransformers():
+    return importlib.import_module("transformers")
+
 def backwardCompatibleRenameWeightsDir(root: str):
     # 後方互換のためファイル名を変更する
     legacy_dirs = {
@@ -65,10 +134,40 @@ def checkCTranslate2Weight(root: str, weight_type: str = "m2m100_418M-ct2-int8")
     weight_directory_name = ctranslate2_weights[weight_type]["directory_name"]
     path = os_path.join(root, "weights", "ctranslate2", weight_directory_name)
 
+    if not os_path.isdir(path):
+        return False
+    for filename in _REQUIRED_CTRANSLATE2_FILES:
+        if not os_path.isfile(os_path.join(path, filename)):
+            return False
+
     try:
         # モデルロード可能かどうかで判定
         compute_type = getBestComputeType("cpu", 0)
-        ctranslate2.Translator(path, compute_type=compute_type)
+        _getCtrTranslate2().Translator(path, compute_type=compute_type)
+        return True
+    except Exception:
+        return False
+
+def _tokenizerCachePath(root: str, weight_type: str) -> str:
+    directory_name = ctranslate2_weights[weight_type]["directory_name"]
+    return os_path.join(root, "weights", "ctranslate2", directory_name, "tokenizer")
+
+def loadCTranslate2Tokenizer(root: str, weight_type: str = "m2m100_418M-ct2-int8", local_files_only: bool = True, repair_cache: bool = False):
+    tokenizer = ctranslate2_weights[weight_type]["tokenizer"]
+    tokenizer_path = _tokenizerCachePath(root, weight_type)
+    transformers = _getTransformers()
+    if repair_cache and os_path.isdir(tokenizer_path):
+        shutil.rmtree(tokenizer_path, ignore_errors=True)
+    os_makedirs(tokenizer_path, exist_ok=True)
+    return transformers.AutoTokenizer.from_pretrained(
+        tokenizer,
+        cache_dir=tokenizer_path,
+        local_files_only=local_files_only,
+    )
+
+def checkCTranslate2Tokenizer(root: str, weight_type: str = "m2m100_418M-ct2-int8") -> bool:
+    try:
+        loadCTranslate2Tokenizer(root, weight_type, local_files_only=True)
         return True
     except Exception:
         return False
@@ -82,39 +181,62 @@ def downloadCTranslate2Weight(root: str, weight_type: str = "m2m100_418M-ct2-int
     os_makedirs(path, exist_ok=True)
 
     def downloadFile(url: str, file_path: str, func: Callable = None):
+        temp_path = f"{file_path}.part"
         try:
-            res = requests_get(url, stream=True)
-            res.raise_for_status()
-            file_size = int(res.headers.get('content-length', 0))
-            total_chunk = 0
-            with open(file_path, 'wb') as file:
-                for chunk in res.iter_content(chunk_size=1024*2000):
-                    file.write(chunk)
-                    if func is not None:
+            os_makedirs(os_path.dirname(file_path), exist_ok=True)
+            with requests_get(url, stream=True, timeout=(10, 120)) as res:
+                res.raise_for_status()
+                file_size = int(res.headers.get('content-length', 0))
+                total_chunk = 0
+                with open(temp_path, 'wb') as file:
+                    for chunk in res.iter_content(chunk_size=1024 * 2000):
+                        if not chunk:
+                            continue
+                        file.write(chunk)
                         total_chunk += len(chunk)
-                        func(total_chunk/file_size)
+                        if func is not None and file_size:
+                            func(total_chunk / file_size)
+
+                if file_size and total_chunk < file_size:
+                    raise IOError(f"Incomplete download for {file_path}: {total_chunk}/{file_size}")
+
+            os_replace(temp_path, file_path)
+            return True
         except Exception:
             errorLogging()
+            for broken_path in (temp_path, file_path):
+                try:
+                    if os_path.exists(broken_path):
+                        os_remove(broken_path)
+                except Exception:
+                    pass
+            return False
 
+    download_succeeded = True
     for filename in files:
         file_path = os_path.join(path, filename)
         url = hf_hub_url(hf_repo, filename)
-        downloadFile(url, file_path, func=callback if filename == "model.bin" else None)
+        if downloadFile(url, file_path, func=callback if filename == "model.bin" else None) is False:
+            download_succeeded = False
+            break
 
     if end_callback is not None:
         end_callback()
 
+    if download_succeeded is False:
+        return False
+
+    return checkCTranslate2Weight(root, weight_type)
+
 def downloadCTranslate2Tokenizer(path: str, weight_type: str = "m2m100_418M-ct2-int8"):
-    directory_name = ctranslate2_weights[weight_type]["directory_name"]
-    tokenizer = ctranslate2_weights[weight_type]["tokenizer"]
-    tokenizer_path = os_path.join(path, "weights", "ctranslate2", directory_name, "tokenizer")
+    if checkCTranslate2Tokenizer(path, weight_type):
+        return True
     try:
-        os_makedirs(tokenizer_path, exist_ok=True)
-        transformers.AutoTokenizer.from_pretrained(tokenizer, cache_dir=tokenizer_path)
+        loadCTranslate2Tokenizer(path, weight_type, local_files_only=False, repair_cache=True)
+        return checkCTranslate2Tokenizer(path, weight_type)
     except Exception:
         errorLogging()
-        tokenizer_path = os_path.join("./weights", "ctranslate2", directory_name, "tokenizer")
-        transformers.AutoTokenizer.from_pretrained(tokenizer, cache_dir=tokenizer_path)
+        return False
 
 def loadTranslatePromptConfig(root_path: str | None = None, prompt_filename: str | None = None) -> dict:
     # PyInstaller 展開後

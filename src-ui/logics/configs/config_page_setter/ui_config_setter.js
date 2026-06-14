@@ -3,6 +3,9 @@ import { createAtomWithHook } from "@store";
 import {
     ctranslate2_weight_type_status,
     whisper_weight_type_status,
+    vosk_weight_type_status,
+    parakeet_weight_type_status,
+    sensevoice_weight_type_status,
     ui_configs,
 } from "@ui_configs";
 
@@ -514,6 +517,54 @@ export const SETTINGS_ARRAY = [
     },
     {
         Category: "Transcription",
+        Base_Name: "VoskWeightTypeStatus",
+        default_value: vosk_weight_type_status,
+        ui_template_id: "list",
+        logics_template_id: "weight_download_status",
+        base_endpoint_name: "vosk_weight",
+    },
+    {
+        Category: "Transcription",
+        Base_Name: "SelectedVoskWeightType",
+        default_value: "",
+        ui_template_id: "select",
+        logics_template_id: "get_set",
+        base_endpoint_name: "selected_vosk_weight_type",
+    },
+    {
+        Category: "Transcription",
+        Base_Name: "ParakeetWeightTypeStatus",
+        default_value: parakeet_weight_type_status,
+        ui_template_id: "list",
+        logics_template_id: "weight_download_status",
+        base_endpoint_name: "parakeet_weight",
+    },
+    {
+        Category: "Transcription",
+        Base_Name: "SelectedParakeetWeightType",
+        default_value: "",
+        ui_template_id: "select",
+        logics_template_id: "get_set",
+        base_endpoint_name: "selected_parakeet_weight_type",
+    },
+    {
+        Category: "Transcription",
+        Base_Name: "SenseVoiceWeightTypeStatus",
+        default_value: sensevoice_weight_type_status,
+        ui_template_id: "list",
+        logics_template_id: "weight_download_status",
+        base_endpoint_name: "sensevoice_weight",
+    },
+    {
+        Category: "Transcription",
+        Base_Name: "SelectedSenseVoiceWeightType",
+        default_value: "",
+        ui_template_id: "select",
+        logics_template_id: "get_set",
+        base_endpoint_name: "selected_sensevoice_weight_type",
+    },
+    {
+        Category: "Transcription",
         Base_Name: "SelectedTranscriptionComputeType",
         default_value: "",
         ui_template_id: "select",
@@ -536,6 +587,7 @@ export const SETTINGS_ARRAY = [
         default_value: "",
         ui_template_id: "select",
         logics_template_id: "get_set",
+        add_endpoint_run_array: ["from_backend"],
         base_endpoint_name: "selected_transcription_compute_device",
     },
     // Advanced

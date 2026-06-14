@@ -1,6 +1,5 @@
 import styles from "./DownloadModelsContainer.module.scss";
-import vrct_logo_for_dark_mode from "@images/vrct_logo_for_dark_mode.png";
-import vrct_now_downloading from "@images/VRCT_now_downloading.png";
+import logoBadge from "@images/vrcnt_logo_badge.png";
 
 import {
     useTranslation,
@@ -27,8 +26,11 @@ export const DownloadModelsContainer = () => {
                 ))}
             </div>
             <div className={styles.labels_wrapper}>
-                <img src={vrct_logo_for_dark_mode} className={styles.logo_img}/>
-                <img src={vrct_now_downloading} className={styles.vrct_now_downloading_img}/>
+                <div className={styles.logo_box}>
+                    <img className={styles.logo_image} src={logoBadge} alt="VRCNT-Next" />
+                    <p className={styles.logo_title}>VRCNT-Next</p>
+                    <p className={styles.logo_caption}>Preparing local AI models</p>
+                </div>
             </div>
         </div>
     );

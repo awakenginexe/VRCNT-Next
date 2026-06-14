@@ -1,9 +1,9 @@
 .container {
     display: flex;
-    gap: 3.2rem;
+    justify-content: center;
 }
 
-.github_issues, .google_forms {
+.github_issues {
     display: flex;
     flex-direction: column;
     align-items: center;

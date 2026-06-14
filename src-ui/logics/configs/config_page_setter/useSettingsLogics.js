@@ -175,7 +175,11 @@ export const useSettingsLogics = (settingsArray, Category) => {
                 update((old_status) => {
                     return old_status.data.map((item) => ({
                         ...item,
-                        is_downloaded: downloaded_weight_type_status[item.id] ?? item.is_downloaded,
+                        ...(
+                            typeof downloaded_weight_type_status[item.id] === "object"
+                                ? downloaded_weight_type_status[item.id]
+                                : { is_downloaded: downloaded_weight_type_status[item.id] ?? item.is_downloaded }
+                        ),
                     }));
                 });
             };

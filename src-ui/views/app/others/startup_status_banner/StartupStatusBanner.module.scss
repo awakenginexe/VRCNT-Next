@@ -1,0 +1,62 @@
+.container {
+    position: absolute;
+    inset: 0;
+    z-index: 18;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.status_card {
+    width: min(30rem, calc(100% - 3rem));
+    padding: 1.35rem 1.5rem;
+    border: 0.1rem solid color-mix(in srgb, var(--primary_100_color) 28%, var(--border_subtle_color));
+    border-radius: 1.2rem;
+    background:
+        radial-gradient(circle at top, rgba(var(--accent_color_rgb), 0.14), transparent 58%),
+        linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.12), rgba(var(--accent_color_rgb), 0.04)),
+        var(--surface_2_color);
+    box-shadow:
+        0 1.4rem 3rem #0000003f,
+        0 0 0 0.1rem #ffffff08 inset,
+        0 0 2.4rem rgba(var(--accent_color_rgb), 0.08);
+    backdrop-filter: blur(0.9rem);
+}
+
+.phase {
+    color: var(--primary_200_color);
+    font-size: 0.88rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05rem;
+}
+
+.message {
+    margin-top: 0.42rem;
+    color: var(--dark_100_color);
+    font-size: 1.5rem;
+    font-weight: 800;
+}
+
+.detail {
+    margin-top: 0.38rem;
+    color: var(--dark_350_color);
+    font-size: 1rem;
+    line-height: 1.45;
+}
+
+@media (max-width: 900px) {
+    .status_card {
+        width: min(26rem, calc(100% - 2rem));
+        padding: 1.1rem 1.15rem;
+    }
+
+    .message {
+        font-size: 1.22rem;
+    }
+
+    .detail {
+        font-size: 0.92rem;
+    }
+}

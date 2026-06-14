@@ -1,7 +1,7 @@
 import styles from "./UpdatingComponent.module.scss";
 import { useI18n } from "@useI18n";
 import { CircularProgress } from "@common_components";
-import chat_white_square from "@images/chato_white_square.png";
+import logoBadge from "@images/vrcnt_logo_badge.png";
 
 export const UpdatingComponent = () => {
     const { t } = useI18n();
@@ -9,7 +9,7 @@ export const UpdatingComponent = () => {
     return (
         <div className={styles.container}>
             <div className={styles.chato_box}>
-                <img src={chat_white_square} className={styles.chato_img}/>
+                <img className={styles.chato_img} src={logoBadge} alt="" />
             </div>
             <div className={styles.circular_box}>
                 <CircularProgress size="20rem" sx={{

@@ -4,19 +4,21 @@
 
 .entry_wrapper {
     height: 100%;
-    padding: 0.6rem;
-    background-color: var(--dark_875_color);
-    border: 0.1rem solid var(--dark_750_color);
-    border-radius: 0.4rem;
+    padding: 0.8rem 1rem;
+    background-color: rgba(4, 8, 12, 0.58);
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.16);
+    border-radius: 0.6rem;
+    transition: var(--transition_ui);
     &.is_activated {
-        border: 0.1rem solid var(--primary_400_color);
+        border-color: var(--accent_color);
+        box-shadow: 0 0 0 0.2rem rgba(var(--accent_color_rgb), 0.08);
     }
 }
 
 .entry_input_area {
     width: 100%;
     height: 100%;
-    font-size: 1.4rem;
+    font-size: 1.35rem;
     resize: none;
     font-family: Arial, sans-serif;
     &.is_disabled {

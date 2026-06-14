@@ -9,6 +9,12 @@ export const _DownloadButton = ({option, ...props}) => {
         const circular_progress = Math.floor(option.progress / 10) * 10;
 
         switch (true) {
+            case option.downloadable === false:
+                return (
+                    <p className={styles.unavailable_label} title={option.unavailable_reason}>
+                        Unavailable
+                    </p>
+                );
             case option.progress !== null:
                 return (
                     <>
@@ -28,6 +34,7 @@ export const _DownloadButton = ({option, ...props}) => {
                     <button
                         className={styles.download_button}
                         onClick={() => props.downloadStartFunction(option.id)}
+                        disabled={option.downloadable === false}
                     >
                         <p className={styles.download_button_label}>{t("config_page.common.model_download_button_label")}</p>
                     </button>

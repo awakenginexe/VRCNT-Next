@@ -43,6 +43,10 @@ main_page:
 
     translator_selector:
         is_selected_same_language: "「{{your_language}}」と「{{target_language}}」に同じ言語が選択がされているため、「{{ctranslate2}}」のみが使用できます。"
+        use_parallel_service: "並列サービスを使用"
+        second_translator: "2つ目の翻訳エンジン"
+        primary_badge: "1st"
+        secondary_badge: "2nd"
 
     message_log:
         all: "全て"
@@ -64,7 +68,7 @@ main_page:
 
 update_modal:
     cpu_desc: "処理デバイスとしてCPUのみを使用"
-    cuda_desc: "処理デバイスとしてCPUとNVIDIA製のGPUを選択可能"
+    cuda_desc: "VRCNT-NextにはCUDAサポートが含まれており、対応するNVIDIA GPUがない場合でもCPUで実行できます。"
     cuda_compare_cpu_desc: "GPU選択時、CPUと比べて処理が高速"
     cuda_disk_space_desc: "約{{size}}のディスク容量が必要"
     close_modal: "閉じる"
@@ -144,6 +148,9 @@ config_page:
             label: "使用フォント"
         ui_language:
             label: "UIの言語"
+        performance_mode:
+            label: "パフォーマンスモード"
+            desc: "背景のぼかし効果（グラスモーフィズム）と発光エフェクトを無効化し、CPUおよびGPUの負荷を軽減します。"
 
     translation:
         ctranslate2_weight_type:
@@ -257,6 +264,9 @@ config_page:
         ui_scaling: "サイズ"
         display_duration: "表示時間"
         fadeout_duration: "フェードアウト時間"
+        log_order: "ログの並び順"
+        oldest_first: "古いものを上に表示"
+        newest_first: "新しいものを上に表示"
         common_settings: "共通設定"
         tracker: "表示するトラッカーの位置"
         hmd: "HMD"

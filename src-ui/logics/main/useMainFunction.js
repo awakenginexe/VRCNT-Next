@@ -33,8 +33,9 @@ export const useMainFunction = () => {
 
     const { asyncStdoutToPython } = useStdoutToPython();
 
-    const createTogglePair = (pendingFn, updateFn, endpointName) => {
+    const createTogglePair = (currentStatus, pendingFn, endpointName) => {
         const setFn = (to_enable) => {
+            if (currentStatus.state === "pending") return;
             pendingFn();
             if (to_enable) {
                 asyncStdoutToPython(`/set/enable/${endpointName}`);
@@ -43,21 +44,20 @@ export const useMainFunction = () => {
             }
         };
         const toggleFn = () => {
-            updateFn(prev_state => {
-                if (prev_state.state === "ok") setFn(!prev_state.data);
-            }, { set_state: "pending" });
+            if (currentStatus.state !== "ok") return;
+            setFn(!currentStatus.data);
         };
         return { setFn, toggleFn };
     };
 
     const { setFn: setTranslation, toggleFn: toggleTranslation } = createTogglePair(
-        pendingTranslationStatus, updateTranslationStatus, "translation"
+        currentTranslationStatus, pendingTranslationStatus, "translation"
     );
     const { setFn: setTranscriptionSend, toggleFn: toggleTranscriptionSend } = createTogglePair(
-        pendingTranscriptionSendStatus, updateTranscriptionSendStatus, "transcription_send"
+        currentTranscriptionSendStatus, pendingTranscriptionSendStatus, "transcription_send"
     );
     const { setFn: setTranscriptionReceive, toggleFn: toggleTranscriptionReceive } = createTogglePair(
-        pendingTranscriptionReceiveStatus, updateTranscriptionReceiveStatus, "transcription_receive"
+        currentTranscriptionReceiveStatus, pendingTranscriptionReceiveStatus, "transcription_receive"
     );
 
 

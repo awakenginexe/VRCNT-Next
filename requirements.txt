@@ -1,6 +1,10 @@
 torch==2.7.0
 faster-whisper==1.1.1
 ctranslate2==4.6.0
+onnxruntime==1.19.2
+sherpa-onnx==1.10.46
+vosk==0.3.45
+onnx-asr[hub]==0.11.0
 transformers==4.40.2
 pillow == 10.0.0
 PyAudioWPatch == 0.2.12.6

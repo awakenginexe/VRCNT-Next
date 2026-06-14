@@ -5,7 +5,9 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
-    background-color: var(--dark_888_color);
+    background:
+        var(--bg_radial_gradient),
+        linear-gradient(135deg, var(--dark_888_color), var(--dark_800_color));
     align-items: center;
 }
 

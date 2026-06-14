@@ -8,11 +8,12 @@ export const STATIC_ROUTE_META_LIST = [
     // Common
     { endpoint: "/run/feed_watchdog", ns: null, hook_name: null, method_name: null },
     { endpoint: "/run/initialization_progress", ns: common, hook_name: "useInitProgress", method_name: "updateInitProgress" },
+    { endpoint: "/run/initialization_status", ns: common, hook_name: "useInitStatus", method_name: "updateInitStatus" },
     { endpoint: "/run/enable_ai_models", ns: common, hook_name: "useIsVrctAvailable", method_name: "handleAiModelsAvailability" },
     { endpoint: "/get/data/compute_mode", ns: common, hook_name: "useComputeMode", method_name: "updateComputeMode" },
+    { endpoint: "/get/data/resource_usage", ns: common, hook_name: "useResourceUsage", method_name: "updateResourceUsage" },
 
     { endpoint: "/run/update_software", ns: null, hook_name: null, method_name: null },
-    { endpoint: "/run/update_cuda_software", ns: null, hook_name: null, method_name: null },
 
     { endpoint: "/get/data/main_window_geometry", ns: common, hook_name: "useWindow", method_name: "restoreWindowGeometry" },
     { endpoint: "/set/data/main_window_geometry", ns: null, hook_name: null, method_name: null },
@@ -64,6 +65,9 @@ export const STATIC_ROUTE_META_LIST = [
     { endpoint: "/set/disable/main_window_sidebar_compact_mode", ns: main, hook_name: "useIsMainPageCompactMode", method_name: "updateIsMainPageCompactMode" },
 
     // Main Functions
+    { endpoint: "/run/enable_translation", ns: main, hook_name: "useMainFunction", method_name: "updateTranslationStatus" },
+    { endpoint: "/run/enable_transcription_send", ns: main, hook_name: "useMainFunction", method_name: "updateTranscriptionSendStatus" },
+    { endpoint: "/run/enable_transcription_receive", ns: main, hook_name: "useMainFunction", method_name: "updateTranscriptionReceiveStatus" },
     { endpoint: "/set/enable/translation", ns: main, hook_name: "useMainFunction", method_name: "updateTranslationStatus" },
     { endpoint: "/set/disable/translation", ns: main, hook_name: "useMainFunction", method_name: "updateTranslationStatus" },
     { endpoint: "/set/enable/transcription_send", ns: main, hook_name: "useMainFunction", method_name: "updateTranscriptionSendStatus" },
@@ -77,6 +81,8 @@ export const STATIC_ROUTE_META_LIST = [
 
     { endpoint: "/get/data/selected_your_languages", ns: main, hook_name: "useLanguageSettings", method_name: "updateSelectedYourLanguages" },
     { endpoint: "/set/data/selected_your_languages", ns: main, hook_name: "useLanguageSettings", method_name: "updateSelectedYourLanguages" },
+    { endpoint: "/get/data/selected_your_translation_languages", ns: main, hook_name: "useLanguageSettings", method_name: "updateSelectedYourTranslationLanguages" },
+    { endpoint: "/set/data/selected_your_translation_languages", ns: main, hook_name: "useLanguageSettings", method_name: "updateSelectedYourTranslationLanguages" },
     { endpoint: "/get/data/selected_target_languages", ns: main, hook_name: "useLanguageSettings", method_name: "updateSelectedTargetLanguages" },
     { endpoint: "/set/data/selected_target_languages", ns: main, hook_name: "useLanguageSettings", method_name: "updateSelectedTargetLanguages" },
 
@@ -102,10 +108,6 @@ export const STATIC_ROUTE_META_LIST = [
     // Hotkeys
     { endpoint: "/get/data/hotkeys", ns: configs, hook_name: "useHotkeys", method_name: "updateHotkeys" },
     { endpoint: "/set/data/hotkeys", ns: configs, hook_name: "useHotkeys", method_name: "setSuccessHotkeys" },
-
-    // Plugins
-    { endpoint: "/get/data/plugins_status", ns: configs, hook_name: "usePlugins", method_name: "updateSavedPluginsStatus" },
-    { endpoint: "/set/data/plugins_status", ns: configs, hook_name: "usePlugins", method_name: "setSuccessSavedPluginsStatus" },
 
     // // Not Implemented.
     { endpoint: "/get/data/selectable_transcription_engines", ns: null, hook_name: null, method_name: null }, // Not implemented on UI yet. (if ai_models has not been detected, this will be blank array[]. if the ai_models are ok but just network has not connected, it'l be only ["Whisper"])
@@ -190,7 +192,7 @@ export const useReceiveRoutes = () => {
 
             case 500:
                 showNotification_Error(
-                    `An error occurred. Please restart VRCT or contact the developers. ${JSON.stringify(parsed_data.result)}`, { hide_duration: null });
+                    `An error occurred. Please restart VRCNT-Next or contact the developers. ${JSON.stringify(parsed_data.result)}`, { hide_duration: null });
                 break;
 
             default:

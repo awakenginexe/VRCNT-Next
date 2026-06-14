@@ -4,16 +4,13 @@
     justify-content: center;
     align-items: center;
     flex-shrink: 0;
+    padding: 0.8rem 1rem 0.4rem;
 }
 
-.logo {
-    width: 12rem;
-    height: auto;
-    margin: auto;
-}
-
-.logo_chato {
-    width: 2rem;
-    height: auto;
-    margin: auto;
+.logo_badge {
+    width: 3.3rem;
+    aspect-ratio: 1;
+    flex-shrink: 0;
+    object-fit: contain;
+    filter: var(--filter_accent_glow);
 }

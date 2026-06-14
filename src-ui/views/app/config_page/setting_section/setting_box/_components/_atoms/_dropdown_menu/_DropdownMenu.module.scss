@@ -6,16 +6,19 @@
 
 .dropdown_toggle_button {
     position: relative;
-    background-color: var(--dark_950_color);
+    background-color: rgba(4, 8, 12, 0.74);
     min-width: 20rem;
-    padding: 0.8rem 1.4rem;
+    padding: 0.9rem 1.3rem;
     cursor: pointer;
-    border-radius: 0.4rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.18);
+    border-radius: 0.6rem;
+    transition: var(--transition_ui);
     &:hover {
-        background-color: var(--dark_925_color);
+        background-color: rgba(var(--accent_color_rgb), 0.08);
+        border-color: rgba(var(--accent_color_rgb), 0.34);
     }
     &:active {
-        background-color: var(--dark_975_color);
+        background-color: rgba(3, 6, 10, 0.9);
     }
     &.is_pending {
         pointer-events: none;
@@ -29,7 +32,7 @@
 }
 
 .dropdown_selected_text {
-    font-size: 1.4rem;
+    font-size: 1.3rem;
     padding-right: 3.6rem; // room for arrow + breathing space
     overflow: visible;
     white-space: normal; // allow wrapping
@@ -42,7 +45,7 @@
     top: 100%; // Position it below the toggle button
     right: 0;
     min-width: 20rem;
-    z-index: 1;
+    z-index: 30;
     &.is_opened {
         display: block;
     }
@@ -55,30 +58,34 @@
 }
 
 .dropdown_content {
-    background-color: var(--dark_900_color);
-    border: 0.1rem solid var(--dark_600_color);
+    background-color: rgba(6, 10, 16, 0.98);
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.24);
+    border-radius: 0.6rem;
+    box-shadow: 0 1.2rem 3.2rem rgba(0, 0, 0, 0.34);
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
     white-space: nowrap;
     max-height: 20rem;
     overflow-y: scroll;
+    padding: 0.4rem;
 }
 
 .value_button {
-    background-color: var(--dark_875_color);
-    padding: 1.2rem;
+    background-color: transparent;
+    padding: 0.9rem 1rem;
     cursor: pointer;
+    border-radius: 0.4rem;
     &:hover {
-        background-color: var(--dark_800_color);
+        background-color: rgba(var(--accent_color_rgb), 0.1);
     }
     &:active {
-        background-color: var(--dark_900_color);
+        background-color: rgba(var(--accent_color_rgb), 0.16);
     }
 }
 
 .value_text {
-    font-size: 1.4rem;
+    font-size: 1.3rem;
 }
 
 .loader {

@@ -1,8 +1,8 @@
 .container {
     width: 100%;
-    height: 0%;
-    transition: top 0.5s ease;
-    position: absolute;
+    height: 6.2rem;
+    transition: var(--transition_ui);
+    position: relative;
     top: 0;
     left: 0;
 }
@@ -12,71 +12,82 @@
 }
 
 .show_main.container {
-    top: 100%;
+    top: 0;
 }
 
 
 .wrapper {
-    background-color: var(--dark_850_color);
-    cursor: pointer;
-    height: 1rem;
+    background: var(--surface_1_color);
+    backdrop-filter: var(--panel_blur);
+    cursor: default;
+    height: 6.2rem;
     width: 100%;
     position: relative;
+    display: flex;
+    align-items: center;
+    border: var(--panel_border_subtle);
+    border-radius: 1.4rem;
+    box-shadow: var(--shadow_control);
     transition: all 0.3s ease;
 
     &:hover {
-        height: 2rem;
+        height: 6.4rem;
         .go_back_button {
-            top: -12rem;
-            transform: rotate(35deg);
+            background-color: var(--surface_3_color);
+            transform: translateX(-0.1rem);
+            box-shadow: var(--glow_shadow);
+            border-color: var(--primary_300_color);
         }
         .arrow_left_svg {
-            color: var(--dark_400_color);
+            color: var(--primary_300_color);
         }
         .go_back_text {
-            color: var(--dark_400_color);
+            color: var(--primary_200_color);
         }
         .go_back_text_wrapper {
-            padding-top: 8.2rem;
+            padding-right: 1.4rem;
         }
     }
 
 }
 
 .go_back_button {
-    height: 16rem;
-    width: 16rem;
-    border-radius: 1.2rem;
-    background-color: var(--dark_850_color);
-    position: absolute;
-    top: -13.2rem;
-    right: 10rem;
-    transform: rotate(30deg);
+    height: 3.8rem;
+    width: 3.8rem;
+    border-radius: 0.8rem;
+    background-color: var(--surface_2_color);
+    border: 0.1rem solid var(--border_subtle_color);
+    position: relative;
+    top: auto;
+    right: auto;
+    margin-left: 1rem;
+    transform: none;
     transition: all 0.3s ease;
+    cursor: pointer;
 }
 
 .arrow_left_svg {
-    height: 2.8rem;
+    height: 2.2rem;
     position: absolute;
-    right: 1rem;
-    bottom: 0.4rem;
-    color: var(--dark_600_color);
-    transform: rotate(-100deg);
+    right: 0.8rem;
+    bottom: 0.8rem;
+    color: var(--primary_200_color);
+    transform: none;
 }
 
 .go_back_text_wrapper {
-    position: absolute;
-    top: -4.6rem;
-    right: 0rem;
-    padding-top: 7.2rem;
-    padding-bottom: 1rem;
-    width: 15.2rem;
+    position: relative;
+    top: auto;
+    right: auto;
+    padding: 0 1.2rem 0 0.8rem;
+    width: auto;
     transition: all 0.3s ease;
+    cursor: pointer;
 }
 
 .go_back_text {
-    color: var(--dark_650_color);
-    font-size: 1.6rem;
-    padding-left: 4rem;
+    color: var(--dark_300_color);
+    font-size: 1.2rem;
+    padding-left: 0;
     transition: all 0.3s ease;
 }

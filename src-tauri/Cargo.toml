@@ -1,8 +1,8 @@
 [package]
-name = "VRCT"
-version = "0.0.0"
-description = "VRCT Application"
-authors = ["misyaguziya"]
+name = "VRCNT-Next"
+version = "1.0.0"
+description = "VRCNT-Next Application"
+authors = ["awakenginexe"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -28,6 +28,8 @@ tauri-plugin-shell = "2.2.1"
 font-kit = "=0.14.2"
 reqwest = "=0.12.15"
 base64 = "=0.22.1"
+tauri-plugin-process = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "=2.2.0"
+tauri-plugin-updater = "2"

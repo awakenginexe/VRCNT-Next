@@ -43,6 +43,10 @@ main_page:
 
     translator_selector:
         is_selected_same_language: "「{{your_language}}」和「{{target_language}}」选择了相同的语言，因此只能使用「{{ctranslate2}}」。"
+        use_parallel_service: "使用并行服务"
+        second_translator: "第二翻译器"
+        primary_badge: "1st"
+        secondary_badge: "2nd"
 
     message_log:
         all: "全部"
@@ -64,7 +68,7 @@ main_page:
 
 update_modal:
     cpu_desc: "仅使用 CPU 作为处理设备"
-    cuda_desc: "可选择 CPU 和 NVIDIA GPU 作为处理设备"
+    cuda_desc: "VRCNT-Next 已包含 CUDA 支持；没有受支持的 NVIDIA GPU 时仍可使用 CPU 运行。"
     cuda_compare_cpu_desc: "选择 GPU 时，与 CPU 相比处理更快"
     cuda_disk_space_desc: "需要约 {{size}} 的磁盘空间"
     close_modal: "关闭"
@@ -144,6 +148,9 @@ config_page:
             label: "字体"
         ui_language:
             label: "界面语言"
+        performance_mode:
+            label: "性能模式"
+            desc: "禁用背景模糊（毛玻璃效果）和发光特效以减少 CPU 和 GPU 占用。"
 
     translation:
         ctranslate2_weight_type:
@@ -257,6 +264,9 @@ config_page:
         ui_scaling: "大小"
         display_duration: "显示持续时间"
         fadeout_duration: "渐隐持续时间"
+        log_order: "日志顺序"
+        oldest_first: "旧消息在上"
+        newest_first: "新消息在上"
         common_settings: "通用设置"
         tracker: "显示追踪器的位置"
         hmd: "HMD"

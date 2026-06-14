@@ -7,26 +7,28 @@ import { useLanguageSettings } from "@logics_main";
 
 export const AddRemoveTargetLanguageButtons = () => {
     const {
-        currentSelectedPresetTabNumber,
-        // currentSelectedYourLanguages,
-        currentSelectedTargetLanguages,
+        getCurrentTargetLanguages,
         removeTargetLanguage,
         addTargetLanguage,
     } = useLanguageSettings();
 
+    const targetLanguages = getCurrentTargetLanguages();
+    const secondTargetEnabled = targetLanguages?.["2"]?.enable === true;
+    const thirdTargetEnabled = targetLanguages?.["3"]?.enable === true;
+
     const remove_button_class = clsx(styles.remove_target_language_button, {
-        [styles.is_disabled]: !currentSelectedTargetLanguages.data[currentSelectedPresetTabNumber.data]["2"].enable,
+        [styles.is_disabled]: !secondTargetEnabled,
     });
     const add_button_class = clsx(styles.add_target_language_button, {
-        [styles.is_disabled]: currentSelectedTargetLanguages.data[currentSelectedPresetTabNumber.data]["3"].enable,
+        [styles.is_disabled]: thirdTargetEnabled,
     });
 
     return (
         <div className={styles.add_remove_target_language_container}>
-            <div className={remove_button_class} onClick={removeTargetLanguage}>
+            <div className={remove_button_class} onClick={secondTargetEnabled ? removeTargetLanguage : undefined}>
                 <RemoveSvg className={styles.remove_svg} />
             </div>
-            <div className={add_button_class} onClick={addTargetLanguage}>
+            <div className={add_button_class} onClick={thirdTargetEnabled ? undefined : addTargetLanguage}>
                 <AddSvg className={styles.add_svg} />
             </div>
         </div>

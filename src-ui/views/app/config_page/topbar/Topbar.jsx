@@ -20,18 +20,17 @@ export const Topbar = () => {
             [styles.show_config]: currentIsOpenedConfigPage.data,
             [styles.show_main]: !currentIsOpenedConfigPage.data
         })}>
-            <div className={styles.wrapper} onClick={() => closeConfigPage()}>
-                <div className={styles.go_back_button}>
+            <div className={styles.wrapper}>
+                <div className={styles.go_back_button} onClick={() => closeConfigPage()}>
                     <ArrowLeftSvg className={styles.arrow_left_svg} />
                 </div>
-                <div className={styles.go_back_text_wrapper}>
+                <div className={styles.go_back_text_wrapper} onClick={() => closeConfigPage()}>
                     <p className={styles.go_back_text}>{t("common.go_back_button_label")}</p>
                 </div>
 
 
-                {/* <TitleBox />
+                <TitleBox />
                 <SectionTitleBox />
-                <CompactSwitchBox /> */}
             </div>
         </div>
     );

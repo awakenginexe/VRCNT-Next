@@ -29,9 +29,9 @@ common_warning:
 
 main_page:
     translation: "Translation"
-    transcription_send: "Voice2Chatbox"
-    transcription_receive: "Speaker2Log"
-    foreground: "Set To Stay On Top"
+    transcription_send: "Speaking"
+    transcription_receive: "Listening"
+    foreground: "Always on Top"
 
     language_settings: "Language Settings"
     your_language: "Your Language"
@@ -43,6 +43,10 @@ main_page:
 
     translator_selector:
         is_selected_same_language: "You are selecting the same language for '{{your_language}}' and '{{target_language}}' so only '{{ctranslate2}}' is available."
+        use_parallel_service: "Use parallel service"
+        second_translator: "Second translator"
+        primary_badge: "1st"
+        secondary_badge: "2nd"
 
     message_log:
         all: "All"
@@ -64,7 +68,7 @@ main_page:
 
 update_modal:
     cpu_desc: "Use CPU only as the compute device."
-    cuda_desc: "Selectable between CPU and NVIDIA GPUs as compute devices."
+    cuda_desc: "VRCNT-Next includes CUDA support and can still run on CPU when no supported NVIDIA GPU is available."
     cuda_compare_cpu_desc: "GPUs offer faster processing than CPUs."
     cuda_disk_space_desc: "Requires approximately {{size}} of disk space."
     close_modal: "Close"
@@ -144,6 +148,9 @@ config_page:
             label: "Font Family"
         ui_language:
             label: "UI Language"
+        performance_mode:
+            label: "Performance Mode"
+            desc: "Disable backdrop blur (glassmorphism) and glow effects to reduce CPU and GPU usage."
 
     translation:
         ctranslate2_weight_type:
@@ -257,6 +264,9 @@ config_page:
         ui_scaling: "UI Scaling"
         display_duration: "Display Duration"
         fadeout_duration: "Fadeout Duration"
+        log_order: "Log Order"
+        oldest_first: "Oldest at Top"
+        newest_first: "Newest at Top"
         common_settings: "Common Settings"
         tracker: "Tracker"
         hmd: "HMD"
