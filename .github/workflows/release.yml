@@ -244,3 +244,9 @@ jobs:
           } else {
             gh release create $tag --title $env:VERSION --notes "$notes" --verify-tag
           }
+
+          gh release upload $tag `
+            "$env:INSTALLER_PATH" `
+            "$env:INSTALLER_SIGNATURE_PATH" `
+            "$env:LATEST_JSON_PATH" `
+            --clobber
