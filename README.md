@@ -29,6 +29,51 @@ The goal is practical: make multilingual VRChat sessions easier with local AI mo
 - Display translation logs in a VR overlay.
 - Keep the UI focused by removing the plugin system.
 
+## Preview
+
+<table>
+  <tr>
+    <td align="center">
+      <strong>Sakura Pink</strong><br />
+      <img src="preview/SakuraPink.png" alt="Sakura Pink normal mode preview" width="320" />
+    </td>
+    <td align="center">
+      <strong>Sakura Pink Performance</strong><br />
+      <img src="preview/SakuraPink%20Perf.png" alt="Sakura Pink performance mode preview" width="320" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Neon Cyan</strong><br />
+      <img src="preview/NeonCyan.png" alt="Neon Cyan normal mode preview" width="320" />
+    </td>
+    <td align="center">
+      <strong>Neon Cyan Performance</strong><br />
+      <img src="preview/NeonCyan%20Perf.png" alt="Neon Cyan performance mode preview" width="320" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Midnight Purple</strong><br />
+      <img src="preview/MidnightPurple.png" alt="Midnight Purple normal mode preview" width="320" />
+    </td>
+    <td align="center">
+      <strong>Midnight Purple Performance</strong><br />
+      <img src="preview/MidnightPurple%20Perf.png" alt="Midnight Purple performance mode preview" width="320" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Emerald Green</strong><br />
+      <img src="preview/EmeraldGreen.png" alt="Emerald Green normal mode preview" width="320" />
+    </td>
+    <td align="center">
+      <strong>Emerald Green Performance</strong><br />
+      <img src="preview/EmeraldGreen%20Perf.png" alt="Emerald Green performance mode preview" width="320" />
+    </td>
+  </tr>
+</table>
+
 ## Download
 
 This repository is prepared for a single VRCNT-Next Windows release package:
