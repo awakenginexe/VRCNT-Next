@@ -12,6 +12,7 @@ common_error:
     threshold_invalid_value: "{{min}}부터 {{max}}까지의 숫자로 설정할 수 있습니다."
     failed_download_weight_ctranslate2: "CTranslate2 모델 다운로드에 실패했습니다."
     failed_download_weight_whisper: "Whisper 모델 다운로드에 실패했습니다."
+    failed_download_weight_sensevoice: "SenseVoice 모델 다운로드에 실패했습니다."
     translation_limit: "번역 엔진 사용 제한에 도달했거나 일시적으로 이용 제한이 걸렸습니다."
     deepl_auth_key_invalid_length: "DeepL 인증 키의 문자 수가 잘못되었습니다."
     deepl_auth_key_failed_authentication: "인증키가 잘못되었거나 API 사용 제한이 상한에 도달했습니다."

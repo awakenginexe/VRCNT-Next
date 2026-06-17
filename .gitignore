@@ -26,6 +26,8 @@ __pycache__/
 src-python/tests/
 test_*.py
 *_test.py
+!src-python/tests/
+!src-python/tests/test_sensevoice_download.py
 .pytest_cache/
 .coverage
 *.cover

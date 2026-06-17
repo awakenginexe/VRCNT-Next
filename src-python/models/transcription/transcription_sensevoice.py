@@ -7,6 +7,7 @@ ko and is available in FP32 (~938 MB) and INT8 (~228 MB) ONNX formats.
 import importlib.util
 import os
 import sys
+import time
 from os import path as os_path, makedirs as os_makedirs
 from json import dump as json_dump
 import json
@@ -25,9 +26,14 @@ except Exception:
 
 try:
     import huggingface_hub  # type: ignore
+    try:
+        from huggingface_hub.utils import disable_progress_bars as _disable_hf_progress_bars  # type: ignore
+    except Exception:
+        _disable_hf_progress_bars = None
     _HF_AVAILABLE = True
 except Exception:
     huggingface_hub = None  # type: ignore
+    _disable_hf_progress_bars = None
     _HF_AVAILABLE = False
 
 
@@ -35,6 +41,7 @@ logger = logging.getLogger("sensevoice")
 logger.setLevel(logging.CRITICAL)
 
 _DLL_DIR_HANDLES = []
+_DOWNLOAD_RETRY_DELAYS_SECONDS = (1.0, 3.0)
 
 
 def _addDllDirectory(directory: str) -> None:
@@ -165,36 +172,61 @@ def downloadSenseVoiceWeight(
     weight_type: str,
     callback: Optional[Callable[[float], None]] = None,
     end_callback: Optional[Callable[[], None]] = None,
-) -> None:
+) -> bool:
     meta = _MODELS.get(weight_type)
     if meta is None or meta.get("downloadable") is not True or not _HF_AVAILABLE:
         if callable(end_callback):
             end_callback()
-        return
+        return False
 
     path = _modelDir(root, weight_type)
     os_makedirs(path, exist_ok=True)
 
     if checkSenseVoiceWeight(root, weight_type):
-        if callable(end_callback):
-            end_callback()
-        return
-
-    try:
-        if callable(callback):
-            callback(0.05)
-        huggingface_hub.snapshot_download(
-            repo_id=meta["repo"],
-            local_dir=path,
-            allow_patterns=meta["files"],
-            local_dir_use_symlinks=False,
-        )
         if callable(callback):
             callback(1.0)
-        with open(_markerPath(root, weight_type), "w", encoding="utf-8") as f:
-            json_dump({"repo": meta["repo"], "backend": "sherpa-onnx", "onnx_file": meta["onnx_file"]}, f)
-    except Exception:
-        logger.exception("Failed to download SenseVoice model: %s", weight_type)
+        if callable(end_callback):
+            end_callback()
+        return True
+
+    try:
+        if callable(_disable_hf_progress_bars):
+            _disable_hf_progress_bars()
+
+        max_attempts = len(_DOWNLOAD_RETRY_DELAYS_SECONDS) + 1
+        for attempt in range(max_attempts):
+            try:
+                if callable(callback):
+                    callback(0.05)
+                huggingface_hub.snapshot_download(
+                    repo_id=meta["repo"],
+                    local_dir=path,
+                    allow_patterns=meta["files"],
+                    local_dir_use_symlinks=False,
+                )
+                missing_files = [
+                    fname for fname in meta.get("files", [])
+                    if not os_path.isfile(os_path.join(path, fname))
+                ]
+                if missing_files:
+                    raise IOError(f"Incomplete SenseVoice download, missing files: {missing_files}")
+                with open(_markerPath(root, weight_type), "w", encoding="utf-8") as f:
+                    json_dump({"repo": meta["repo"], "backend": "sherpa-onnx", "onnx_file": meta["onnx_file"]}, f)
+                if not checkSenseVoiceWeight(root, weight_type):
+                    raise IOError(f"Downloaded SenseVoice model did not pass validation: {weight_type}")
+                if callable(callback):
+                    callback(1.0)
+                return True
+            except Exception:
+                logger.exception(
+                    "Failed to download SenseVoice model %s on attempt %s/%s",
+                    weight_type,
+                    attempt + 1,
+                    max_attempts,
+                )
+                if attempt < len(_DOWNLOAD_RETRY_DELAYS_SECONDS):
+                    time.sleep(_DOWNLOAD_RETRY_DELAYS_SECONDS[attempt])
+        return False
     finally:
         if callable(end_callback):
             end_callback()

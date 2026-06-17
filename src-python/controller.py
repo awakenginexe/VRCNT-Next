@@ -550,6 +550,16 @@ class Controller:
                     self.run_mapping.get("downloaded_sensevoice_weight", "downloaded_sensevoice_weight"),
                     self.weight_type,
                 )
+            else:
+                error_response = VRCTError.create_error_response(
+                    ErrorCode.WEIGHT_SENSEVOICE_DOWNLOAD,
+                    data=None
+                )
+                self.run(
+                    error_response["status"],
+                    self.run_mapping.get("error_sensevoice_weight", "error_sensevoice_weight"),
+                    error_response["result"],
+                )
 
     def micMessage(self, result: dict) -> None:
         message = result["text"]

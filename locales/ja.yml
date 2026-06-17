@@ -12,6 +12,7 @@ common_error:
     threshold_invalid_value: "{{min}} から {{max}} までの数値で設定できます。"
     failed_download_weight_ctranslate2: "CTranslate2 モデルのダウンロードに失敗しました。"
     failed_download_weight_whisper: "Whisper モデルのダウンロードに失敗しました。"
+    failed_download_weight_sensevoice: "SenseVoice モデルのダウンロードに失敗しました。"
     translation_limit: "翻訳エンジンの使用制限に達したか、一時的に利用制限がかけられています。"
     deepl_auth_key_invalid_length: "認証キーの文字数が間違っています。"
     deepl_auth_key_failed_authentication: "認証キーが間違っているか、API使用制限が上限に達しています。"

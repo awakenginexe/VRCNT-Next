@@ -12,6 +12,7 @@ common_error:
     threshold_invalid_value: "可设置的数值范围为 {{min}} 到 {{max}}。"
     failed_download_weight_ctranslate2: "CTranslate2 模型下载失败。"
     failed_download_weight_whisper: "Whisper 模型下载失败。"
+    failed_download_weight_sensevoice: "SenseVoice 模型下载失败。"
     translation_limit: "已达到翻译引擎使用限制或临时受到使用限制。"
     deepl_auth_key_invalid_length: "授权密钥字符数错误。"
     deepl_auth_key_failed_authentication: "授权密钥错误或已达API使用上限。"

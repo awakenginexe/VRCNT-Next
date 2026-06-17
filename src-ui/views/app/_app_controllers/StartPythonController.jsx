@@ -10,6 +10,7 @@ import { arrayToObject } from "@utils";
 import {
     useNotificationStatus,
 } from "@logics_common";
+import { isBenignSidecarStderr } from "@logics_common/sidecarStderrUtils.js";
 
 export const StartPythonController = () => {
     const { asyncStartPython } = useStartPython();
@@ -48,6 +49,10 @@ const useStartPython = () => {
             }
         });
         command.stderr.on("data", line => {
+            if (isBenignSidecarStderr(line)) {
+                console.debug("stderr", line);
+                return;
+            }
             showNotification_Error(
                 `An error occurred. Please restart VRCNT-Next or contact the developers. The last line:${JSON.stringify(line)}`, { hide_duration: null }
             );

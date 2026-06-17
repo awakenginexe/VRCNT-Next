@@ -43,6 +43,7 @@ class ErrorCode(str, Enum):
     # ============================================================================
     WEIGHT_CTRANSLATE2_DOWNLOAD = "WEIGHT_CTRANSLATE2_DOWNLOAD"
     WEIGHT_WHISPER_DOWNLOAD = "WEIGHT_WHISPER_DOWNLOAD"
+    WEIGHT_SENSEVOICE_DOWNLOAD = "WEIGHT_SENSEVOICE_DOWNLOAD"
     
     # ============================================================================
     # バリデーションエラー (VALIDATION_*)
@@ -217,6 +218,12 @@ ERROR_METADATA: Dict[ErrorCode, Dict[str, Any]] = {
     ErrorCode.WEIGHT_WHISPER_DOWNLOAD: {
         "category": ErrorCategory.WEIGHT,
         "message": "Whisper weight download error",
+        "severity": "error",
+        "user_action_required": True,
+    },
+    ErrorCode.WEIGHT_SENSEVOICE_DOWNLOAD: {
+        "category": ErrorCategory.WEIGHT,
+        "message": "SenseVoice weight download error",
         "severity": "error",
         "user_action_required": True,
     },
@@ -555,6 +562,9 @@ ENDPOINT_ERROR_MAPPING: Dict[str, Dict[str, ErrorCode]] = {
     },
     "/run/error_whisper_weight": {
         "DOWNLOAD": ErrorCode.WEIGHT_WHISPER_DOWNLOAD,
+    },
+    "/run/error_sensevoice_weight": {
+        "DOWNLOAD": ErrorCode.WEIGHT_SENSEVOICE_DOWNLOAD,
     },
     
     # エンドポイント直接のエラーレスポンス
