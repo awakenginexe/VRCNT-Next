@@ -18,3 +18,9 @@ export { useIsOscAvailable } from "./useIsOscAvailable";
 export { useIsVrctAvailable } from "./useIsVrctAvailable";
 export { useFetch } from "./useFetch";
 export { useLLMConnection } from "./useLLMConnection";
+export {
+    getThaiPreferredFontFamily,
+    shouldApplyThaiPreferredFont,
+    THAI_PREFERRED_FONT_FAMILY,
+    THAI_UI_LANGUAGE_ID,
+} from "./thaiFontPreference";

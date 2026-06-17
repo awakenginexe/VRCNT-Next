@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { useI18n } from "@useI18n";
 import styles from "./TranscriptionEngineLabel.module.scss";
 import { useTranscription } from "@logics_configs";
 import { useStore_IsOpenedTranscriptionEngineSelector } from "@store";
@@ -11,6 +12,7 @@ import {
 } from "../transcriptionRuntimeUtils.js";
 
 export const TranscriptionEngineLabel = () => {
+    const { t } = useI18n();
     const {
         currentSelectedTranscriptionEngine,
         currentSelectableTranscriptionComputeDeviceList,
@@ -29,7 +31,7 @@ export const TranscriptionEngineLabel = () => {
         updateIsOpenedTranscriptionEngineSelector,
     } = useStore_IsOpenedTranscriptionEngineSelector();
 
-    const engine = currentSelectedTranscriptionEngine?.data ?? "Loading...";
+    const engine = currentSelectedTranscriptionEngine?.data ?? t("main_page.language_panels.loading");
     const deviceMap = currentSelectableTranscriptionComputeDeviceList?.data ?? {};
     const selectedDevice = currentSelectedTranscriptionComputeDevice?.data ?? null;
     const selectedMode = getSelectedDeviceMode(selectedDevice);
@@ -69,16 +71,16 @@ export const TranscriptionEngineLabel = () => {
         <div className={styles.container}>
             <div className={styles.engine_label_button} onClick={openSelector}>
                 <div className={styles.label_copy}>
-                    <p className={styles.label_heading}>Engine</p>
+                    <p className={styles.label_heading}>{t("main_page.language_panels.engine")}</p>
                     <p className={styles.label_value}>{engine}</p>
                     {currentModelName && <p className={styles.model_value}>{currentModelName}</p>}
                 </div>
-                <p className={styles.edit_hint}>Change</p>
+                <p className={styles.edit_hint}>{t("main_page.language_panels.change")}</p>
             </div>
             <div className={styles.quick_switch_block}>
                 <div className={styles.quick_switch_header}>
-                    <p className={styles.quick_switch_title}>Device</p>
-                    <p className={styles.quick_switch_hint}>Quick switch between CPU and GPU</p>
+                    <p className={styles.quick_switch_title}>{t("main_page.language_panels.device")}</p>
+                    <p className={styles.quick_switch_hint}>{t("main_page.language_panels.device_desc")}</p>
                 </div>
                 <div className={styles.option_row}>
                     {deviceOptions.map((option) => (
@@ -99,9 +101,11 @@ export const TranscriptionEngineLabel = () => {
             </div>
             <div className={styles.quick_switch_block}>
                 <div className={styles.quick_switch_header}>
-                    <p className={styles.quick_switch_title}>Processing Type</p>
+                    <p className={styles.quick_switch_title}>{t("main_page.language_panels.processing_type")}</p>
                     <p className={styles.quick_switch_hint}>
-                        {isAutoOnlyTranscriptionEngine(engine) ? "Locked to Auto for this engine" : "Choose the runtime mode for Whisper"}
+                        {isAutoOnlyTranscriptionEngine(engine)
+                            ? t("main_page.language_panels.processing_type_locked")
+                            : t("main_page.language_panels.processing_type_whisper")}
                     </p>
                 </div>
                 <div className={styles.processing_scroll_area}>

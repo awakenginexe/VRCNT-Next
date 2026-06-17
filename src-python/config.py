@@ -891,7 +891,7 @@ class Config:
 
     def init_config(self):
         # Read Only
-        self._VERSION = "1.2.0"
+        self._VERSION = "1.3.0"
         if getattr(sys, 'frozen', False):
             self._PATH_LOCAL = os_path.dirname(sys.executable)
         else:
@@ -927,7 +927,7 @@ class Config:
             self._SELECTABLE_TRANSCRIPTION_ENGINE_LIST = list(transcription_lang[first_key].values())[0].keys()
         except Exception:
             self._SELECTABLE_TRANSCRIPTION_ENGINE_LIST = []
-        self._SELECTABLE_UI_LANGUAGE_LIST = ["en", "ja", "ko", "zh-Hant", "zh-Hans"]
+        self._SELECTABLE_UI_LANGUAGE_LIST = ["en", "ja", "ko", "th", "zh-Hant", "zh-Hans"]
         torch = _getTorch()
         self._COMPUTE_MODE = "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
         self._SELECTABLE_COMPUTE_DEVICE_LIST = getComputeDeviceList()

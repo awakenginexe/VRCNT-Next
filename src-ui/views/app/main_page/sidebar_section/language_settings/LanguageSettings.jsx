@@ -58,8 +58,8 @@ const PresetContainer = () => {
         <div className={styles.preset_container}>
             <div className={styles.language_panel}>
                 <div className={styles.section_header}>
-                    <p className={styles.section_title}>You</p>
-                    <p className={styles.section_hint}>Voice input and personal translation output</p>
+                    <p className={styles.section_title}>{t("main_page.language_panels.you_title")}</p>
+                    <p className={styles.section_hint}>{t("main_page.language_panels.you_desc")}</p>
                 </div>
                 <div className={styles.selector_stack}>
                     <LanguageSelectorOpenButton {...yourLanguageSettings} selector_key="your_language" target_key="1"/>
@@ -78,8 +78,8 @@ const PresetContainer = () => {
 
             <div className={styles.language_panel}>
                 <div className={styles.section_header}>
-                    <p className={styles.section_title}>Targets</p>
-                    <p className={styles.section_hint}>Choose who you want VRCNT-Next to translate for</p>
+                    <p className={styles.section_title}>{t("main_page.language_panels.targets_title")}</p>
+                    <p className={styles.section_hint}>{t("main_page.language_panels.targets_desc")}</p>
                 </div>
                 <div className={styles.target_language_containers}>
                     <LanguageSelectorOpenButton {...targetLanguageSettings} selector_key="target_language" target_key="1" />
@@ -91,8 +91,8 @@ const PresetContainer = () => {
 
             <div className={styles.engine_panel}>
                 <div className={styles.section_header}>
-                    <p className={styles.section_title}>Engines</p>
-                    <p className={styles.section_hint}>Quick switches for translation and transcription</p>
+                    <p className={styles.section_title}>{t("main_page.language_panels.engines_title")}</p>
+                    <p className={styles.section_hint}>{t("main_page.language_panels.engines_desc")}</p>
                 </div>
                 <div className={styles.engine_controls}>
                     <TranslatorSelectorOpenButton />

@@ -8,28 +8,28 @@ export const mainFunctionTooltipOrder = [
 
 const mainFunctionTooltipMeta = {
     translation: {
-        tooltipTitle: "Translation",
-        tooltipDetail: "Turn chat translation on or off.",
+        tooltipTitleKey: "main_page.main_function_tooltips.translation_title",
+        tooltipDetailKey: "main_page.main_function_tooltips.translation_detail",
     },
     transcription_send: {
-        tooltipTitle: "Speaking",
-        tooltipDetail: "Transcribe your microphone for chat.",
+        tooltipTitleKey: "main_page.main_function_tooltips.transcription_send_title",
+        tooltipDetailKey: "main_page.main_function_tooltips.transcription_send_detail",
     },
     transcription_receive: {
-        tooltipTitle: "Listening",
-        tooltipDetail: "Transcribe audio you hear from others.",
+        tooltipTitleKey: "main_page.main_function_tooltips.transcription_receive_title",
+        tooltipDetailKey: "main_page.main_function_tooltips.transcription_receive_detail",
     },
     foreground: {
-        tooltipTitle: "Always on top",
-        tooltipDetail: "Keep VRCNT-Next above other windows.",
+        tooltipTitleKey: "main_page.main_function_tooltips.foreground_title",
+        tooltipDetailKey: "main_page.main_function_tooltips.foreground_detail",
     },
     settings: {
-        tooltipTitle: "Settings",
-        tooltipDetail: "Open app configuration.",
+        tooltipTitleKey: "main_page.main_function_tooltips.settings_title",
+        tooltipDetailKey: "main_page.main_function_tooltips.settings_detail",
     },
 };
 
 export const getMainFunctionTooltipMeta = (controlId) => mainFunctionTooltipMeta[controlId] ?? {
-    tooltipTitle: "Control",
-    tooltipDetail: "Use this app control.",
+    tooltipTitleKey: "main_page.main_function_tooltips.control_title",
+    tooltipDetailKey: "main_page.main_function_tooltips.control_detail",
 };

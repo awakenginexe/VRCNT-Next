@@ -57,9 +57,11 @@ const HandleLanguageSelector = () => {
     const getTitle = (target_selector_key) => {
         if (target_selector_key === "your_language") {
             const targetKey = currentIsOpenedLanguageSelector.data.target_key;
-            return targetKey === "1" ? "Your speaking language" : `Your speaking language (${targetKey})`;
+            return targetKey === "1"
+                ? t("main_page.language_panels.your_speaking_language")
+                : t("main_page.language_panels.your_speaking_language_indexed", { index: targetKey });
         }
-        if (target_selector_key === "your_translation_language") return "Your translation language";
+        if (target_selector_key === "your_translation_language") return t("main_page.language_panels.your_translation_language");
         if (target_selector_key === "target_language") {
             const targetLanguages = getCurrentTargetLanguages();
             if (targetLanguages?.["2"]?.enable === false) return t("main_page.language_selector.title_target_language");

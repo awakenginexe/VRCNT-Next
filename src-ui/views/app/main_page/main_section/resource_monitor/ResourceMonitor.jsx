@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18n } from "@useI18n";
 import clsx from "clsx";
 import styles from "./ResourceMonitor.module.scss";
 import { useResourceUsage } from "@logics_common";
@@ -12,6 +13,7 @@ const RESOURCE_ITEMS = [
 ];
 
 export const ResourceMonitor = () => {
+    const { t } = useI18n();
     const {
         currentResourceUsage,
         gpuMonitorSelection,
@@ -48,6 +50,7 @@ export const ResourceMonitor = () => {
                     selectedGpuIndex={resourceUsage?.selected_gpu_index}
                     gpuMonitorSelection={gpuMonitorSelection}
                     onSelectGpuMonitor={selectGpuMonitor}
+                    t={t}
                 />
             ))}
         </div>
@@ -64,6 +67,7 @@ const ResourceCard = ({
     selectedGpuIndex,
     gpuMonitorSelection,
     onSelectGpuMonitor,
+    t,
 }) => {
     const isAvailable = metric?.available && metric.percent !== null && metric.percent !== undefined;
     const percent = isAvailable ? Math.max(0, Math.min(100, Number(metric.percent))) : 0;
@@ -79,7 +83,7 @@ const ResourceCard = ({
                     <p className={styles.label}>{label}</p>
                     {isGpuSelectable && (
                         <p className={styles.gpu_selection_label}>
-                            {getGpuSelectionLabel(gpuMonitorSelection, selectedGpuIndex)}
+                            {getGpuSelectionLabel(gpuMonitorSelection, selectedGpuIndex, t)}
                         </p>
                     )}
                 </div>
@@ -98,16 +102,17 @@ const ResourceCard = ({
                     selectedGpuIndex={selectedGpuIndex}
                     gpuMonitorSelection={gpuMonitorSelection}
                     onSelectGpuMonitor={onSelectGpuMonitor}
+                    t={t}
                 />
             )}
         </div>
     );
 };
 
-const getGpuSelectionLabel = (selection, selectedGpuIndex) => {
+const getGpuSelectionLabel = (selection, selectedGpuIndex, t) => {
     if (selection?.mode === "manual") return `GPU ${selection.device_index}`;
-    if (selectedGpuIndex !== null && selectedGpuIndex !== undefined) return `Auto GPU ${selectedGpuIndex}`;
-    return "Auto";
+    if (selectedGpuIndex !== null && selectedGpuIndex !== undefined) return t("main_page.resource_monitor.auto_gpu", { index: selectedGpuIndex });
+    return t("main_page.resource_monitor.auto");
 };
 
 const GpuMonitorMenu = ({
@@ -115,6 +120,7 @@ const GpuMonitorMenu = ({
     selectedGpuIndex,
     gpuMonitorSelection,
     onSelectGpuMonitor,
+    t,
 }) => {
     const isAutoSelected = gpuMonitorSelection?.mode !== "manual";
 
@@ -126,7 +132,7 @@ const GpuMonitorMenu = ({
                 })}
                 onClick={() => onSelectGpuMonitor({ mode: "auto", device_index: null })}
             >
-                <span className={styles.gpu_menu_title}>Auto</span>
+                <span className={styles.gpu_menu_title}>{t("main_page.resource_monitor.auto")}</span>
                 <span className={styles.gpu_menu_desc}>
                     AI GPU{selectedGpuIndex !== null && selectedGpuIndex !== undefined ? ` ${selectedGpuIndex}` : ""}
                 </span>

@@ -41,6 +41,32 @@ main_page:
     target_language: "相手の言語"
     translator: "翻訳エンジン"
     translator_label_default: "デフォルト"
+    quick_setting_update: "アップデート"
+    quick_setting_overlay: "Overlay (VR)"
+
+    language_panels:
+        you_title: "あなた"
+        you_desc: "音声入力と自分向けの翻訳出力"
+        targets_title: "翻訳先"
+        targets_desc: "VRCNT-Next が翻訳を届ける相手を選択"
+        engines_title: "エンジン"
+        engines_desc: "翻訳と文字起こしをすばやく切り替え"
+        your_speaking_language: "話す言語"
+        your_speaking_language_indexed: "話す言語 {{index}}"
+        your_translation_language: "自分向けの翻訳言語"
+        engine: "エンジン"
+        change: "変更"
+        device: "デバイス"
+        device_desc: "CPU と GPU をすばやく切り替え"
+        processing_type: "処理タイプ"
+        processing_type_locked: "このエンジンでは Auto に固定されています"
+        processing_type_whisper: "Whisper の実行モードを選択"
+        loading: "読み込み中..."
+        backend_waiting: "バックエンドの起動を待機中"
+
+    resource_monitor:
+        auto: "Auto"
+        auto_gpu: "Auto GPU {{index}}"
 
     translator_selector:
         is_selected_same_language: "「{{your_language}}」と「{{target_language}}」に同じ言語が選択がされているため、「{{ctranslate2}}」のみが使用できます。"
@@ -63,6 +89,36 @@ main_page:
     language_selector:
         title_your_language: "あなたの言語"
         title_target_language: "相手の言語"
+        unsupported_by_model: "{{engine}} は選択中のモデルでこの言語に対応していません。"
+        model_support_hint: "{{engine}} では、選択中のモデルが対応する言語のみ有効になります。"
+
+    main_function_tooltips:
+        translation_title: "翻訳"
+        translation_detail: "チャット翻訳をオン/オフします。"
+        transcription_send_title: "話す"
+        transcription_send_detail: "マイク音声をチャット用に文字起こしします。"
+        transcription_receive_title: "聞く"
+        transcription_receive_detail: "相手から聞こえる音声を文字起こしします。"
+        foreground_title: "最前面固定"
+        foreground_detail: "VRCNT-Next を他のウィンドウの前面に固定します。"
+        settings_title: "設定"
+        settings_detail: "アプリ設定を開きます。"
+        control_title: "操作"
+        control_detail: "このアプリ操作を使用します。"
+
+    main_function_pending:
+        translation_start: "翻訳を起動中"
+        translation_warm: "翻訳に接続中"
+        translation_long: "翻訳を読み込み中"
+        transcription_send_start: "話す機能を起動中"
+        transcription_send_warm: "音声モデルを読み込み中"
+        transcription_send_long: "話す機能を読み込み中"
+        transcription_receive_start: "聞く機能を起動中"
+        transcription_receive_warm: "音声モデルを読み込み中"
+        transcription_receive_long: "聞く機能を読み込み中"
+        foreground_start: "ウィンドウを更新中"
+        foreground_warm: "ウィンドウを更新中"
+        foreground_long: "まだ更新中"
 
     update_available: "新しいバージョンが出ました！"
     updating: "アップデート中..."
@@ -149,6 +205,13 @@ config_page:
             label: "使用フォント"
         ui_language:
             label: "UIの言語"
+            itim_font_missing: "タイ語UIでは Itim フォントの使用をおすすめします。推奨フォントを使うには Itim をインストールしてください。インストールされていない場合は現在のフォントを使用します。"
+        theme_accent_color:
+            label: "テーマアクセントカラー"
+            neon_cyan: "ネオンシアン"
+            midnight_purple: "ミッドナイトパープル"
+            emerald_green: "エメラルドグリーン"
+            sakura_pink: "サクラピンク"
         performance_mode:
             label: "パフォーマンスモード"
             desc: "背景のぼかし効果（グラスモーフィズム）と発光エフェクトを無効化し、CPUおよびGPUの負荷を軽減します。"
@@ -261,6 +324,16 @@ config_page:
             start: "サンプルテキストを\nOverlayに送信する"
             stop: "送信を停止"
             sample_text: "サンプルテキスト"
+        overlay_accent_color:
+            label: "オーバーレイアクセントカラー"
+            neon_cyan: "ネオンシアン"
+            midnight_purple: "ミッドナイトパープル"
+            emerald_green: "エメラルドグリーン"
+            sakura_pink: "サクラピンク"
+        overlay_background:
+            label: "オーバーレイ背景"
+            transparent_black: "半透明ブラック"
+            solid_black: "不透明ブラック"
         opacity: "透明度"
         ui_scaling: "サイズ"
         display_duration: "表示時間"

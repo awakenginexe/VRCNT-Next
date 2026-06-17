@@ -39,6 +39,7 @@ export const RightSideComponents = () => {
 };
 
 const OpenUpdateQuickSetting = () => {
+    const { t } = useI18n();
     const { updateOpenedQuickSetting } = useStore_OpenedQuickSetting();
     const { currentLatestSoftwareVersionInfo } = useSoftwareVersion();
 
@@ -50,7 +51,7 @@ const OpenUpdateQuickSetting = () => {
 
     return (
         <OpenQuickSettingButton
-            label="Update"
+            label={t("main_page.quick_setting_update")}
             variable={true}
             onClickFunction={onClickFunction}
         />
@@ -58,7 +59,7 @@ const OpenUpdateQuickSetting = () => {
 };
 
 const OpenOverlayQuickSetting = () => {
-    // const { t } = useI18n();
+    const { t } = useI18n();
     const { updateOpenedQuickSetting } = useStore_OpenedQuickSetting();
     const {
         currentIsEnabledOverlaySmallLog,
@@ -73,7 +74,7 @@ const OpenOverlayQuickSetting = () => {
 
     return (
         <OpenQuickSettingButton
-            label="Overlay(VR)"
+            label={t("main_page.quick_setting_overlay")}
             variable={is_enable}
             onClickFunction={onClickFunction}
         />

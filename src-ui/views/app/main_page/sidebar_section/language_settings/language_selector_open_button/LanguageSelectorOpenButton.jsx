@@ -54,8 +54,12 @@ export const LanguageSelectorOpenButton = ({ TurnedOnSvgComponent, is_turned_on,
     };
 
     const getTitle = (target_selector_key) => {
-        if (target_selector_key === "your_language") return target_key === "1" ? "Your speaking language" : `Your speaking language ${target_key}`;
-        if (target_selector_key === "your_translation_language") return "Your translation language";
+        if (target_selector_key === "your_language") {
+            return target_key === "1"
+                ? t("main_page.language_panels.your_speaking_language")
+                : t("main_page.language_panels.your_speaking_language_indexed", { index: target_key });
+        }
+        if (target_selector_key === "your_translation_language") return t("main_page.language_panels.your_translation_language");
         if (target_selector_key === "target_language") {
             const targetLanguages = getCurrentTargetLanguages();
             if (targetLanguages?.["2"]?.enable === false) return t("main_page.target_language");
@@ -69,8 +73,8 @@ export const LanguageSelectorOpenButton = ({ TurnedOnSvgComponent, is_turned_on,
 
     if (selectedEntry?.enable === false) return null;
 
-    const language_text = selectedEntry?.language ?? "Loading...";
-    const country_text = selectedEntry?.country ?? "Loading...";
+    const language_text = selectedEntry?.language ?? t("main_page.language_panels.loading");
+    const country_text = selectedEntry?.country ?? t("main_page.language_panels.loading");
 
     return (
         <div className={styles.container}>

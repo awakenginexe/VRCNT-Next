@@ -7,7 +7,8 @@ Languages currently supported:
 - en: English
 - ja: 日本語
 - ko: 한국어
+- th: ไทย
 - zh-Hant: 繁體中文
 - zh-Hans: 简体中文
 
-Last updated: 2025/12
+Last updated: 2026/06

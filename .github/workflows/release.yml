@@ -3,7 +3,7 @@ name: Release VRCNT-Next
 on:
   push:
     tags:
-      - 'v*' # Trigger when tag starts with 'v' (e.g. v1.2.0)
+      - 'v*' # Trigger when tag starts with 'v' (e.g. v1.3.0)
 
 jobs:
   release:

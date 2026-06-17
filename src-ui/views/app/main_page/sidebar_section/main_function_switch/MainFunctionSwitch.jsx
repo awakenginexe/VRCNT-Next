@@ -81,6 +81,7 @@ export const MainFunctionSwitch = ({ forceCompact = false }) => {
 };
 
 export const SwitchContainer = ({ switchLabel, switch_id, children, currentState, toggleFunction, SvgComponent, isDisabled = false, forceCompact = false }) => {
+    const { t } = useI18n();
     const [is_hovered, setIsHovered] = useState(false);
     const [is_mouse_down, setIsMouseDown] = useState(false);
     const [pending_seconds, setPendingSeconds] = useState(0);
@@ -120,39 +121,39 @@ export const SwitchContainer = ({ switchLabel, switch_id, children, currentState
 
     const pending_messages = {
         translation: {
-            start: "Starting translator",
-            warm: "Connecting translator",
-            long: "Still loading translator",
+            start: "main_page.main_function_pending.translation_start",
+            warm: "main_page.main_function_pending.translation_warm",
+            long: "main_page.main_function_pending.translation_long",
         },
         transcription_send: {
-            start: "Starting Speaking",
-            warm: "Loading speech model",
-            long: "Still loading Speaking",
+            start: "main_page.main_function_pending.transcription_send_start",
+            warm: "main_page.main_function_pending.transcription_send_warm",
+            long: "main_page.main_function_pending.transcription_send_long",
         },
         transcription_receive: {
-            start: "Starting Listening",
-            warm: "Loading speech model",
-            long: "Still loading Listening",
+            start: "main_page.main_function_pending.transcription_receive_start",
+            warm: "main_page.main_function_pending.transcription_receive_warm",
+            long: "main_page.main_function_pending.transcription_receive_long",
         },
         foreground: {
-            start: "Updating window",
-            warm: "Updating window",
-            long: "Still updating",
+            start: "main_page.main_function_pending.foreground_start",
+            warm: "main_page.main_function_pending.foreground_warm",
+            long: "main_page.main_function_pending.foreground_long",
         },
     };
 
     const getPendingMessage = () => {
         const messages = pending_messages[switch_id] ?? pending_messages.foreground;
-        if (pending_seconds >= 30) return messages.long;
-        if (pending_seconds >= 5) return messages.warm;
-        return messages.start;
+        if (pending_seconds >= 30) return t(messages.long);
+        if (pending_seconds >= 5) return t(messages.warm);
+        return t(messages.start);
     };
     const tooltipMeta = getMainFunctionTooltipMeta(switch_id);
 
     return (
         <Tooltip
-            title={tooltipMeta.tooltipTitle}
-            detail={tooltipMeta.tooltipDetail}
+            title={t(tooltipMeta.tooltipTitleKey)}
+            detail={t(tooltipMeta.tooltipDetailKey)}
             placement="right"
             className={styles.switch_tooltip}
             contentClassName={styles.switch_tooltip_content}
@@ -173,7 +174,7 @@ export const SwitchContainer = ({ switchLabel, switch_id, children, currentState
                             <p className={getClassNames(styles.pending_status)}>{getPendingMessage()}</p>
                         )}
                         {isDisabled && currentState.state !== "pending" && (
-                            <p className={getClassNames(styles.pending_status)}>Waiting for backend startup</p>
+                            <p className={getClassNames(styles.pending_status)}>{t("main_page.language_panels.backend_waiting")}</p>
                         )}
                     </div>
                     {children}

@@ -41,6 +41,32 @@ main_page:
     target_language: "Target Language"
     translator: "Translator"
     translator_label_default: "Default"
+    quick_setting_update: "Update"
+    quick_setting_overlay: "Overlay (VR)"
+
+    language_panels:
+        you_title: "You"
+        you_desc: "Voice input and personal translation output"
+        targets_title: "Targets"
+        targets_desc: "Choose who you want VRCNT-Next to translate for"
+        engines_title: "Engines"
+        engines_desc: "Quick switches for translation and transcription"
+        your_speaking_language: "Your speaking language"
+        your_speaking_language_indexed: "Your speaking language {{index}}"
+        your_translation_language: "Your translation language"
+        engine: "Engine"
+        change: "Change"
+        device: "Device"
+        device_desc: "Quick switch between CPU and GPU"
+        processing_type: "Processing Type"
+        processing_type_locked: "Locked to Auto for this engine"
+        processing_type_whisper: "Choose the runtime mode for Whisper"
+        loading: "Loading..."
+        backend_waiting: "Waiting for backend startup"
+
+    resource_monitor:
+        auto: "Auto"
+        auto_gpu: "Auto GPU {{index}}"
 
     translator_selector:
         is_selected_same_language: "You are selecting the same language for '{{your_language}}' and '{{target_language}}' so only '{{ctranslate2}}' is available."
@@ -63,6 +89,36 @@ main_page:
     language_selector:
         title_your_language: "Select Your Language"
         title_target_language: "Select Target Language"
+        unsupported_by_model: "{{engine}} does not support this language with the selected model."
+        model_support_hint: "{{engine}} only enables languages supported by the selected model."
+
+    main_function_tooltips:
+        translation_title: "Translation"
+        translation_detail: "Turn chat translation on or off."
+        transcription_send_title: "Speaking"
+        transcription_send_detail: "Transcribe your microphone for chat."
+        transcription_receive_title: "Listening"
+        transcription_receive_detail: "Transcribe audio you hear from others."
+        foreground_title: "Always on top"
+        foreground_detail: "Keep VRCNT-Next above other windows."
+        settings_title: "Settings"
+        settings_detail: "Open app configuration."
+        control_title: "Control"
+        control_detail: "Use this app control."
+
+    main_function_pending:
+        translation_start: "Starting translator"
+        translation_warm: "Connecting translator"
+        translation_long: "Still loading translator"
+        transcription_send_start: "Starting Speaking"
+        transcription_send_warm: "Loading speech model"
+        transcription_send_long: "Still loading Speaking"
+        transcription_receive_start: "Starting Listening"
+        transcription_receive_warm: "Loading speech model"
+        transcription_receive_long: "Still loading Listening"
+        foreground_start: "Updating window"
+        foreground_warm: "Updating window"
+        foreground_long: "Still updating"
 
     update_available: "New version is ready!"
     updating: "Now updating..."
@@ -149,6 +205,13 @@ config_page:
             label: "Font Family"
         ui_language:
             label: "UI Language"
+            itim_font_missing: "Thai UI works best with the Itim font. Please install Itim to use the recommended Thai font. The app will use your current font for now."
+        theme_accent_color:
+            label: "Theme Accent Color"
+            neon_cyan: "Neon Cyan"
+            midnight_purple: "Midnight Purple"
+            emerald_green: "Emerald Green"
+            sakura_pink: "Sakura Pink"
         performance_mode:
             label: "Performance Mode"
             desc: "Disable backdrop blur (glassmorphism) and glow effects to reduce CPU and GPU usage."
@@ -261,6 +324,16 @@ config_page:
             start: "Send Sample Texts\nTo Overlay"
             stop: "Stop Sending"
             sample_text: "Sample Text."
+        overlay_accent_color:
+            label: "Overlay Accent Color"
+            neon_cyan: "Neon Cyan"
+            midnight_purple: "Midnight Purple"
+            emerald_green: "Emerald Green"
+            sakura_pink: "Sakura Pink"
+        overlay_background:
+            label: "Overlay Background"
+            transparent_black: "Black Transparent"
+            solid_black: "Black Solid"
         opacity: "Opacity"
         ui_scaling: "UI Scaling"
         display_duration: "Display Duration"

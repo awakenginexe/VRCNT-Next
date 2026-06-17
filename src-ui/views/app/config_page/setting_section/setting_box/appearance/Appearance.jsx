@@ -6,6 +6,10 @@ import { ui_configs } from "@ui_configs";
 import { useStore_SelectableFontFamilyList, useStore_EnablePerformanceMode } from "@store";
 
 import {
+    getThaiPreferredFontFamily,
+    THAI_PREFERRED_FONT_FAMILY,
+    THAI_UI_LANGUAGE_ID,
+    useNotificationStatus,
     useWindow,
 } from "@logics_common";
 
@@ -47,14 +51,39 @@ export const Appearance = () => {
 
 const UiLanguageContainer = () => {
     const { t } = useI18n();
-    const { currentUiLanguage, setUiLanguage } = useAppearance();
+    const {
+        currentSelectedFontFamily,
+        currentUiLanguage,
+        setSelectedFontFamily,
+        setUiLanguage,
+    } = useAppearance();
+    const { currentSelectableFontFamilyList } = useStore_SelectableFontFamilyList();
+    const { showNotification_Warning } = useNotificationStatus();
+
+    const selectFunction = (ui_language) => {
+        if (ui_language === THAI_UI_LANGUAGE_ID) {
+            const itim_font = getThaiPreferredFontFamily(currentSelectableFontFamilyList.data);
+            if (itim_font) {
+                setSelectedFontFamily(itim_font);
+            } else if (currentSelectedFontFamily.data !== THAI_PREFERRED_FONT_FAMILY) {
+                showNotification_Warning(
+                    t("config_page.appearance.ui_language.itim_font_missing"),
+                    {
+                        hide_duration: 10000,
+                        category_id: "thai_itim_font_missing",
+                    },
+                );
+            }
+        }
+        setUiLanguage(ui_language);
+    };
 
     const is_not_en_lang = currentUiLanguage.data !== "en" && currentUiLanguage.data !== undefined;
     return (
         <RadioButtonContainer
             label={is_not_en_lang ? "UI Language" : t("config_page.appearance.ui_language.label")}
             desc={is_not_en_lang ? t("config_page.appearance.ui_language.label") : false}
-            selectFunction={setUiLanguage}
+            selectFunction={selectFunction}
             name="ui_language"
             options={ui_configs.selectable_ui_languages}
             checked_variable={currentUiLanguage}
@@ -195,6 +224,7 @@ const PerformanceModeContainer = () => {
 };
 
 const ThemeAccentContainer = () => {
+    const { t } = useI18n();
     const [selectedTheme, setSelectedTheme] = useState(() => {
         const savedTheme = localStorage.getItem("theme_accent");
         return THEME_ACCENT_CLASSES.includes(savedTheme) ? savedTheme : "theme-neon-cyan";
@@ -210,13 +240,18 @@ const ThemeAccentContainer = () => {
     };
 
     return (
-        <DropdownMenuContainer
-            dropdown_id="theme_accent"
-            label="Theme Accent Color"
-            selected_id={selectedTheme}
-            list={THEME_ACCENTS}
-            selectFunction={selectFunction}
-            state="ok"
-        />
+            <DropdownMenuContainer
+                dropdown_id="theme_accent"
+                label={t("config_page.appearance.theme_accent_color.label")}
+                selected_id={selectedTheme}
+                list={{
+                    "theme-neon-cyan": t("config_page.appearance.theme_accent_color.neon_cyan"),
+                    "theme-midnight-purple": t("config_page.appearance.theme_accent_color.midnight_purple"),
+                    "theme-emerald-green": t("config_page.appearance.theme_accent_color.emerald_green"),
+                    "theme-sakura-pink": t("config_page.appearance.theme_accent_color.sakura_pink"),
+                }}
+                selectFunction={selectFunction}
+                state="ok"
+            />
     );
 };

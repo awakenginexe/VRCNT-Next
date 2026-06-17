@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { useI18n } from "@useI18n";
 
 import { useLanguageSettings } from "@logics_main";
 import { useTranscription } from "@logics_configs";
@@ -150,6 +151,7 @@ const buildSupportGuard = ({ selectorType, engine, voskWeightType, parakeetWeigh
 };
 
 export const LanguageSelector = ({ title, onClickFunction, selectorType }) => {
+    const { t } = useI18n();
     const { currentSelectableLanguageList } = useLanguageSettings();
     const {
         currentSelectedTranscriptionEngine,
@@ -184,7 +186,7 @@ export const LanguageSelector = ({ title, onClickFunction, selectorType }) => {
             <LanguageSelectorTopBar title={title}/>
             {supportGuard.isActive && (
                 <p className={styles.language_support_hint}>
-                    {supportGuard.engine} only enables languages supported by the selected model.
+                    {t("main_page.language_selector.model_support_hint", { engine: supportGuard.engine })}
                 </p>
             )}
             <div className={styles.language_list_scroll_wrapper}>
@@ -196,6 +198,7 @@ export const LanguageSelector = ({ title, onClickFunction, selectorType }) => {
                             letter={letter}
                             languages={languages}
                             supportGuard={supportGuard}
+                            t={t}
                         />
                     ))}
                 </div>
@@ -204,7 +207,7 @@ export const LanguageSelector = ({ title, onClickFunction, selectorType }) => {
     );
 };
 
-const LanguageGroup = ({ onClickFunction, letter, languages, supportGuard }) => {
+const LanguageGroup = ({ onClickFunction, letter, languages, supportGuard, t }) => {
     return (
         <div className={styles.language_each_letter_box}>
             <div className={styles.language_letter_header}>
@@ -217,7 +220,7 @@ const LanguageGroup = ({ onClickFunction, letter, languages, supportGuard }) => 
                     onClickFunction={onClickFunction}
                     language_data={language_data}
                     isDisabled={supportGuard.isSupported(language_data) === false}
-                    disabledReason={`${supportGuard.engine} does not support this language with the selected model.`}
+                    disabledReason={t("main_page.language_selector.unsupported_by_model", { engine: supportGuard.engine })}
                 />
             ))}
         </div>

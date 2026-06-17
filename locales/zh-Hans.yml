@@ -41,6 +41,32 @@ main_page:
     target_language: "目标语言"
     translator: "翻译器"
     translator_label_default: "默认"
+    quick_setting_update: "更新"
+    quick_setting_overlay: "Overlay (VR)"
+
+    language_panels:
+        you_title: "你"
+        you_desc: "语音输入和个人翻译输出"
+        targets_title: "目标"
+        targets_desc: "选择 VRCNT-Next 要翻译给谁"
+        engines_title: "引擎"
+        engines_desc: "快速切换翻译和语音识别"
+        your_speaking_language: "你的说话语言"
+        your_speaking_language_indexed: "你的说话语言 {{index}}"
+        your_translation_language: "你的翻译语言"
+        engine: "引擎"
+        change: "更改"
+        device: "设备"
+        device_desc: "快速切换 CPU 和 GPU"
+        processing_type: "处理类型"
+        processing_type_locked: "此引擎锁定为 Auto"
+        processing_type_whisper: "选择 Whisper 的运行模式"
+        loading: "加载中..."
+        backend_waiting: "正在等待后端启动"
+
+    resource_monitor:
+        auto: "Auto"
+        auto_gpu: "Auto GPU {{index}}"
 
     translator_selector:
         is_selected_same_language: "「{{your_language}}」和「{{target_language}}」选择了相同的语言，因此只能使用「{{ctranslate2}}」。"
@@ -63,6 +89,36 @@ main_page:
     language_selector:
         title_your_language: "你的语言"
         title_target_language: "目标语言"
+        unsupported_by_model: "{{engine}} 使用所选模型时不支持此语言。"
+        model_support_hint: "{{engine}} 只启用所选模型支持的语言。"
+
+    main_function_tooltips:
+        translation_title: "翻译"
+        translation_detail: "开启或关闭聊天翻译。"
+        transcription_send_title: "说话"
+        transcription_send_detail: "将麦克风语音转写为聊天内容。"
+        transcription_receive_title: "聆听"
+        transcription_receive_detail: "转写你从其他人听到的音频。"
+        foreground_title: "置顶"
+        foreground_detail: "让 VRCNT-Next 保持在其他窗口上方。"
+        settings_title: "设置"
+        settings_detail: "打开应用设置。"
+        control_title: "控制"
+        control_detail: "使用此应用控制项。"
+
+    main_function_pending:
+        translation_start: "正在启动翻译器"
+        translation_warm: "正在连接翻译器"
+        translation_long: "翻译器仍在加载"
+        transcription_send_start: "正在启动说话"
+        transcription_send_warm: "正在加载语音模型"
+        transcription_send_long: "说话仍在加载"
+        transcription_receive_start: "正在启动聆听"
+        transcription_receive_warm: "正在加载语音模型"
+        transcription_receive_long: "聆听仍在加载"
+        foreground_start: "正在更新窗口"
+        foreground_warm: "正在更新窗口"
+        foreground_long: "仍在更新"
 
     update_available: "有新版本可供使用！"
     updating: "更新中..."
@@ -149,6 +205,13 @@ config_page:
             label: "字体"
         ui_language:
             label: "界面语言"
+            itim_font_missing: "泰文界面建议使用 Itim 字体。请安装 Itim 以使用推荐的泰文字体。未安装时会暂时使用当前字体。"
+        theme_accent_color:
+            label: "主题强调色"
+            neon_cyan: "霓虹青"
+            midnight_purple: "午夜紫"
+            emerald_green: "翡翠绿"
+            sakura_pink: "樱花粉"
         performance_mode:
             label: "性能模式"
             desc: "禁用背景模糊（毛玻璃效果）和发光特效以减少 CPU 和 GPU 占用。"
@@ -261,6 +324,16 @@ config_page:
             start: "向 Overlay\n发送示例文本"
             stop: "停止发送"
             sample_text: "示例文本"
+        overlay_accent_color:
+            label: "Overlay 强调色"
+            neon_cyan: "霓虹青"
+            midnight_purple: "午夜紫"
+            emerald_green: "翡翠绿"
+            sakura_pink: "樱花粉"
+        overlay_background:
+            label: "Overlay 背景"
+            transparent_black: "透明黑"
+            solid_black: "纯黑"
         opacity: "透明度"
         ui_scaling: "大小"
         display_duration: "显示持续时间"

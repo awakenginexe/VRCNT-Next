@@ -41,6 +41,32 @@ main_page:
     target_language: "상대방의 언어"
     translator: "번역 엔진"
     translator_label_default: "기본값"
+    quick_setting_update: "업데이트"
+    quick_setting_overlay: "Overlay (VR)"
+
+    language_panels:
+        you_title: "나"
+        you_desc: "음성 입력 및 개인 번역 출력"
+        targets_title: "대상"
+        targets_desc: "VRCNT-Next가 번역할 대상을 선택"
+        engines_title: "엔진"
+        engines_desc: "번역과 음성 인식을 빠르게 전환"
+        your_speaking_language: "내가 말하는 언어"
+        your_speaking_language_indexed: "내가 말하는 언어 {{index}}"
+        your_translation_language: "내 번역 언어"
+        engine: "엔진"
+        change: "변경"
+        device: "장치"
+        device_desc: "CPU와 GPU를 빠르게 전환"
+        processing_type: "처리 유형"
+        processing_type_locked: "이 엔진은 Auto로 고정됩니다"
+        processing_type_whisper: "Whisper 실행 모드를 선택"
+        loading: "불러오는 중..."
+        backend_waiting: "백엔드 시작 대기 중"
+
+    resource_monitor:
+        auto: "Auto"
+        auto_gpu: "Auto GPU {{index}}"
 
     translator_selector:
         is_selected_same_language: "'{{your_language}}'와 '{{target_language}}'에 동일한 언어가 선택되어 있으므로, 「{{ctranslate2}}」만 사용할 수 있습니다."
@@ -63,6 +89,36 @@ main_page:
     language_selector:
         title_your_language: "당신의 언어"
         title_target_language: "상대방의 언어"
+        unsupported_by_model: "{{engine}}는 선택한 모델에서 이 언어를 지원하지 않습니다."
+        model_support_hint: "{{engine}}는 선택한 모델이 지원하는 언어만 활성화합니다."
+
+    main_function_tooltips:
+        translation_title: "번역"
+        translation_detail: "채팅 번역을 켜거나 끕니다."
+        transcription_send_title: "말하기"
+        transcription_send_detail: "마이크 음성을 채팅용으로 전사합니다."
+        transcription_receive_title: "듣기"
+        transcription_receive_detail: "다른 사람에게서 들리는 오디오를 전사합니다."
+        foreground_title: "항상 위로"
+        foreground_detail: "VRCNT-Next를 다른 창 위에 유지합니다."
+        settings_title: "설정"
+        settings_detail: "앱 설정을 엽니다."
+        control_title: "컨트롤"
+        control_detail: "이 앱 컨트롤을 사용합니다."
+
+    main_function_pending:
+        translation_start: "번역 시작 중"
+        translation_warm: "번역 연결 중"
+        translation_long: "번역 로딩 중"
+        transcription_send_start: "말하기 시작 중"
+        transcription_send_warm: "음성 모델 로딩 중"
+        transcription_send_long: "말하기 로딩 중"
+        transcription_receive_start: "듣기 시작 중"
+        transcription_receive_warm: "음성 모델 로딩 중"
+        transcription_receive_long: "듣기 로딩 중"
+        foreground_start: "창 업데이트 중"
+        foreground_warm: "창 업데이트 중"
+        foreground_long: "아직 업데이트 중"
 
     update_available: "새로운 버전이 나왔습니다!"
     updating: "업데이트 중..."
@@ -149,6 +205,13 @@ config_page:
             label: "폰트"
         ui_language:
             label: "UI 언어"
+            itim_font_missing: "태국어 UI는 Itim 글꼴에서 가장 잘 보입니다. 권장 태국어 글꼴을 사용하려면 Itim을 설치해 주세요. 설치되어 있지 않으면 현재 글꼴을 사용합니다."
+        theme_accent_color:
+            label: "테마 강조 색상"
+            neon_cyan: "네온 시안"
+            midnight_purple: "미드나이트 퍼플"
+            emerald_green: "에메랄드 그린"
+            sakura_pink: "사쿠라 핑크"
         performance_mode:
             label: "성능 모드"
             desc: "CPU 및 GPU 사용량을 줄이기 위해 배경 흐림(글래스모피즘) 및 발광 효과를 비활성화합니다."
@@ -261,6 +324,16 @@ config_page:
             start: "샘플 텍스트를\n오버레이에 전송"
             stop: "전송 중지"
             sample_text: "샘플 텍스트"
+        overlay_accent_color:
+            label: "오버레이 강조 색상"
+            neon_cyan: "네온 시안"
+            midnight_purple: "미드나이트 퍼플"
+            emerald_green: "에메랄드 그린"
+            sakura_pink: "사쿠라 핑크"
+        overlay_background:
+            label: "오버레이 배경"
+            transparent_black: "투명 검정"
+            solid_black: "불투명 검정"
         opacity: "투명도"
         ui_scaling: "UI 크기 조정"
         display_duration: "표시 시간"

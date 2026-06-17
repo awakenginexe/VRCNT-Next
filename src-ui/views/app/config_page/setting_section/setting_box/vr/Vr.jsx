@@ -25,17 +25,6 @@ import SquareSvg from "@images/square.svg?react";
 import TriangleSvg from "@images/triangle.svg?react";
 import { randomIntMinMax } from "@utils";
 
-const OVERLAY_ACCENT_COLORS = {
-    "theme-neon-cyan": "Neon Cyan",
-    "theme-midnight-purple": "Midnight Purple",
-    "theme-emerald-green": "Emerald Green",
-    "theme-sakura-pink": "Sakura Pink",
-};
-
-const OVERLAY_BACKGROUND_MODES = {
-    transparent_black: "Black Transparent",
-    solid_black: "Black Solid",
-};
 export const Vr = () => {
     const { t } = useI18n();
     const [is_opened_small_settings, setIsOpenedSmallSettings] = useState(true);
@@ -462,6 +451,8 @@ const AdjustButtonContainer = ({ wrapper_class_name, is_max, is_min, countUp, co
 };
 
 const StyleControls = ({ settings, selectFunction }) => {
+    const { t } = useI18n();
+
     const selectAccentColor = (selected_data) => {
         selectFunction("accent_color", selected_data.selected_id);
     };
@@ -474,17 +465,25 @@ const StyleControls = ({ settings, selectFunction }) => {
         <div className={styles.style_controls}>
             <DropdownMenuContainer
                 dropdown_id="overlay_accent_color"
-                label="Overlay Accent Color"
+                label={t("config_page.vr.overlay_accent_color.label")}
                 selected_id={settings.accent_color ?? "theme-neon-cyan"}
-                list={OVERLAY_ACCENT_COLORS}
+                list={{
+                    "theme-neon-cyan": t("config_page.vr.overlay_accent_color.neon_cyan"),
+                    "theme-midnight-purple": t("config_page.vr.overlay_accent_color.midnight_purple"),
+                    "theme-emerald-green": t("config_page.vr.overlay_accent_color.emerald_green"),
+                    "theme-sakura-pink": t("config_page.vr.overlay_accent_color.sakura_pink"),
+                }}
                 selectFunction={selectAccentColor}
                 state="ok"
             />
             <DropdownMenuContainer
                 dropdown_id="overlay_background_mode"
-                label="Overlay Background"
+                label={t("config_page.vr.overlay_background.label")}
                 selected_id={settings.background_mode ?? "transparent_black"}
-                list={OVERLAY_BACKGROUND_MODES}
+                list={{
+                    transparent_black: t("config_page.vr.overlay_background.transparent_black"),
+                    solid_black: t("config_page.vr.overlay_background.solid_black"),
+                }}
                 selectFunction={selectBackgroundMode}
                 state="ok"
             />
