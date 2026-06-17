@@ -404,6 +404,15 @@ class ValidatedProperty:
 # Validator Functions for ValidatedProperty
 # ============================================================================
 
+OVERLAY_ACCENT_COLORS = {
+    "theme-neon-cyan": (0, 229, 255),
+    "theme-midnight-purple": (167, 139, 250),
+    "theme-emerald-green": (16, 185, 129),
+    "theme-sakura-pink": (244, 114, 182),
+}
+
+OVERLAY_BACKGROUND_MODES = ("transparent_black", "solid_black")
+
 def _main_window_geometry_validator(val, inst):
     if not (isinstance(val, dict) and set(val.keys()) == set(inst.MAIN_WINDOW_GEOMETRY.keys())):
         return None
@@ -424,7 +433,7 @@ def _selected_transcription_compute_type_validator(val, inst):
     return None
 
 def _overlay_small_validator(val, inst):
-    if not (isinstance(val, dict) and set(val.keys()) == set(inst.OVERLAY_SMALL_LOG_SETTINGS.keys())):
+    if not isinstance(val, dict):
         return None
     base = inst.OVERLAY_SMALL_LOG_SETTINGS
     new = dict(base)
@@ -437,6 +446,10 @@ def _overlay_small_validator(val, inst):
             new[key] = v
         elif key in ['opacity','ui_scaling'] and isinstance(v,(int,float)):
             new[key] = float(v)
+        elif key == 'accent_color' and isinstance(v, str) and v in OVERLAY_ACCENT_COLORS:
+            new[key] = v
+        elif key == 'background_mode' and isinstance(v, str) and v in OVERLAY_BACKGROUND_MODES:
+            new[key] = v
     return new
 
 def _overlay_large_validator(val, inst):
@@ -455,6 +468,10 @@ def _overlay_large_validator(val, inst):
             new[key] = v
         elif key in ['opacity','ui_scaling'] and isinstance(v,(int,float)):
             new[key] = float(v)
+        elif key == 'accent_color' and isinstance(v, str) and v in OVERLAY_ACCENT_COLORS:
+            new[key] = v
+        elif key == 'background_mode' and isinstance(v, str) and v in OVERLAY_BACKGROUND_MODES:
+            new[key] = v
     return new
 
 def _format_validator_send(val, inst):
@@ -874,7 +891,7 @@ class Config:
 
     def init_config(self):
         # Read Only
-        self._VERSION = "1.1.0"
+        self._VERSION = "1.2.0"
         if getattr(sys, 'frozen', False):
             self._PATH_LOCAL = os_path.dirname(sys.executable)
         else:
@@ -1121,6 +1138,8 @@ class Config:
             "fadeout_duration": 2,
             "opacity": 1.0,
             "ui_scaling": 1.0,
+            "accent_color": "theme-neon-cyan",
+            "background_mode": "transparent_black",
             "tracker": "HMD",
         }
         self._OVERLAY_LARGE_LOG = False
@@ -1135,6 +1154,8 @@ class Config:
             "fadeout_duration": 2,
             "opacity": 1.0,
             "ui_scaling": 1.0,
+            "accent_color": "theme-neon-cyan",
+            "background_mode": "transparent_black",
             "tracker": "LeftHand",
             "log_order": "oldest_first",
         }

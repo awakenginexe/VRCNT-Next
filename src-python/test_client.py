@@ -671,6 +671,8 @@ class AutomatedEndpointTester:
                 "fadeout_duration": random.randint(0,100),
                 "opacity": random.random(),
                 "ui_scaling": random.random(),
+                "accent_color": random.choice(["theme-neon-cyan","theme-midnight-purple","theme-emerald-green","theme-sakura-pink"]),
+                "background_mode": random.choice(["transparent_black","solid_black"]),
                 "tracker": random.choice(["HMD","LeftHand","RightHand"])
             }
         elif endpoint == "/set/data/send_message_format_parts":

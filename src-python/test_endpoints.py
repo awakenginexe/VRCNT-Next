@@ -399,6 +399,8 @@ class TestMainloop():
                     "fadeout_duration": random.randint(0, 100),
                     "opacity": random.random(),
                     "ui_scaling": random.random(),
+                    "accent_color": random.choice(["theme-neon-cyan", "theme-midnight-purple", "theme-emerald-green", "theme-sakura-pink"]),
+                    "background_mode": random.choice(["transparent_black", "solid_black"]),
                     "tracker": random.choice(["HMD", "LeftHand", "RightHand"]),
                 }
             case "/set/data/overlay_large_log_settings":
@@ -413,6 +415,8 @@ class TestMainloop():
                     "fadeout_duration": random.randint(0, 100),
                     "opacity": random.random(),
                     "ui_scaling": random.random(),
+                    "accent_color": random.choice(["theme-neon-cyan", "theme-midnight-purple", "theme-emerald-green", "theme-sakura-pink"]),
+                    "background_mode": random.choice(["transparent_black", "solid_black"]),
                     "tracker": random.choice(["HMD", "LeftHand", "RightHand"]),
                 }
             case "/set/data/send_message_format_parts":

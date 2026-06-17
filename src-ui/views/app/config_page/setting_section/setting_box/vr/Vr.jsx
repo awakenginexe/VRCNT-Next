@@ -8,6 +8,7 @@ import {
     RadioButtonContainer,
     SwitchBoxContainer,
     CheckboxContainer,
+    DropdownMenuContainer,
 } from "../_templates/Templates";
 
 import {
@@ -24,6 +25,17 @@ import SquareSvg from "@images/square.svg?react";
 import TriangleSvg from "@images/triangle.svg?react";
 import { randomIntMinMax } from "@utils";
 
+const OVERLAY_ACCENT_COLORS = {
+    "theme-neon-cyan": "Neon Cyan",
+    "theme-midnight-purple": "Midnight Purple",
+    "theme-emerald-green": "Emerald Green",
+    "theme-sakura-pink": "Sakura Pink",
+};
+
+const OVERLAY_BACKGROUND_MODES = {
+    transparent_black: "Black Transparent",
+    solid_black: "Black Solid",
+};
 export const Vr = () => {
     const { t } = useI18n();
     const [is_opened_small_settings, setIsOpenedSmallSettings] = useState(true);
@@ -154,6 +166,7 @@ const OverlaySettingsContainer = ({
                 )}
             <SendSampleTextToggleButton />
             </div>
+            <StyleControls settings={settings} selectFunction={selectFunction} />
             <OtherControls settings={settings} onChangeFunction={onChangeFunction} selectFunction={selectFunction} ui_configs={ui_configs} />
             <RadioButtonContainer
                 label={t("config_page.vr.tracker")}
@@ -444,6 +457,37 @@ const AdjustButtonContainer = ({ wrapper_class_name, is_max, is_min, countUp, co
             >
                 <TriangleSvg className={styles.adjust_button_triangle_svg} />
             </div>
+        </div>
+    );
+};
+
+const StyleControls = ({ settings, selectFunction }) => {
+    const selectAccentColor = (selected_data) => {
+        selectFunction("accent_color", selected_data.selected_id);
+    };
+
+    const selectBackgroundMode = (selected_data) => {
+        selectFunction("background_mode", selected_data.selected_id);
+    };
+
+    return (
+        <div className={styles.style_controls}>
+            <DropdownMenuContainer
+                dropdown_id="overlay_accent_color"
+                label="Overlay Accent Color"
+                selected_id={settings.accent_color ?? "theme-neon-cyan"}
+                list={OVERLAY_ACCENT_COLORS}
+                selectFunction={selectAccentColor}
+                state="ok"
+            />
+            <DropdownMenuContainer
+                dropdown_id="overlay_background_mode"
+                label="Overlay Background"
+                selected_id={settings.background_mode ?? "transparent_black"}
+                list={OVERLAY_BACKGROUND_MODES}
+                selectFunction={selectBackgroundMode}
+                state="ok"
+            />
         </div>
     );
 };
