@@ -44,6 +44,27 @@ main_page:
     quick_setting_update: "アップデート"
     quick_setting_overlay: "Overlay (VR)"
 
+    sidebar_panel:
+        collapse_title: "サイドバーを最小化"
+        collapse_detail: "左パネルをコンパクトなレールにします。"
+        expand_title: "サイドバーを展開"
+        expand_detail: "左パネルを元の表示に戻します。"
+
+    desktop_overlay:
+        open_label: "デスクトップ Overlay"
+        tooltip_title: "デスクトップ Overlay"
+        tooltip_detail: "ライブメッセージ用のドラッグ可能なデスクトップ Overlay を開きます。"
+        title: "デスクトップ Overlay"
+        pin: "Overlay を固定"
+        unpin: "Overlay の固定を解除"
+        settings: "Overlay 設定"
+        close: "Overlay を閉じる"
+        settings_title: "Overlay 設定"
+        translations_only: "翻訳のみ"
+        expanded_view: "拡張表示"
+        waiting: "メッセージ待機中"
+        no_translation: "翻訳はまだありません"
+
     language_panels:
         you_title: "あなた"
         you_desc: "音声入力と自分向けの翻訳出力"

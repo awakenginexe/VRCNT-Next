@@ -44,6 +44,27 @@ main_page:
     quick_setting_update: "อัปเดต"
     quick_setting_overlay: "โอเวอร์เลย์ (VR)"
 
+    sidebar_panel:
+        collapse_title: "ย่อแถบด้านข้าง"
+        collapse_detail: "ย่อแผงซ้ายให้เป็นแถบกะทัดรัด"
+        expand_title: "ขยายแถบด้านข้าง"
+        expand_detail: "คืนค่าแผงซ้ายเป็นขนาดเต็ม"
+
+    desktop_overlay:
+        open_label: "โอเวอร์เลย์เดสก์ท็อป"
+        tooltip_title: "โอเวอร์เลย์เดสก์ท็อป"
+        tooltip_detail: "เปิดโอเวอร์เลย์ข้อความสดที่ลากบนเดสก์ท็อปได้"
+        title: "โอเวอร์เลย์เดสก์ท็อป"
+        pin: "ปักหมุดโอเวอร์เลย์"
+        unpin: "เลิกปักหมุดโอเวอร์เลย์"
+        settings: "ตั้งค่าโอเวอร์เลย์"
+        close: "ปิดโอเวอร์เลย์"
+        settings_title: "ตั้งค่าโอเวอร์เลย์"
+        translations_only: "เฉพาะคำแปล"
+        expanded_view: "มุมมองขยาย"
+        waiting: "กำลังรอข้อความ"
+        no_translation: "ยังไม่มีคำแปล"
+
     language_panels:
         you_title: "คุณ"
         you_desc: "เสียงพูดของคุณและผลแปลส่วนตัว"

@@ -1,23 +1,23 @@
 .container {
     position: relative;
-    width: 8.8rem;
-    min-width: 8.8rem;
-    max-width: 8.8rem;
-    flex: 0 0 8.8rem;
+    width: var(--sidebar-width, 28.8rem);
+    min-width: var(--sidebar-width, 28.8rem);
+    max-width: var(--sidebar-width, 28.8rem);
+    flex: 0 0 var(--sidebar-width, 28.8rem);
     height: 100%;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    background: var(--surface_1_color);
+    background: rgba(12, 18, 31, 0.64);
     backdrop-filter: var(--panel_blur);
-    border-right: var(--panel_border_subtle);
+    border-right: 0.1rem solid rgba(var(--accent_color_rgb), 0.12);
     box-shadow: var(--shadow_lateral);
     transition: var(--transition_ui);
     &.is_compact_mode {
-        width: 8.8rem;
-        min-width: 8.8rem;
-        max-width: 8.8rem;
-        flex-basis: 8.8rem;
+        width: var(--sidebar-width, 8.8rem);
+        min-width: var(--sidebar-width, 8.8rem);
+        max-width: var(--sidebar-width, 8.8rem);
+        flex: 0 0 var(--sidebar-width, 8.8rem);
     }
 }
 
@@ -25,8 +25,8 @@
     width: 100%;
     overflow-y: scroll;
     overflow-x: hidden;
-    padding: 0.8rem 0.2rem 0;
-    margin-bottom: calc(2rem + 1.6rem + 2rem); // config button's sizes (svg + padding + margin).
+    padding: 4.8rem 1.6rem 0;
+    margin-bottom: 8.4rem;
     pointer-events: auto;
     z-index: 1;
     &::-webkit-scrollbar {
@@ -56,4 +56,23 @@
         }
     }
 
+}
+
+.utility_actions {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding-top: 1.2rem;
+}
+
+.is_compact_mode {
+    .scroll_container {
+        padding: 4.6rem 0.2rem 0;
+        margin-bottom: calc(2rem + 1.6rem + 2rem);
+    }
+
+    .utility_actions {
+        padding-top: 0.6rem;
+    }
 }

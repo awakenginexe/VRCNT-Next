@@ -506,7 +506,7 @@ class Telemetry:
         except Exception:
             pass
     
-    def init(self, enabled: bool, app_version: str = "1.3.0"):
+    def init(self, enabled: bool, app_version: str = "2.0.0"):
         """
         テレメトリ初期化（同期インターフェース）
         

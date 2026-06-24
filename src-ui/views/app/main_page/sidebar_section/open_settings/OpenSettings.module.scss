@@ -3,25 +3,24 @@
     bottom: 0;
     left: 0;
     width: 100%;
-    background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--accent_color) 8%, #071017) 42%);
+    background: linear-gradient(180deg, transparent, rgba(8, 13, 23, 0.96) 42%);
 }
 
 .open_config_page_button {
-    width: auto;
-    margin: 1rem;
-    padding: 0.8rem 0;
+    width: 4.8rem;
+    height: 4.8rem;
+    margin: 1.8rem auto;
+    padding: 0;
     display: flex;
     justify-content: center;
+    align-items: center;
     border-radius: 0.95rem;
-    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.26);
-    background:
-        linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.14), rgba(var(--accent_color_rgb), 0.045)),
-        var(--surface_2_color);
+    border: 0.1rem solid transparent;
+    background: transparent;
     cursor: pointer;
     &:hover {
-        background:
-            linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.2), rgba(var(--accent_color_rgb), 0.07)),
-            var(--surface_3_color);
+        border-color: rgba(var(--accent_color_rgb), 0.2);
+        background: rgba(var(--accent_color_rgb), 0.08);
     }
     &:active {
         background-color: var(--dark_875_color);
@@ -45,6 +44,6 @@
 }
 
 .configuration_svg {
-    width: 2rem;
-    color: var(--primary_200_color);
+    width: 2.4rem;
+    color: var(--dark_350_color);
 }

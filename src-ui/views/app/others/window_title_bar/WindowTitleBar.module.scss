@@ -1,9 +1,10 @@
 .container {
     width: 100%;
-    background-color: var(--dark_1000_color);
+    background: rgba(7, 10, 18, 0.88);
+    backdrop-filter: var(--panel_blur);
     flex-shrink: 0;
     display: flex;
-    border-bottom: 0.1rem solid #ffffff08;
+    border-bottom: 0.1rem solid rgba(var(--accent_color_rgb), 0.08);
 }
 
 .wrapper {
@@ -13,7 +14,7 @@
     justify-content: space-between;
     align-items: center;
     height: var(--title_bar_height);
-    margin-top: 0.4rem;
+    margin-top: 0.2rem;
 }
 
 .title_wrapper {
@@ -34,13 +35,15 @@
 
 .title_text {
     color: var(--primary_200_color);
-    font-size: 1.15rem;
-    font-weight: 800;
+    font-size: 1.1rem;
+    font-weight: 900;
+    text-transform: uppercase;
 }
 
 .title_subtitle {
-    color: var(--dark_600_color);
-    font-size: 1rem;
+    color: var(--dark_450_color);
+    font-size: 0.95rem;
+    font-weight: 650;
 }
 
 .window_control_wrapper {

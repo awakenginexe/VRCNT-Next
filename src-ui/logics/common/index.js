@@ -5,6 +5,7 @@ export { useInitProgress } from "./useInitProgress";
 export { useInitStatus } from "./useInitStatus";
 export { useIsBackendReady } from "./useIsBackendReady";
 export { useWindow } from "./useWindow";
+export * from "./desktopOverlayWindow.js";
 export { useIsOpenedConfigPage } from "./useIsOpenedConfigPage";
 export { useIsSoftwareUpdating } from "./useIsSoftwareUpdating";
 export { useNotificationStatus } from "./useNotificationStatus";

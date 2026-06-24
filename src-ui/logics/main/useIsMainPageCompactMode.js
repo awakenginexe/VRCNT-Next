@@ -10,10 +10,13 @@ export const useIsMainPageCompactMode = () => {
     };
 
     const toggleIsMainPageCompactMode = () => {
-        if (currentIsMainPageCompactMode.data) {
-            asyncStdoutToPython("/set/disable/main_window_sidebar_compact_mode");
-        } else {
+        const nextIsCompactMode = !currentIsMainPageCompactMode.data;
+        updateIsMainPageCompactMode(nextIsCompactMode);
+
+        if (nextIsCompactMode) {
             asyncStdoutToPython("/set/enable/main_window_sidebar_compact_mode");
+        } else {
+            asyncStdoutToPython("/set/disable/main_window_sidebar_compact_mode");
         }
     };
 

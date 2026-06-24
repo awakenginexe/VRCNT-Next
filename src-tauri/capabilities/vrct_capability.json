@@ -2,7 +2,7 @@
     "$schema": "../gen/schemas/desktop-schema.json",
     "identifier": "vrct-capability",
     "description": "VRCT main window capabilities",
-    "windows": ["main"],
+    "windows": ["main", "desktop-overlay"],
     "permissions": [
         "core:window:default",
         "core:window:allow-start-dragging",
@@ -15,6 +15,7 @@
         "core:window:allow-minimize",
         "core:window:allow-unminimize",
         "core:window:allow-set-focus",
+        "core:webview:allow-create-webview-window",
 
         "global-shortcut:allow-is-registered",
         "global-shortcut:allow-register",

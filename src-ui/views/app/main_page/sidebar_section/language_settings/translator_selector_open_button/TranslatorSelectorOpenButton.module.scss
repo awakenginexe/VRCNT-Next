@@ -7,15 +7,18 @@
     position: relative;
     width: auto;
     display: flex;
-    justify-content: center;
+    justify-content: space-between;
     align-items: center;
-    gap: 0.2rem;
-    margin: 0.4rem;
-    padding: 0.6rem 0;
-    border-radius: 0.6rem;
+    gap: 0.8rem;
+    margin: 0;
+    padding: 1rem 1.2rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.14);
+    border-radius: 1.4rem;
+    background: rgba(24, 35, 55, 0.62);
     cursor: pointer;
     &:hover {
-        background-color: var(--dark_875_color);
+        border-color: rgba(var(--accent_color_rgb), 0.32);
+        background-color: rgba(30, 44, 68, 0.78);
     }
     &:active {
         background-color: var(--dark_900_color);
@@ -23,8 +26,22 @@
 }
 
 .label {
-    font-size: 1.2rem;
+    min-width: 0;
+    color: var(--dark_200_color);
+    font-size: 1.1rem;
+    font-weight: 850;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    &:first-child {
+        flex-shrink: 0;
+        color: var(--dark_450_color);
+        font-size: 1rem;
+        font-weight: 900;
+        letter-spacing: 0.05rem;
+        text-transform: uppercase;
+    }
 }
 
 .warning_svg {

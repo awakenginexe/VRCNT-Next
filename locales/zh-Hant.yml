@@ -44,6 +44,27 @@ main_page:
     quick_setting_update: "更新"
     quick_setting_overlay: "Overlay (VR)"
 
+    sidebar_panel:
+        collapse_title: "最小化側欄"
+        collapse_detail: "將左側面板收合為精簡欄。"
+        expand_title: "展開側欄"
+        expand_detail: "恢復完整左側面板。"
+
+    desktop_overlay:
+        open_label: "桌面 Overlay"
+        tooltip_title: "桌面 Overlay"
+        tooltip_detail: "開啟可拖曳的桌面即時訊息 Overlay。"
+        title: "桌面 Overlay"
+        pin: "固定 Overlay"
+        unpin: "取消固定 Overlay"
+        settings: "Overlay 設定"
+        close: "關閉 Overlay"
+        settings_title: "Overlay 設定"
+        translations_only: "僅顯示翻譯"
+        expanded_view: "展開檢視"
+        waiting: "等待訊息"
+        no_translation: "尚無翻譯"
+
     language_panels:
         you_title: "你"
         you_desc: "語音輸入與個人翻譯輸出"

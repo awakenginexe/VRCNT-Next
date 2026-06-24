@@ -44,6 +44,27 @@ main_page:
     quick_setting_update: "Update"
     quick_setting_overlay: "Overlay (VR)"
 
+    sidebar_panel:
+        collapse_title: "Minimize sidebar"
+        collapse_detail: "Shrink the left panel into a compact rail."
+        expand_title: "Expand sidebar"
+        expand_detail: "Restore the full left panel."
+
+    desktop_overlay:
+        open_label: "Desktop Overlay"
+        tooltip_title: "Desktop Overlay"
+        tooltip_detail: "Open a draggable desktop overlay for live messages."
+        title: "Desktop Overlay"
+        pin: "Pin overlay"
+        unpin: "Unpin overlay"
+        settings: "Overlay settings"
+        close: "Close overlay"
+        settings_title: "Overlay Settings"
+        translations_only: "Translations only"
+        expanded_view: "Expanded view"
+        waiting: "Waiting for messages"
+        no_translation: "No translation yet"
+
     language_panels:
         you_title: "You"
         you_desc: "Voice input and personal translation output"

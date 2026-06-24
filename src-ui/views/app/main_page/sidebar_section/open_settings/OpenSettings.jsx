@@ -1,10 +1,12 @@
 import styles from "./OpenSettings.module.scss";
 import { useIsOpenedConfigPage } from "@logics_common";
+import { useI18n } from "@useI18n";
 import { Tooltip } from "@common_components";
 import ConfigurationSvg from "@images/configuration.svg?react";
 import { getMainFunctionTooltipMeta } from "../main_function_switch/mainFunctionTooltipMeta.js";
 
 export const OpenSettings = () => {
+    const { t } = useI18n();
     const { setIsOpenedConfigPage } = useIsOpenedConfigPage();
     const tooltipMeta = getMainFunctionTooltipMeta("settings");
 
@@ -15,8 +17,8 @@ export const OpenSettings = () => {
     return (
         <div className={styles.container}>
             <Tooltip
-                title={tooltipMeta.tooltipTitle}
-                detail={tooltipMeta.tooltipDetail}
+                title={t(tooltipMeta.tooltipTitleKey)}
+                detail={t(tooltipMeta.tooltipDetailKey)}
                 placement="right"
                 className={styles.settings_tooltip}
                 contentClassName={styles.settings_tooltip_content}

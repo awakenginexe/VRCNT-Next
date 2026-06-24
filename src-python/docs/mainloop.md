@@ -399,7 +399,7 @@ def start(self) -> None:
 ```python
 # stdin に JSON を送信
 echo '{"endpoint": "/get/data/version", "data": null}' | python mainloop.py
-# 期待される出力: {"status": 200, "endpoint": "/get/data/version", "result": "1.3.0"}
+# 期待される出力: {"status": 200, "endpoint": "/get/data/version", "result": "2.0.0"}
 ```
 
 ### 2. 並列リクエストテスト

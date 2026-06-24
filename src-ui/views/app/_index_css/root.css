@@ -27,7 +27,7 @@ html, body {
     border-radius: 10px; /* fixed by px */
     overflow: hidden;
     background: var(--bg_radial_gradient);
-    background-color: #060913; /* solid dark background fallback */
+    background-color: #0a0e1a; /* solid dark background fallback */
 }
 
 

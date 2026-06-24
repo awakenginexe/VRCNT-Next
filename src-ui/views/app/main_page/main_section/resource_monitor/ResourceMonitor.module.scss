@@ -1,18 +1,21 @@
 .container {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 0.8rem;
+    gap: 3.2rem;
     width: 100%;
+    padding-bottom: 3.2rem;
 }
 
 .card {
     position: relative;
     min-width: 0;
-    padding: 0.85rem 1rem;
-    border: var(--panel_border_subtle);
-    border-radius: 1.1rem;
-    background: var(--surface_2_color);
-    box-shadow: var(--shadow_control);
+    min-height: 9.8rem;
+    padding: 2rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.14);
+    border-radius: 1.4rem;
+    background: rgba(15, 21, 36, 0.6);
+    backdrop-filter: var(--panel_blur);
+    box-shadow: 0 0 3rem rgba(var(--accent_color_rgb), 0.04);
     transition: var(--transition_ui);
 
     &.is_selectable {
@@ -27,18 +30,20 @@
 }
 
 .card_header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    align-items: start;
     gap: 0.8rem;
-    margin-bottom: 0.65rem;
+    min-height: 5.6rem;
+    margin-bottom: 1rem;
 }
 
 .label {
     color: var(--dark_350_color);
     font-size: 1.05rem;
-    font-weight: 800;
-    letter-spacing: 0;
+    font-weight: 900;
+    letter-spacing: 0.1rem;
+    text-transform: uppercase;
 }
 
 .label_group {
@@ -60,15 +65,16 @@
 }
 
 .value {
-    color: var(--dark_100_color);
-    font-size: 1.15rem;
-    font-weight: 800;
+    color: var(--primary_150_color);
+    font-size: 3.2rem;
+    line-height: 1;
+    font-weight: 900;
     white-space: nowrap;
 }
 
 .meter_track {
     width: 100%;
-    height: 0.45rem;
+    height: 0.5rem;
     border-radius: 99rem;
     overflow: hidden;
     background: rgba(255, 255, 255, 0.08);
@@ -79,7 +85,7 @@
     height: 100%;
     border-radius: 99rem;
     background: var(--accent_gradient);
-    box-shadow: 0 0 1rem rgba(var(--accent_color_rgb), 0.28);
+    box-shadow: 0 0 1.4rem rgba(var(--accent_color_rgb), 0.28);
     transition: width var(--transition_ui);
 
     &[data-unavailable="true"] {
@@ -101,9 +107,7 @@
     padding: 0.55rem;
     border: var(--panel_border);
     border-radius: 1rem;
-    background:
-        var(--bg_radial_gradient),
-        rgba(10, 13, 24, 0.98);
+    background: rgba(10, 14, 26, 0.98);
     backdrop-filter: var(--panel_blur);
     box-shadow: 0 1.2rem 4rem rgba(0, 0, 0, 0.42), var(--shadow_accent);
 }

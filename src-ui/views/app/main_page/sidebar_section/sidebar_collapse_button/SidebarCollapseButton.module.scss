@@ -1,0 +1,64 @@
+.tooltip {
+    position: absolute;
+    top: 1.4rem;
+    right: 1.2rem;
+    z-index: 3;
+
+    &.is_compact_mode {
+        top: 6.2rem;
+        right: 50%;
+        transform: translateX(50%);
+    }
+}
+
+.tooltip_content {
+    min-width: 18rem;
+    max-width: 22rem;
+    padding: 0.7rem 0.9rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.18);
+    background: var(--surface_2_color);
+    box-shadow: var(--shadow_control);
+    white-space: normal;
+}
+
+.button {
+    width: 3.4rem;
+    height: 3.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.16);
+    border-radius: 1rem;
+    background: rgba(9, 14, 25, 0.74);
+    color: var(--dark_300_color);
+    cursor: pointer;
+    box-shadow: var(--shadow_control);
+
+    &:hover {
+        border-color: rgba(var(--accent_color_rgb), 0.38);
+        background: rgba(var(--accent_color_rgb), 0.1);
+        color: var(--primary_150_color);
+        transform: translateY(-0.1rem);
+    }
+
+    &:active {
+        transform: translateY(0);
+    }
+
+    &.is_compact_mode {
+        width: 4.2rem;
+        height: 3.8rem;
+        background: rgba(17, 24, 40, 0.72);
+    }
+}
+
+.arrow_svg {
+    width: 1.45rem;
+    height: 1.45rem;
+    transform: rotate(0deg);
+    transition: transform var(--transition_ui);
+
+    &.reverse {
+        transform: rotate(180deg);
+    }
+}

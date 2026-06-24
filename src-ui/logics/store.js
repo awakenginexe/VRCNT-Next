@@ -13,6 +13,9 @@ import {
 } from "@ui_configs";
 
 import { EMPTY_RESOURCE_USAGE } from "./common/resourceUsageUtils.js";
+import { isTauriRuntime } from "./common/tauriRuntime.js";
+
+const IS_TAURI_RUNTIME = isTauriRuntime();
 
 export const store = {
     backend_subprocess: null,
@@ -63,6 +66,92 @@ const createTargetLanguagePresetMap = () => ({
         3: createLanguageSlot("", "", false),
     },
 });
+
+const createPreviewYourLanguagePresetMap = () => ({
+    1: {
+        1: createLanguageSlot("Japanese", "Japan"),
+        2: createLanguageSlot("English", "United States", false),
+        3: createLanguageSlot("Chinese Simplified", "China", false),
+    },
+    2: {
+        1: createLanguageSlot("English", "United States"),
+        2: createLanguageSlot("Japanese", "Japan", false),
+        3: createLanguageSlot("Chinese Simplified", "China", false),
+    },
+    3: {
+        1: createLanguageSlot("Korean", "Korea"),
+        2: createLanguageSlot("English", "United States", false),
+        3: createLanguageSlot("Japanese", "Japan", false),
+    },
+});
+
+const createPreviewTargetLanguagePresetMap = () => ({
+    1: {
+        1: createLanguageSlot("English", "United States"),
+        2: createLanguageSlot("Japanese", "Japan", false),
+        3: createLanguageSlot("Chinese Simplified", "China", false),
+    },
+    2: {
+        1: createLanguageSlot("Japanese", "Japan"),
+        2: createLanguageSlot("English", "United States", false),
+        3: createLanguageSlot("Chinese Simplified", "China", false),
+    },
+    3: {
+        1: createLanguageSlot("English", "United States"),
+        2: createLanguageSlot("Japanese", "Japan", false),
+        3: createLanguageSlot("Korean", "Korea", false),
+    },
+});
+
+const PREVIEW_RESOURCE_USAGE = {
+    cpu: { available: true, percent: 24 },
+    gpu: { available: true, percent: 68 },
+    ram: { available: true, percent: 42 },
+    vram: { available: true, percent: 61 },
+    gpu_devices: [
+        { device_index: 0, device_name: "RTX 4090" },
+    ],
+    selected_gpu_index: 0,
+};
+
+const PREVIEW_MESSAGE_LOGS = [
+    {
+        id: "preview-received-1",
+        category: "received",
+        status: "ok",
+        created_at: "14:02",
+        messages: {
+            original: {
+                message: "今日は新しいワールドに行ってみませんか？",
+                transliteration: [],
+            },
+            translations: [
+                {
+                    message: "Why don't we go to a new world today?",
+                    transliteration: [],
+                },
+            ],
+        },
+    },
+    {
+        id: "preview-sent-1",
+        category: "sent",
+        status: "ok",
+        created_at: "14:03",
+        messages: {
+            original: {
+                message: "賛成！どこかおすすめありますか？",
+                transliteration: [],
+            },
+            translations: [
+                {
+                    message: "Agreed! Do you have any recommendations?",
+                    transliteration: [],
+                },
+            ],
+        },
+    },
+];
 
 const generatePropertyNames = (base_name) => ({
     error: `error${base_name}`,
@@ -179,11 +268,15 @@ export const registerMany = (settingsArray = []) => {
 
 
 // Common
-export const { atomInstance: Atom_IsBackendReady, useHook: useStore_IsBackendReady } = createAtomWithHook(false, "IsBackendReady");
+export const { atomInstance: Atom_IsBackendReady, useHook: useStore_IsBackendReady } = createAtomWithHook(!IS_TAURI_RUNTIME, "IsBackendReady");
 export const { atomInstance: Atom_IsVrctAvailable, useHook: useStore_IsVrctAvailable } = createAtomWithHook(true, "IsVrctAvailable");
 export const { atomInstance: Atom_IsOscAvailable, useHook: useStore_IsOscAvailable } = createAtomWithHook(true, "IsOscAvailable");
 export const { atomInstance: Atom_ComputeMode, useHook: useStore_ComputeMode } = createAtomWithHook("", "ComputeMode");
-export const { atomInstance: Atom_ResourceUsage, useHook: useStore_ResourceUsage } = createAtomWithHook(EMPTY_RESOURCE_USAGE, "ResourceUsage", {is_state_ok: true});
+export const { atomInstance: Atom_ResourceUsage, useHook: useStore_ResourceUsage } = createAtomWithHook(
+    IS_TAURI_RUNTIME ? EMPTY_RESOURCE_USAGE : PREVIEW_RESOURCE_USAGE,
+    "ResourceUsage",
+    {is_state_ok: true}
+);
 export const { atomInstance: Atom_IsOpenedConfigPage, useHook: useStore_IsOpenedConfigPage } = createAtomWithHook(false, "IsOpenedConfigPage");
 export const { atomInstance: Atom_MainFunctionsStateMemory, useHook: useStore_MainFunctionsStateMemory } = createAtomWithHook({
     transcription_send: false,
@@ -195,9 +288,9 @@ export const { atomInstance: Atom_LatestSoftwareVersionInfo, useHook: useStore_L
     new_version: "0.0.0",
     release_url: "https://github.com/awakenginexe/VRCNT-Next/releases",
 }, "LatestSoftwareVersionInfo");
-export const { atomInstance: Atom_InitProgress, useHook: useStore_InitProgress } = createAtomWithHook(0, "InitProgress");
+export const { atomInstance: Atom_InitProgress, useHook: useStore_InitProgress } = createAtomWithHook(IS_TAURI_RUNTIME ? 0 : 4, "InitProgress");
 export const { atomInstance: Atom_InitStatus, useHook: useStore_InitStatus } = createAtomWithHook({
-    visible: true,
+    visible: IS_TAURI_RUNTIME,
     message: "Starting VRCNT-Next",
     detail: "Preparing startup.",
     phase: "starting",
@@ -219,18 +312,34 @@ export const { atomInstance: Atom_EnablePerformanceMode, useHook: useStore_Enabl
 export const { atomInstance: Atom_IsMainPageCompactMode, useHook: useStore_IsMainPageCompactMode } = createAtomWithHook(false, "IsMainPageCompactMode");
 
 // Sidebar Section
-export const { atomInstance: Atom_TranslationStatus, useHook: useStore_TranslationStatus } = createAtomWithHook(false, "TranslationStatus", {is_state_ok: true});
-export const { atomInstance: Atom_TranscriptionSendStatus, useHook: useStore_TranscriptionSendStatus } = createAtomWithHook(false, "TranscriptionSendStatus", {is_state_ok: true});
-export const { atomInstance: Atom_TranscriptionReceiveStatus, useHook: useStore_TranscriptionReceiveStatus } = createAtomWithHook(false, "TranscriptionReceiveStatus", {is_state_ok: true});
+export const { atomInstance: Atom_TranslationStatus, useHook: useStore_TranslationStatus } = createAtomWithHook(!IS_TAURI_RUNTIME, "TranslationStatus", {is_state_ok: true});
+export const { atomInstance: Atom_TranscriptionSendStatus, useHook: useStore_TranscriptionSendStatus } = createAtomWithHook(!IS_TAURI_RUNTIME, "TranscriptionSendStatus", {is_state_ok: true});
+export const { atomInstance: Atom_TranscriptionReceiveStatus, useHook: useStore_TranscriptionReceiveStatus } = createAtomWithHook(!IS_TAURI_RUNTIME, "TranscriptionReceiveStatus", {is_state_ok: true});
 export const { atomInstance: Atom_ForegroundStatus, useHook: useStore_ForegroundStatus } = createAtomWithHook(false, "ForegroundStatus", {is_state_ok: true});
 
 export const { atomInstance: Atom_SelectedPresetTabNumber, useHook: useStore_SelectedPresetTabNumber } = createAtomWithHook("1", "SelectedPresetTabNumber");
-export const { atomInstance: Atom_SelectedYourLanguages, useHook: useStore_SelectedYourLanguages } = createAtomWithHook(createYourLanguagePresetMap(), "SelectedYourLanguages");
-export const { atomInstance: Atom_SelectedYourTranslationLanguages, useHook: useStore_SelectedYourTranslationLanguages } = createAtomWithHook(createYourLanguagePresetMap(), "SelectedYourTranslationLanguages");
-export const { atomInstance: Atom_SelectedTargetLanguages, useHook: useStore_SelectedTargetLanguages } = createAtomWithHook(createTargetLanguagePresetMap(), "SelectedTargetLanguages");
+export const { atomInstance: Atom_SelectedYourLanguages, useHook: useStore_SelectedYourLanguages } = createAtomWithHook(
+    IS_TAURI_RUNTIME ? createYourLanguagePresetMap() : createPreviewYourLanguagePresetMap(),
+    "SelectedYourLanguages"
+);
+export const { atomInstance: Atom_SelectedYourTranslationLanguages, useHook: useStore_SelectedYourTranslationLanguages } = createAtomWithHook(
+    IS_TAURI_RUNTIME ? createYourLanguagePresetMap() : createPreviewTargetLanguagePresetMap(),
+    "SelectedYourTranslationLanguages"
+);
+export const { atomInstance: Atom_SelectedTargetLanguages, useHook: useStore_SelectedTargetLanguages } = createAtomWithHook(
+    IS_TAURI_RUNTIME ? createTargetLanguagePresetMap() : createPreviewTargetLanguagePresetMap(),
+    "SelectedTargetLanguages"
+);
 
-export const { atomInstance: Atom_TranslationEngines, useHook: useStore_TranslationEngines } = createAtomWithHook(translator_status, "TranslationEngines");
-export const { atomInstance: Atom_SelectedTranslationEngines, useHook: useStore_SelectedTranslationEngines } = createAtomWithHook({1:"", 2:"", 3:""}, "SelectedTranslationEngines");
+export const { atomInstance: Atom_TranslationEngines, useHook: useStore_TranslationEngines } = createAtomWithHook(
+    translator_status,
+    "TranslationEngines",
+    {is_state_ok: !IS_TAURI_RUNTIME}
+);
+export const { atomInstance: Atom_SelectedTranslationEngines, useHook: useStore_SelectedTranslationEngines } = createAtomWithHook(
+    IS_TAURI_RUNTIME ? {1:"", 2:"", 3:""} : {1:"DeepL_API", 2:"CTranslate2", 3:"Google"},
+    "SelectedTranslationEngines"
+);
 export const { atomInstance: Atom_IsOpenedTranslatorSelector, useHook: useStore_IsOpenedTranslatorSelector } = createAtomWithHook(false, "IsOpenedTranslatorSelector");
 export const { atomInstance: Atom_IsOpenedTranscriptionEngineSelector, useHook: useStore_IsOpenedTranscriptionEngineSelector } = createAtomWithHook(false, "IsOpenedTranscriptionEngineSelector");
 
@@ -242,9 +351,9 @@ export const { atomInstance: Atom_IsOpenedLanguageSelector, useHook: useStore_Is
 export const { atomInstance: Atom_SelectableLanguageList, useHook: useStore_SelectableLanguageList } = createAtomWithHook([], "SelectableLanguageList");
 
 // Message Container
-export const { atomInstance: Atom_MessageLogs, useHook: useStore_MessageLogs } = createAtomWithHook([], "MessageLogs");
+export const { atomInstance: Atom_MessageLogs, useHook: useStore_MessageLogs } = createAtomWithHook(IS_TAURI_RUNTIME ? [] : PREVIEW_MESSAGE_LOGS, "MessageLogs");
 // export const { atomInstance: Atom_MessageLogs, useHook: useStore_MessageLogs } = createAtomWithHook(generateTestConversationData(20), "MessageLogs"); // For testing
-export const { atomInstance: Atom_MessageInputBoxRatio, useHook: useStore_MessageInputBoxRatio } = createAtomWithHook(20, "MessageInputBoxRatio");
+export const { atomInstance: Atom_MessageInputBoxRatio, useHook: useStore_MessageInputBoxRatio } = createAtomWithHook(IS_TAURI_RUNTIME ? 20 : 11, "MessageInputBoxRatio");
 export const { atomInstance: Atom_MessageInputValue, useHook: useStore_MessageInputValue } = createAtomWithHook("", "MessageInputValue");
 
 

@@ -1,17 +1,23 @@
 .container {
     height: 100%;
     display: flex;
-    gap: 1rem;
+    gap: 1.2rem;
+    padding: 1rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.18);
+    border-radius: 2.4rem;
+    background: rgba(20, 28, 46, 0.78);
+    backdrop-filter: var(--panel_blur);
+    box-shadow: 0 2rem 5rem rgba(0, 0, 0, 0.42), 0 0 2.6rem rgba(var(--accent_color_rgb), 0.08);
 }
 
 .message_box_wrapper {
     width: 100%;
     height: 100%;
-    padding: 0.8rem;
-    background: var(--surface_2_color);
-    border: var(--panel_border_subtle);
-    border-radius: 1.2rem;
-    box-shadow: var(--shadow_control);
+    padding: 0.6rem 0.8rem;
+    background: transparent;
+    border: 0;
+    border-radius: 1.4rem;
+    box-shadow: none;
     transition: var(--transition_ui);
     &:focus-within {
         border-color: var(--accent_color);
@@ -22,7 +28,10 @@
 .message_box_input_area {
     width: 100%;
     height: 100%;
-    font-size: 1.6rem;
+    color: var(--dark_200_color);
+    font-size: 1.7rem;
+    font-weight: 650;
+    line-height: 1.45;
     resize: none;
 }
 
@@ -30,12 +39,13 @@
     display: flex;
     justify-content: center;
     align-items: center;
-    max-width: 10rem;
+    min-width: 9.6rem;
+    max-width: 16rem;
     height: 100%;
     font-size: 1.2rem;
-    background: var(--accent_gradient);
-    border-radius: 1.2rem;
-    box-shadow: var(--shadow_control);
+    background: linear-gradient(135deg, #7dd3fc, #67c6ef);
+    border-radius: 1.8rem;
+    box-shadow: 0 0 2.5rem rgba(var(--accent_color_rgb), 0.34);
     aspect-ratio: 1 / 1;
     transition: var(--transition_ui);
     &:hover {
@@ -49,6 +59,6 @@
 }
 
 .message_send_icon {
-    width: 2rem;
-    color: var(--dark_100_color);
+    width: 2.2rem;
+    color: #001f2e;
 }

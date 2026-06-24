@@ -1,0 +1,110 @@
+.tooltip {
+    display: flex;
+    width: 100%;
+    justify-content: center;
+}
+
+.tooltip_content {
+    min-width: 18rem;
+    max-width: 22rem;
+    padding: 0.7rem 0.9rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.18);
+    background: var(--surface_2_color);
+    box-shadow: var(--shadow_control);
+    white-space: normal;
+}
+
+.button {
+    position: relative;
+    width: 100%;
+    min-height: 5.6rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.2rem 1.4rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.15);
+    border-radius: 1.6rem;
+    background: linear-gradient(135deg, rgba(var(--accent_color_rgb), 0.12), rgba(200, 160, 240, 0.08));
+    color: var(--dark_200_color);
+    cursor: pointer;
+    box-shadow: var(--shadow_control);
+    overflow: hidden;
+
+    &::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, rgba(255, 255, 255, 0.09), transparent 48%);
+        opacity: 0;
+        transition: opacity var(--transition_ui);
+    }
+
+    &:hover {
+        border-color: rgba(var(--accent_color_rgb), 0.4);
+        background: linear-gradient(135deg, rgba(var(--accent_color_rgb), 0.18), rgba(200, 160, 240, 0.12));
+        transform: translateY(-0.1rem);
+        box-shadow: var(--shadow_control_hover);
+
+        &::before {
+            opacity: 1;
+        }
+    }
+
+    &:active {
+        transform: translateY(0);
+    }
+
+    &.is_pending {
+        opacity: 0.72;
+        pointer-events: none;
+    }
+
+    &.is_compact_mode {
+        width: 4.8rem;
+        height: 4.8rem;
+        min-height: 4.8rem;
+        justify-content: center;
+        margin: 0.35rem auto;
+        padding: 0;
+        border-radius: 1rem;
+
+        .label {
+            display: none;
+        }
+
+        .status_dot {
+            right: 0.35rem;
+        }
+    }
+}
+
+.icon {
+    width: 2.1rem;
+    height: 2.1rem;
+    flex-shrink: 0;
+    color: var(--primary_150_color);
+    filter: drop-shadow(0 0 0.6rem rgba(var(--accent_color_rgb), 0.32));
+}
+
+.label {
+    position: relative;
+    z-index: 1;
+    min-width: 0;
+    color: var(--dark_150_color, var(--dark_200_color));
+    font-size: 1.25rem;
+    font-weight: 900;
+    line-height: 1.15;
+    text-align: left;
+}
+
+.status_dot {
+    position: absolute;
+    top: 50%;
+    right: 1.1rem;
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 99rem;
+    background: var(--accent_color);
+    box-shadow: 0 0 1rem rgba(var(--accent_color_rgb), 0.56);
+    transform: translateY(-50%);
+}

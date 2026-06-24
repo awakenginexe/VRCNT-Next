@@ -18,6 +18,7 @@ import styles from "./App.module.scss";
 
 import { MainPage } from "./main_page/MainPage";
 import { ConfigPage } from "./config_page/ConfigPage";
+import { DesktopOverlayBridge } from "./desktop_overlay/DesktopOverlayBridge";
 
 import {
     WindowTitleBar,
@@ -30,6 +31,7 @@ import {
 } from "./others";
 
 import { useIsBackendReady, useIsSoftwareUpdating, useWindow } from "@logics_common";
+import { isTauriRuntime } from "@logics_common/tauriRuntime.js";
 
 const THEME_ACCENT_CLASSES = [
     "theme-neon-cyan",
@@ -40,6 +42,7 @@ const THEME_ACCENT_CLASSES = [
 
 export const App = () => {
     const { i18n } = useI18n();
+    const isTauri = isTauriRuntime();
 
     useEffect(() => {
         const savedTheme = localStorage.getItem("theme_accent") || "theme-neon-cyan";
@@ -53,8 +56,8 @@ export const App = () => {
         <div className={styles.container}>
             <AppErrorBoundary >
                 <KeyEventController />
-                <StartPythonController />
-                <GlobalHotKeyController />
+                {isTauri && <StartPythonController />}
+                {isTauri && <GlobalHotKeyController />}
                 <UiLanguageController />
                 <ConfigPageCloseTriggerController />
                 <UiSizeController />
@@ -62,6 +65,7 @@ export const App = () => {
                 <TransparencyController />
                 <CornerRadiusController />
                 <PerformanceModeController />
+                <DesktopOverlayBridge />
                 <Contents key={i18n.language} />
 
                 <SnackbarController />

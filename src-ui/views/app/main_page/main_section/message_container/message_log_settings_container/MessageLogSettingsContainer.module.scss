@@ -6,7 +6,7 @@ $toggle_config_size: 3rem;
     left: 0;
     height: $container_height;
     width: 100%;
-    background-color: var(--dark_825_color);
+    background: rgba(10, 14, 26, 0.92);
     transition: top 0.3s ease;
     padding: 0.6rem;
     display: flex;
@@ -25,8 +25,9 @@ $toggle_config_size: 3rem;
     }
     &.is_opened {
         top: 0;
-        background-color: var(--dark_825_color_cc);
-        backdrop-filter: blur(0.6rem);
+        background: rgba(10, 14, 26, 0.88);
+        backdrop-filter: var(--panel_blur);
+        border-bottom: 0.1rem solid rgba(var(--accent_color_rgb), 0.14);
         & .config_svg_wrapper {
             width: 0%;
             bottom: 0;
@@ -48,7 +49,8 @@ $toggle_config_size: 3rem;
     left: 50%;
     bottom: -#{$toggle_config_size};
     transform: translate(-50%, -50%) rotate(0deg);
-    background-color: var(--dark_825_color);
+    background: rgba(20, 28, 46, 0.9);
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.14);
     width: $toggle_config_size;
     border-radius: 50%;
     aspect-ratio: 1 / 1;
@@ -60,7 +62,7 @@ $toggle_config_size: 3rem;
 
 .config_svg {
     width: calc($toggle_config_size / 1.6);
-    color: var(--dark_500_color);
+    color: var(--dark_350_color);
 }
 
 .others_wrapper {

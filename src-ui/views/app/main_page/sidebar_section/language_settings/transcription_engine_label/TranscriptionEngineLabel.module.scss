@@ -3,7 +3,7 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
+    gap: 1.1rem;
 }
 
 .engine_label_button {
@@ -12,10 +12,10 @@
     justify-content: space-between;
     align-items: center;
     gap: 1rem;
-    padding: 0.95rem 1rem;
-    border-radius: 1rem;
-    border: 0.1rem solid var(--border_subtle_color);
-    background: linear-gradient(180deg, var(--surface_2_color), var(--surface_1_color));
+    padding: 1rem 1.2rem;
+    border-radius: 1.4rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.14);
+    background: rgba(24, 35, 55, 0.62);
     cursor: pointer;
     transition:
         background-color var(--transition_ui),
@@ -23,8 +23,8 @@
         transform var(--transition_ui);
 
     &:hover {
-        border-color: var(--primary_500_color);
-        background-color: var(--surface_3_color);
+        border-color: rgba(var(--accent_color_rgb), 0.32);
+        background-color: rgba(30, 44, 68, 0.78);
         transform: translateY(-0.1rem);
     }
 
@@ -43,19 +43,19 @@
 .quick_switch_title {
     font-size: 1.05rem;
     color: var(--dark_450_color);
-    font-weight: 700;
+    font-weight: 900;
     text-transform: uppercase;
     letter-spacing: 0.04rem;
 }
 
 .label_value {
-    font-size: 1.4rem;
+    font-size: 1.28rem;
     color: var(--dark_100_color);
     font-weight: 800;
 }
 
 .model_value {
-    font-size: 1.02rem;
+    font-size: 0.98rem;
     color: var(--primary_200_color);
     font-weight: 700;
     line-height: 1.35;
@@ -64,8 +64,8 @@
 
 .edit_hint {
     color: var(--primary_200_color);
-    font-size: 1.1rem;
-    font-weight: 700;
+    font-size: 1rem;
+    font-weight: 900;
 }
 
 .quick_switch_block {
@@ -115,14 +115,14 @@
 
 .option_button {
     min-width: 5.4rem;
-    min-height: 3rem;
+    min-height: 3.1rem;
     padding: 0.5rem 0.9rem;
-    border-radius: 0.9rem;
-    border: 0.1rem solid var(--border_subtle_color);
-    background: var(--surface_2_color);
+    border-radius: 1.2rem;
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.16);
+    background: rgba(13, 20, 34, 0.72);
     color: var(--dark_250_color);
-    font-size: 1.12rem;
-    font-weight: 700;
+    font-size: 1.02rem;
+    font-weight: 900;
     cursor: pointer;
     transition:
         background-color var(--transition_ui),
@@ -146,10 +146,10 @@
 }
 
 .option_button.is_selected {
-    background: linear-gradient(180deg, rgba(var(--accent_color_rgb), 0.18), rgba(var(--accent_color_rgb), 0.08));
-    border-color: var(--primary_500_color);
-    color: var(--primary_150_color);
-    box-shadow: var(--shadow_control_hover);
+    background: var(--accent_gradient);
+    border-color: rgba(var(--accent_color_rgb), 0.7);
+    color: var(--dark_900_color);
+    box-shadow: 0 0 1.8rem rgba(var(--accent_color_rgb), 0.18);
 }
 
 .option_button.is_disabled {

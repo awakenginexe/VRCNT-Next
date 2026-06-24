@@ -8,7 +8,7 @@
     display: flex;
     user-select: text;
     gap: 0.6rem;
-    padding: 0 1.2rem;
+    padding: 0 0 3rem;
     box-sizing: border-box;
     &.sent_message.is_shown_resend_button:hover {
         background-color: rgba(255, 255, 255, 0.02);
@@ -21,7 +21,7 @@
     flex-direction: column;
     justify-content: center;
     user-select: text;
-    padding: 0.4em 0;
+    padding: 0;
     &.sent_message {
         align-items: flex-end;
     }
@@ -41,7 +41,7 @@
     display: flex;
     gap: 0.8em;
     justify-content: center;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.9rem;
     &.sent_message {
         align-items: flex-end;
     }
@@ -56,13 +56,16 @@
 }
 
 .time {
-    font-size: 0.85em;
+    font-size: 0.82em;
     color: var(--dark_450_color);
+    font-weight: 700;
 }
 
 .category {
-    font-size: 0.85em;
-    font-weight: 700;
+    font-size: 0.9em;
+    font-weight: 900;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
     &.sent_message {
         color: var(--accent_color);
     }
@@ -75,32 +78,36 @@
 .message_box {
     display: flex;
     flex-direction: column;
-    padding: 0.8em 1.1em;
-    border-radius: 1.2rem;
-    max-width: 82%;
+    padding: 2em 2.2em;
+    border-radius: 2.3rem;
+    max-width: min(82%, 98rem);
     box-sizing: border-box;
     transition: var(--transition_ui);
     &.sent_message {
         align-items: flex-end;
         text-align: right;
-        background: linear-gradient(135deg, rgba(var(--accent_color_rgb), 0.12), rgba(var(--accent_color_rgb), 0.03));
-        border: 0.1rem solid rgba(var(--accent_color_rgb), 0.2);
+        background: rgba(20, 28, 46, 0.75);
+        backdrop-filter: var(--panel_blur);
+        border: 0.1rem solid rgba(200, 160, 240, 0.26);
+        border-right: 0.4rem solid #c8a0f0;
         border-top-right-radius: 0.3rem;
-        box-shadow: var(--shadow_control);
+        box-shadow: var(--shadow_card);
     }
     &.received_message {
         align-items: flex-start;
         text-align: left;
-        background: var(--surface_2_color);
-        border: var(--panel_border_subtle);
+        background: rgba(20, 28, 46, 0.75);
+        backdrop-filter: var(--panel_blur);
+        border: 0.1rem solid rgba(var(--accent_color_rgb), 0.22);
+        border-left: 0.4rem solid var(--accent_color);
         border-top-left-radius: 0.3rem;
-        box-shadow: var(--shadow_control);
+        box-shadow: var(--shadow_card);
     }
 }
 
 .message_main {
     user-select: text;
-    font-size: 1.4em;
+    font-size: 1.65em;
     line-height: 1.4;
     overflow-wrap: break-word;
     max-width: 100%;
@@ -110,9 +117,11 @@
 .message_second {
     color: var(--dark_400_color);
     user-select: text;
-    font-size: 1.05em;
+    font-size: 1.18em;
     line-height: 1.45;
-    margin-bottom: 0.35em;
+    margin-bottom: 0.85em;
+    padding-bottom: 0.85em;
+    border-bottom: 0.1rem solid rgba(255, 255, 255, 0.06);
 }
 
 

@@ -1,9 +1,9 @@
 :root {
-    --accent_color: #00e5ff;
-    --accent_color_rgb: 0, 229, 255;
-    --accent_gradient: linear-gradient(135deg, #00f2fe, #a78bfa);
-    --bg_gradient_start: #0d2836;
-    --bg_gradient_end: #1e1035;
+    --accent_color: #7dd3fc;
+    --accent_color_rgb: 125, 211, 252;
+    --accent_gradient: linear-gradient(135deg, #7dd3fc, #c8a0f0);
+    --bg_gradient_start: #10243a;
+    --bg_gradient_end: #241c3a;
 
     --primary_100_color: color-mix(in srgb, var(--accent_color) 15%, #ffffff);
     --primary_150_color: color-mix(in srgb, var(--accent_color) 30%, #ffffff);
@@ -33,27 +33,27 @@
     --warning_color: #ffb03a;
     --warning_bc_color: #d6871c;
 
-    --dark_basic_text_color: #f1f5f9;
-    --dark_100_color: #ffffff;
-    --dark_200_color: #f8fafc;
-    --dark_300_color: #e2e8f0;
-    --dark_350_color: #cbd5e1;
-    --dark_400_color: #94a3b8;
-    --dark_450_color: #64748b;
-    --dark_500_color: #475569;
-    --dark_550_color: #334155;
-    --dark_600_color: #1e293b;
-    --dark_650_color: #1a2333;
-    --dark_700_color: #131b26;
-    --dark_725_color: #0f1520;
-    --dark_750_color: #0d121c;
-    --dark_775_color: #0b0f17;
-    --dark_800_color: #090c13;
-    --dark_825_color: #07090f;
-    --dark_850_color: #05060a;
-    --dark_863_color: #040508;
-    --dark_875_color: #030406;
-    --dark_888_color: #020304;
+    --dark_basic_text_color: #e0e8f0;
+    --dark_100_color: #f8fbff;
+    --dark_200_color: #eef6ff;
+    --dark_300_color: #d7e3ee;
+    --dark_350_color: #bed0df;
+    --dark_400_color: #98adbf;
+    --dark_450_color: #71879a;
+    --dark_500_color: #526578;
+    --dark_550_color: #38495d;
+    --dark_600_color: #243246;
+    --dark_650_color: #1d293a;
+    --dark_700_color: #172132;
+    --dark_725_color: #121b2a;
+    --dark_750_color: #0f1725;
+    --dark_775_color: #0d1320;
+    --dark_800_color: #0a0f1a;
+    --dark_825_color: #090d17;
+    --dark_850_color: #070b14;
+    --dark_863_color: #060a12;
+    --dark_875_color: #050811;
+    --dark_888_color: #04070d;
     --dark_900_color: #010203;
     --dark_925_color: #000102;
     --dark_950_color: #000001;
@@ -68,26 +68,26 @@
 
     /* Performance Mode reactive variables */
     --panel_blur: blur(16px);
-    --panel_bg_opacity: 0.72;
+    --panel_bg_opacity: 0.6;
     --panel_border: 0.1rem solid rgba(var(--accent_color_rgb), 0.15);
-    --panel_border_subtle: 0.1rem solid rgba(255, 255, 255, 0.08);
-    --glow_shadow: 0 0 1.2rem rgba(var(--accent_color_rgb), 0.22);
-    --glow_shadow_hover: 0 0 1.8rem rgba(var(--accent_color_rgb), 0.35);
-    --glow_shadow_purple: 0 0 1.2rem rgba(var(--accent_color_rgb), 0.2);
+    --panel_border_subtle: 0.1rem solid rgba(var(--accent_color_rgb), 0.1);
+    --glow_shadow: 0 0 3rem rgba(var(--accent_color_rgb), 0.05);
+    --glow_shadow_hover: 0 0 2.4rem rgba(var(--accent_color_rgb), 0.24);
+    --glow_shadow_purple: 0 0 2.2rem rgba(200, 160, 240, 0.22);
     --transition_ui: 200ms cubic-bezier(.2, .8, .2, 1);
-    --bg_radial_gradient: radial-gradient(circle at 12% 0%, var(--bg_gradient_start) 0%, transparent 40%), radial-gradient(circle at 88% 100%, var(--bg_gradient_end) 0%, transparent 45%);
+    --bg_radial_gradient: radial-gradient(circle at 14% 0%, rgba(var(--accent_color_rgb), 0.12) 0%, transparent 34%), radial-gradient(circle at 86% 96%, rgba(200, 160, 240, 0.1) 0%, transparent 42%);
 
-    --surface_1_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.08), rgba(9, 15, 24, var(--panel_bg_opacity)));
-    --surface_2_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.12), rgba(14, 23, 36, var(--panel_bg_opacity)));
-    --surface_3_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.16), rgba(20, 32, 50, var(--panel_bg_opacity)));
+    --surface_1_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.05), rgba(15, 21, 36, var(--panel_bg_opacity)));
+    --surface_2_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.08), rgba(20, 28, 46, 0.75));
+    --surface_3_color: color-mix(in srgb, rgba(var(--accent_color_rgb), 0.12), rgba(26, 36, 56, 0.82));
     --border_subtle_color: rgba(var(--accent_color_rgb), 0.12);
     --focus_ring_color: rgba(var(--accent_color_rgb), 0.3);
-    --shadow_soft: 0 1.8rem 4.8rem rgba(0, 0, 0, 0.6);
-    --shadow_lateral: 1rem 0 3.4rem rgba(0, 0, 0, 0.4);
-    --shadow_card: 0 1.8rem 4.2rem rgba(0, 0, 0, 0.18), inset 0 0.1rem 0 rgba(255, 255, 255, 0.07);
-    --shadow_control: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.22);
-    --shadow_control_hover: 0 0 1.8rem rgba(var(--accent_color_rgb), 0.28);
-    --shadow_accent: 0 0 1.8rem rgba(var(--accent_color_rgb), 0.38);
+    --shadow_soft: 0 1.8rem 4.8rem rgba(0, 0, 0, 0.36);
+    --shadow_lateral: 1rem 0 3.4rem rgba(0, 0, 0, 0.26);
+    --shadow_card: 0 1.8rem 4.2rem rgba(0, 0, 0, 0.22), inset 0 0.1rem 0 rgba(255, 255, 255, 0.07);
+    --shadow_control: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.2);
+    --shadow_control_hover: 0 0 2rem rgba(var(--accent_color_rgb), 0.22);
+    --shadow_accent: 0 0 2.2rem rgba(var(--accent_color_rgb), 0.34);
     --filter_accent_glow: drop-shadow(0 0 1.2rem rgba(var(--accent_color_rgb), 0.36));
     --filter_accent_glow_strong: drop-shadow(0 0 2rem rgba(var(--accent_color_rgb), 0.45));
 
@@ -97,11 +97,11 @@
     --supporters_crown_color: #f0cb55;
 
     --title_bar_height: 2rem;
-    --main_page_topbar_height: 4.8rem;
+    --main_page_topbar_height: 5.6rem;
     --config_page_sidebar_width: 16.8rem;
     --config_page_topbar_height: 8rem;
 
-    --font_family: "Segoe UI Variable Text", "Inter", "Yu Gothic UI", system-ui, sans-serif;
+    --font_family: "Inter", "Segoe UI Variable Text", "Yu Gothic UI", system-ui, sans-serif;
 }
 
 .performance_mode {
@@ -130,11 +130,11 @@
 }
 
 .theme-neon-cyan {
-    --accent_color: #00e5ff;
-    --accent_color_rgb: 0, 229, 255;
-    --accent_gradient: linear-gradient(135deg, #00f2fe, #a78bfa);
-    --bg_gradient_start: #0d2836;
-    --bg_gradient_end: #1e1035;
+    --accent_color: #7dd3fc;
+    --accent_color_rgb: 125, 211, 252;
+    --accent_gradient: linear-gradient(135deg, #7dd3fc, #c8a0f0);
+    --bg_gradient_start: #10243a;
+    --bg_gradient_end: #241c3a;
 }
 
 .theme-midnight-purple {

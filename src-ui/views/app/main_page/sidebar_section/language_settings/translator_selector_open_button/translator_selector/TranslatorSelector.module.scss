@@ -3,9 +3,10 @@
     bottom: 100%;
     width: 100%;
     height: 31rem;
-    background-color:  var(--dark_1000_color_dd);
+    background: rgba(10, 14, 26, 0.94);
     backdrop-filter: var(--panel_blur);
-    border-top: var(--panel_border_subtle);
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.14);
+    border-radius: 1.6rem 1.6rem 0 0;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -201,19 +202,19 @@ $box_size: 6.2rem;
     position: relative;
     width: 9.4rem;
     height: $box_size;
-    background-color: var(--dark_875_color);
+    background: rgba(24, 35, 55, 0.72);
     display: flex;
     justify-content: center;
     align-items: center;
     white-space: pre-wrap;
     text-align: center;
-    border-radius: 0.4rem;
+    border-radius: 1.2rem;
     cursor: pointer;
     border: 0.1rem solid transparent;
     transition: background-color var(--transition_ui), border-color var(--transition_ui), box-shadow var(--transition_ui), outline var(--transition_ui);
 
     &:hover {
-        background-color: var(--dark_825_color);
+        background-color: rgba(30, 44, 68, 0.86);
     }
     &:active {
         background-color: var(--dark_900_color);

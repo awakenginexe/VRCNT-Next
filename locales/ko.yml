@@ -44,6 +44,27 @@ main_page:
     quick_setting_update: "업데이트"
     quick_setting_overlay: "Overlay (VR)"
 
+    sidebar_panel:
+        collapse_title: "사이드바 최소화"
+        collapse_detail: "왼쪽 패널을 컴팩트 레일로 줄입니다."
+        expand_title: "사이드바 펼치기"
+        expand_detail: "왼쪽 패널을 전체 크기로 되돌립니다."
+
+    desktop_overlay:
+        open_label: "데스크톱 Overlay"
+        tooltip_title: "데스크톱 Overlay"
+        tooltip_detail: "실시간 메시지를 위한 드래그 가능한 데스크톱 Overlay를 엽니다."
+        title: "데스크톱 Overlay"
+        pin: "Overlay 고정"
+        unpin: "Overlay 고정 해제"
+        settings: "Overlay 설정"
+        close: "Overlay 닫기"
+        settings_title: "Overlay 설정"
+        translations_only: "번역만 표시"
+        expanded_view: "확장 보기"
+        waiting: "메시지 대기 중"
+        no_translation: "아직 번역이 없습니다"
+
     language_panels:
         you_title: "나"
         you_desc: "음성 입력 및 개인 번역 출력"

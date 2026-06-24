@@ -19,7 +19,7 @@ class AptabaseWrapper:
         # Suppress noisy logs from the Aptabase SDK (only CRITICAL allowed)
         logging.getLogger("aptabase").setLevel(logging.CRITICAL)
     
-    async def start(self, app_version: str = "1.3.0"):
+    async def start(self, app_version: str = "2.0.0"):
         """Aptabase クライアント開始"""
         if Aptabase is None:
             raise ImportError("aptabase library not installed")
