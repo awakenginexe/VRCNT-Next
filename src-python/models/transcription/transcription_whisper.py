@@ -225,6 +225,17 @@ def getWhisperModel(
             raise ValueError("VRAM_OUT_OF_MEMORY", error_message)
         raise
 
+
+def unloadWhisperModel(model: object) -> None:
+    """Explicitly unload a faster-whisper model's native CTranslate2 weights."""
+    try:
+        native_model = getattr(model, "model", None)
+        unload_model = getattr(native_model, "unload_model", None)
+        if callable(unload_model):
+            unload_model()
+    finally:
+        del model
+
 if __name__ == "__main__":
     def callback(value):
         print(value)
