@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timezone
-from queue import Queue
+from queue import Empty, Full, Queue
 from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -51,6 +51,59 @@ class FakeRecognizer:
         self.audio_callback = callback
         self.energy_callback = callback_energy
         return "stop", "pause", "resume"
+
+
+class ConsumerAfterFullQueue:
+    """Simulate a consumer draining between put_nowait and get_nowait."""
+
+    def __init__(self, oldest):
+        self.item = oldest
+        self.consumer_took = None
+        self.put_attempts = 0
+
+    def put_nowait(self, item):
+        self.put_attempts += 1
+        if self.put_attempts == 1:
+            self.consumer_took = self.item
+            self.item = None
+            raise Full
+        if self.item is not None:
+            raise Full
+        self.item = item
+
+    def get_nowait(self):
+        if self.item is None:
+            raise Empty
+        item = self.item
+        self.item = None
+        return item
+
+
+class ProducerAfterDisplacementQueue:
+    """Simulate a producer filling between get_nowait and put_nowait."""
+
+    def __init__(self, oldest, competing):
+        self.item = oldest
+        self.competing = competing
+        self.put_attempts = 0
+
+    def put_nowait(self, item):
+        self.put_attempts += 1
+        if self.put_attempts == 1:
+            raise Full
+        if self.put_attempts == 2:
+            self.item = self.competing
+            raise Full
+        if self.item is not None:
+            raise Full
+        self.item = item
+
+    def get_nowait(self):
+        if self.item is None:
+            raise Empty
+        item = self.item
+        self.item = None
+        return item
 
 
 def make_full_audio_queue():
@@ -239,6 +292,74 @@ class TranscriptionRecorderCallbackTests(unittest.TestCase):
         self.assertEqual(dropped, [oldest])
         self.assertEqual(audio_queue.qsize(), 1)
         self.assertEqual(audio_queue.get_nowait().data, b"replacement")
+
+    def test_conventional_queue_recovers_when_consumer_drains_after_full(self):
+        oldest = AudioChunk(
+            b"consumer-takes-this",
+            datetime(2026, 7, 13, tzinfo=timezone.utc),
+            1.0,
+        )
+        audio_queue = ConsumerAfterFullQueue(oldest)
+        dropped = []
+        heartbeats = []
+        recognizer = FakeRecognizer()
+        recorder = BaseRecorder(object(), 300, True, 5)
+        recorder.recorder = recognizer
+        clock = SimpleNamespace(perf_counter=lambda: 600.0)
+
+        with patch(
+            "models.transcription.transcription_recorder.time",
+            new=clock,
+        ):
+            recorder.recordIntoQueue(
+                audio_queue,
+                on_drop=dropped.append,
+                on_heartbeat=heartbeats.append,
+            )
+            self.invoke_promptly(
+                recognizer.audio_callback, None, FakeAudio(b"newest")
+            )
+
+        self.assertIs(audio_queue.consumer_took, oldest)
+        self.assertEqual(dropped, [])
+        self.assertEqual(audio_queue.item.data, b"newest")
+        self.assertEqual(heartbeats, [600.0])
+
+    def test_conventional_queue_recovers_when_producer_fills_after_drop(self):
+        oldest = AudioChunk(
+            b"oldest",
+            datetime(2026, 7, 13, tzinfo=timezone.utc),
+            1.0,
+        )
+        competing = AudioChunk(
+            b"competing-producer",
+            datetime(2026, 7, 13, tzinfo=timezone.utc),
+            2.0,
+        )
+        audio_queue = ProducerAfterDisplacementQueue(oldest, competing)
+        dropped = []
+        heartbeats = []
+        recognizer = FakeRecognizer()
+        recorder = BaseRecorder(object(), 300, True, 5)
+        recorder.recorder = recognizer
+        clock = SimpleNamespace(perf_counter=lambda: 700.0)
+
+        with patch(
+            "models.transcription.transcription_recorder.time",
+            new=clock,
+        ):
+            recorder.recordIntoQueue(
+                audio_queue,
+                on_drop=dropped.append,
+                on_heartbeat=heartbeats.append,
+            )
+            self.invoke_promptly(
+                recognizer.audio_callback, None, FakeAudio(b"newest")
+            )
+
+        self.assertEqual(dropped, [oldest, competing])
+        self.assertEqual(audio_queue.item.data, b"newest")
+        self.assertEqual(heartbeats, [700.0])
 
 
 if __name__ == "__main__":

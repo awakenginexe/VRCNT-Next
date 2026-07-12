@@ -6,7 +6,7 @@ in tests.
 """
 
 from datetime import datetime
-from queue import Full
+from queue import Empty, Full
 import time
 from typing import Any
 
@@ -24,10 +24,26 @@ def _offer_audio(audio_queue: Any, chunk: AudioChunk, on_drop=None) -> None:
     try:
         audio_queue.put_nowait(chunk)
     except Full:
-        displaced = audio_queue.get_nowait()
-        audio_queue.put_nowait(chunk)
-        if on_drop is not None:
-            on_drop(displaced)
+        pass
+    else:
+        return
+
+    # Conventional queues have no atomic replace operation. Bound recovery so
+    # a continuously contended queue cannot make the capture callback spin.
+    for _ in range(2):
+        try:
+            displaced = audio_queue.get_nowait()
+        except Empty:
+            pass
+        else:
+            if on_drop is not None:
+                on_drop(displaced)
+
+        try:
+            audio_queue.put_nowait(chunk)
+            return
+        except Full:
+            continue
 
 
 class BaseRecorder:
