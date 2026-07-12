@@ -5,10 +5,29 @@ They intentionally keep a thin API so the rest of the system can mock them
 in tests.
 """
 
-from typing import Any
-from speech_recognition import Recognizer, Microphone
-from pyaudiowpatch import get_sample_size, paInt16
 from datetime import datetime
+from queue import Full
+import time
+from typing import Any
+
+from speech_recognition import Recognizer, Microphone
+
+from models.pipeline.pipeline_types import AudioChunk
+
+
+def _offer_audio(audio_queue: Any, chunk: AudioChunk, on_drop=None) -> None:
+    if hasattr(audio_queue, "offer"):
+        result = audio_queue.offer(chunk)
+        if result.dropped is not None and on_drop is not None:
+            on_drop(result.dropped)
+        return
+    try:
+        audio_queue.put_nowait(chunk)
+    except Full:
+        displaced = audio_queue.get_nowait()
+        audio_queue.put_nowait(chunk)
+        if on_drop is not None:
+            on_drop(displaced)
 
 
 class BaseRecorder:
@@ -28,9 +47,24 @@ class BaseRecorder:
         with self.source:
             self.recorder.adjust_for_ambient_noise(self.source)
 
-    def recordIntoQueue(self, audio_queue: Any) -> None:
+    def recordIntoQueue(
+        self,
+        audio_queue: Any,
+        energy_queue: Any = None,
+        *,
+        on_drop=None,
+        on_heartbeat=None,
+    ) -> None:
         def record_callback(_, audio):
-            audio_queue.put((audio.get_raw_data(), datetime.now()))
+            captured_at = time.perf_counter()
+            chunk = AudioChunk(
+                data=audio.get_raw_data(),
+                spoken_at=datetime.now(),
+                captured_at_monotonic=captured_at,
+            )
+            _offer_audio(audio_queue, chunk, on_drop)
+            if on_heartbeat is not None:
+                on_heartbeat(captured_at)
 
         self.stop, self.pause, self.resume = self.recorder.listen_in_background(self.source, record_callback, phrase_time_limit=self.record_timeout)
 
@@ -70,7 +104,6 @@ class SelectedSpeakerRecorder(BaseRecorder):
             source = Microphone(speaker=True,
                 device_index=device_index,
                 sample_rate=sample_rate,
-                chunk_size=get_sample_size(paInt16),
                 channels=channels
             )
         except Exception:
@@ -173,18 +206,41 @@ class BaseEnergyAndAudioRecorder:
         with self.source:
             self.recorder.adjust_for_ambient_noise(self.source)
 
-    def recordIntoQueue(self, audio_queue: Any, energy_queue: Any = None) -> None:
+    def recordIntoQueue(
+        self,
+        audio_queue: Any,
+        energy_queue: Any = None,
+        *,
+        on_drop=None,
+        on_heartbeat=None,
+    ) -> None:
         def audioRecordCallback(_, audio):
-            audio_queue.put((audio.get_raw_data(), datetime.now()))
+            captured_at = time.perf_counter()
+            chunk = AudioChunk(
+                data=audio.get_raw_data(),
+                spoken_at=datetime.now(),
+                captured_at_monotonic=captured_at,
+            )
+            _offer_audio(audio_queue, chunk, on_drop)
+            if on_heartbeat is not None:
+                on_heartbeat(captured_at)
 
         def energyRecordCallback(energy):
-            energy_queue.put(energy)
+            captured_at = time.perf_counter()
+            if energy_queue is not None:
+                energy_queue.put(energy)
+            if on_heartbeat is not None:
+                on_heartbeat(captured_at)
 
         self.stop, self.pause, self.resume = self.recorder.listen_energy_and_audio_in_background(
             source=self.source,
             callback=audioRecordCallback,
             phrase_time_limit=self.phrase_time_limit,
-            callback_energy=energyRecordCallback if energy_queue is not None else None,
+            callback_energy=(
+                energyRecordCallback
+                if energy_queue is not None or on_heartbeat is not None
+                else None
+            ),
             phrase_timeout=self.phrase_timeout,
             record_timeout=self.record_timeout,
         )
@@ -245,7 +301,6 @@ class SelectedSpeakerEnergyAndAudioRecorder(BaseEnergyAndAudioRecorder):
             source = Microphone(speaker=True,
                 device_index=device_index,
                 sample_rate=sample_rate,
-                chunk_size=get_sample_size(paInt16),
                 channels=channels,
             )
         except Exception:
