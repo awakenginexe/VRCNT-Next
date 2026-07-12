@@ -66,6 +66,30 @@ def make_output_config() -> OutputConfigSnapshot:
 
 
 class PipelineMetricsTests(unittest.TestCase):
+    def test_pipeline_enums_have_exact_members_and_values(self):
+        self.assertEqual(
+            {
+                name: member.value
+                for name, member in PipelineSource.__members__.items()
+            },
+            {"MIC": "mic", "SPEAKER": "speaker"},
+        )
+        self.assertEqual(
+            {
+                name: member.value
+                for name, member in TranslationStatus.__members__.items()
+            },
+            {
+                "QUEUED": "queued",
+                "SENDING": "sending",
+                "FALLBACK": "fallback",
+                "SUCCESS": "success",
+                "TIMEOUT": "timeout",
+                "ERROR": "error",
+                "SKIPPED_OVERLOAD": "skipped_overload",
+            },
+        )
+
     def test_status_payload_emits_complete_schema_without_transcript_text(self):
         event = PipelineStatusEvent(
             schema_version=1,

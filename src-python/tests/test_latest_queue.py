@@ -1,12 +1,22 @@
 import os
 import sys
 import unittest
-from threading import Thread
+from threading import Condition, Event, Thread
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from models.pipeline.latest_queue import LatestQueue, QueueClosed
+
+
+class ObservedCondition(Condition):
+    def __init__(self):
+        super().__init__()
+        self.waiting = Event()
+
+    def wait(self, timeout=None):
+        self.waiting.set()
+        return super().wait(timeout)
 
 
 class LatestQueueTests(unittest.TestCase):
@@ -34,6 +44,8 @@ class LatestQueueTests(unittest.TestCase):
 
     def test_close_wakes_waiting_consumer(self):
         queue = LatestQueue[int](maxsize=1)
+        condition = ObservedCondition()
+        queue._condition = condition
         observed = []
 
         def consume():
@@ -42,8 +54,10 @@ class LatestQueueTests(unittest.TestCase):
             except QueueClosed as exc:
                 observed.append(exc)
 
-        worker = Thread(target=consume)
+        worker = Thread(target=consume, daemon=True)
         worker.start()
+        self.assertTrue(condition.waiting.wait(timeout=1))
+
         queue.close()
         worker.join(timeout=1)
 
