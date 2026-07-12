@@ -567,8 +567,9 @@ class WhisperRuntimeTests(unittest.TestCase):
         )
         self.assertTrue(shutdown_paused.wait(WAIT_SECONDS))
 
+        lease.close()
         with self.assertRaisesRegex(RuntimeError, "selected unload failed"):
-            lease.close()
+            manager.shutdown()
         self.assertEqual(unload_attempts, [model])
 
         resume_shutdown.set()
@@ -583,6 +584,88 @@ class WhisperRuntimeTests(unittest.TestCase):
 
         manager.shutdown()
         self.assertEqual(unload_attempts, [model, model])
+
+    def test_redundant_nonfinal_close_does_not_join_blocked_successful_unload(self):
+        factory = RecordingFactory()
+        unload_entered = threading.Event()
+        release_unload = threading.Event()
+        unload_attempts = []
+
+        def blocking_unload(model):
+            unload_attempts.append(model)
+            unload_entered.set()
+            release_unload.wait()
+
+        manager = WhisperRuntimeManager(factory=factory, unload=blocking_unload)
+        nonfinal_lease = manager.acquire("app-root", self.key_a)
+        final_lease = manager.acquire("app-root", self.key_a)
+        model = factory.models[0]
+        self.addCleanup(release_unload.set)
+
+        nonfinal_lease.close()
+        final_close, final_done, final_outcome = run_in_thread(
+            "successful-final-close", final_lease.close
+        )
+        self.assertTrue(unload_entered.wait(WAIT_SECONDS))
+
+        redundant_close, redundant_done, redundant_outcome = run_in_thread(
+            "successful-redundant-close", nonfinal_lease.close
+        )
+        self.assert_thread_finished(
+            redundant_close,
+            redundant_done,
+            redundant_outcome,
+        )
+        self.assertFalse(final_done.is_set())
+        self.assertEqual(unload_attempts, [model])
+
+        release_unload.set()
+        self.assert_thread_finished(final_close, final_done, final_outcome)
+
+    def test_redundant_nonfinal_close_does_not_join_or_replay_failed_unload(self):
+        factory = RecordingFactory()
+        unload_entered = threading.Event()
+        release_unload = threading.Event()
+        unload_attempts = []
+
+        def blocked_failing_unload(model):
+            unload_attempts.append(model)
+            unload_entered.set()
+            release_unload.wait()
+            raise RuntimeError("final lease unload failed")
+
+        manager = WhisperRuntimeManager(factory=factory, unload=blocked_failing_unload)
+        nonfinal_lease = manager.acquire("app-root", self.key_a)
+        final_lease = manager.acquire("app-root", self.key_a)
+        model = factory.models[0]
+        self.addCleanup(release_unload.set)
+
+        nonfinal_lease.close()
+        final_close, final_done, final_outcome = run_in_thread(
+            "failing-final-close", final_lease.close
+        )
+        self.assertTrue(unload_entered.wait(WAIT_SECONDS))
+
+        redundant_close, redundant_done, redundant_outcome = run_in_thread(
+            "failing-redundant-close", nonfinal_lease.close
+        )
+        self.assert_thread_finished(
+            redundant_close,
+            redundant_done,
+            redundant_outcome,
+        )
+        self.assertFalse(final_done.is_set())
+        self.assertEqual(unload_attempts, [model])
+
+        release_unload.set()
+        self.assert_thread_failed(
+            final_close,
+            final_done,
+            final_outcome,
+            RuntimeError,
+        )
+        self.assertRegex(str(final_outcome["error"]), "final lease unload failed")
+        nonfinal_lease.close()
 
     def test_stale_closed_lease_does_not_join_later_model_unload(self):
         factory = RecordingFactory()

@@ -97,6 +97,7 @@ class WhisperRuntimeLease:
         self._key = key
         self._generation = generation
         self._closed = False
+        self._close_attempt: Optional[_UnloadAttempt] = None
 
     @property
     def root(self) -> str:
@@ -292,12 +293,7 @@ class WhisperRuntimeManager:
         attempt: Optional[_UnloadAttempt] = None
         with self._condition:
             if lease._closed:
-                if (
-                    lease._generation == self._generation
-                    and self._state
-                    in (_RuntimeState.DRAINING, _RuntimeState.UNLOADING)
-                ):
-                    attempt = self._unload_attempt
+                attempt = lease._close_attempt
             else:
                 lease._closed = True
                 self._leases.discard(lease)
@@ -306,11 +302,7 @@ class WhisperRuntimeManager:
                     return
                 if self._state is _RuntimeState.READY:
                     attempt = self._begin_drain_locked()
-                elif self._state in (
-                    _RuntimeState.DRAINING,
-                    _RuntimeState.UNLOADING,
-                ):
-                    attempt = self._unload_attempt
+                    lease._close_attempt = attempt
 
             if attempt is None:
                 return
