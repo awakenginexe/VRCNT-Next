@@ -128,10 +128,10 @@ class WhisperDecodingHelperTests(unittest.TestCase):
 
     def test_non_cuda_auto_uses_best_compute_type_for_exact_device(self):
         with patch.object(whisper, "getBestComputeType", return_value="float32") as get_best:
-            result = whisper.resolveWhisperComputeType("cpu", 3, "auto")
+            result = whisper.resolveWhisperComputeType("CPU", 7, "auto")
 
         self.assertEqual(result, "float32")
-        get_best.assert_called_once_with(device="cpu", device_index=3)
+        get_best.assert_called_once_with(device="CPU", device_index=7)
 
     def test_model_construction_receives_resolved_compute_type(self):
         constructor = Mock(return_value=object())

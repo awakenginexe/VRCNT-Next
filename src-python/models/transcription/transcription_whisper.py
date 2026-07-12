@@ -68,7 +68,7 @@ def resolveWhisperComputeType(device, device_index, requested) -> str:
         return WHISPER_GPU_INT8_COMPUTE_TYPE
     if normalized_requested != "auto":
         return normalized_requested
-    return getBestComputeType(device=normalized_device, device_index=device_index)
+    return getBestComputeType(device=device, device_index=device_index)
 
 
 def _normalizeWhisperComputeType(device: str, compute_type: str) -> str:
