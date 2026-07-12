@@ -306,6 +306,29 @@ class AudioTranscriber:
         confidences: List[Dict[str, Any]] = [{"confidence": 0, "text": "", "language": None}]
         inference_started_at = time.perf_counter()
         safe_to_restart: Optional[Event] = None
+        terminal_metric_emitted = False
+
+        def emit_terminal_metric(
+            outcome: str,
+            error_code: Optional[str] = None,
+        ) -> None:
+            nonlocal terminal_metric_emitted
+            if terminal_metric_emitted:
+                return
+            terminal_metric_emitted = True
+            self._emitPipelineMetric(
+                stage="transcription",
+                outcome=outcome,
+                queue_age_ms=queue_age_ms,
+                duration_ms=max(
+                    0,
+                    int(
+                        (time.perf_counter() - inference_started_at) * 1000
+                    ),
+                ),
+                queue_depth=queue_depth,
+                error_code=error_code,
+            )
 
         def request_whisper_recovery() -> None:
             nonlocal safe_to_restart
@@ -325,7 +348,11 @@ class AudioTranscriber:
 
         try:
             if not languages or not countries:
-                return True
+                emit_terminal_metric(
+                    "error",
+                    "transcription_languages_unavailable",
+                )
+                return False
             audio_data = self.audio_sources["process_data_func"]()
             match self.transcription_engine:
                 case "Google":
@@ -363,6 +390,10 @@ class AudioTranscriber:
                         if torch is not None and isinstance(audio_data, torch.Tensor):
                             audio_data = audio_data.detach().numpy()
                         if audio_data.size == 0 or not np.any(audio_data):
+                            if self._isGenerationCurrent():
+                                emit_terminal_metric("success")
+                            else:
+                                emit_terminal_metric("stale", "stale_generation")
                             return True
                         max_samples = 16000 * MAX_WHISPER_LIVE_AUDIO_SECONDS
                         if audio_data.size > max_samples:
@@ -406,23 +437,11 @@ class AudioTranscriber:
                     except Exception:
                         errorLogging()
                         request_whisper_recovery()
-                        self._emitPipelineMetric(
-                            stage="transcription",
-                            outcome="error",
-                            queue_age_ms=queue_age_ms,
-                            duration_ms=max(
-                                0,
-                                int(
-                                    (time.perf_counter() - inference_started_at)
-                                    * 1000
-                                ),
-                            ),
-                            queue_depth=queue_depth,
-                            error_code="whisper_inference_failed",
+                        emit_terminal_metric(
+                            "error",
+                            "whisper_inference_failed",
                         )
-                        return True
-                    finally:
-                        self.clearLiveAudioSample()
+                        return False
                 case "Vosk":
                     if self.vosk_recognizer is None:
                         pass
@@ -484,14 +503,27 @@ class AudioTranscriber:
                                 confidences.append({"confidence": 1.0, "text": result_text, "language": primary})
 
         except UnknownValueError:
-            pass
+            if self.transcription_engine == "Whisper":
+                request_whisper_recovery()
+                emit_terminal_metric(
+                    "error",
+                    "whisper_inference_failed",
+                )
+                return False
         except Exception:
             errorLogging()
             if self.transcription_engine == "Whisper":
                 request_whisper_recovery()
+                emit_terminal_metric(
+                    "error",
+                    "whisper_inference_failed",
+                )
+                return False
             else:
                 self._handleRecognitionFailure()
         finally:
+            if self.transcription_engine == "Whisper":
+                self.clearLiveAudioSample()
             if safe_to_restart is not None:
                 safe_to_restart.set()
 
@@ -499,19 +531,10 @@ class AudioTranscriber:
         result["started_at_monotonic"] = self.audio_sources[
             "phrase_started_at_monotonic"
         ]
-        duration_ms = max(
-            0,
-            int((time.perf_counter() - inference_started_at) * 1000),
-        )
         if not self._isGenerationCurrent():
+            emit_terminal_metric("stale", "stale_generation")
             return True
-        self._emitPipelineMetric(
-            stage="transcription",
-            outcome="success",
-            queue_age_ms=queue_age_ms,
-            duration_ms=duration_ms,
-            queue_depth=queue_depth,
-        )
+        emit_terminal_metric("success")
         if result["text"] != "":
             self._handleRecognitionSuccess()
             if not self._isGenerationCurrent():

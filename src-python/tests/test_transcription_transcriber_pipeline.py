@@ -1,4 +1,5 @@
 import inspect
+import importlib
 import os
 import sys
 import time
@@ -14,8 +15,57 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from models.pipeline.latest_queue import LatestQueue, QueueClosed
 from models.pipeline.pipeline_types import AudioChunk, PipelineSource
-from models.transcription import transcription_transcriber as transcriber_module
-from models.transcription.transcription_transcriber import AudioTranscriber
+
+
+def _import_pipeline_modules_with_real_dependencies():
+    dependency_roots = ("numpy", "requests")
+    needs_isolation = any(
+        root in sys.modules
+        and not callable(
+            getattr(
+                sys.modules[root],
+                "frombuffer" if root == "numpy" else "get",
+                None,
+            )
+        )
+        for root in dependency_roots
+    )
+    saved_modules = {}
+    if needs_isolation:
+        saved_modules = {
+            name: module
+            for name, module in sys.modules.items()
+            if name in dependency_roots
+            or name.startswith(tuple(f"{root}." for root in dependency_roots))
+        }
+        for name in saved_modules:
+            sys.modules.pop(name, None)
+        importlib.import_module("numpy")
+        importlib.import_module("requests")
+    try:
+        transcriber = importlib.import_module(
+            "models.transcription.transcription_transcriber"
+        )
+        runtime = importlib.import_module(
+            "models.transcription.whisper_runtime"
+        )
+        application_model = importlib.import_module("model")
+        return transcriber, runtime, application_model
+    finally:
+        if needs_isolation:
+            for name in list(sys.modules):
+                if name in dependency_roots or name.startswith(
+                    tuple(f"{root}." for root in dependency_roots)
+                ):
+                    sys.modules.pop(name, None)
+            sys.modules.update(saved_modules)
+
+
+transcriber_module, runtime_module, model_module = (
+    _import_pipeline_modules_with_real_dependencies()
+)
+AudioTranscriber = transcriber_module.AudioTranscriber
+WhisperRuntimeManager = runtime_module.WhisperRuntimeManager
 
 
 class FakeSource:
@@ -90,6 +140,73 @@ class FakeLease:
         self.closed = True
 
 
+class FakeMicRecorder:
+    events = None
+
+    def __init__(self, *args, **kwargs):
+        self.source = FakeSource()
+
+    def recordIntoQueue(self, audio_queue, energy_queue):
+        self.events.append(("record", "mic"))
+
+    def resume(self):
+        self.events.append(("resume_recorder", "mic"))
+
+    def stop(self, *args):
+        self.events.append(("stop_recorder", "mic"))
+
+
+class FakeSpeakerRecorder(FakeMicRecorder):
+    def recordIntoQueue(self, audio_queue, energy_queue):
+        self.events.append(("record", "speaker"))
+
+    def resume(self):
+        self.events.append(("resume_recorder", "speaker"))
+
+    def stop(self, *args):
+        self.events.append(("stop_recorder", "speaker"))
+
+
+class FakeThreadFnc:
+    events = None
+
+    def __init__(self, fnc, end_fnc=None, *args, **kwargs):
+        self.label = "mic" if "Mic" in fnc.__name__ else "speaker"
+        self.daemon = True
+
+    def start(self):
+        self.events.append(("thread_start", self.label))
+
+    def stop(self):
+        self.events.append(("thread_stop", self.label))
+
+    def join(self, timeout=None):
+        self.events.append(("thread_join", self.label, timeout))
+
+    def is_alive(self):
+        return False
+
+
+class FakeConstructedTranscriber:
+    events = None
+    contexts = None
+
+    def __init__(self, *args, **kwargs):
+        context = kwargs["pipeline_context"]
+        self.contexts.append(context)
+        self.events.append(("construct", context.source))
+
+
+class RecordingRuntimeManager(WhisperRuntimeManager):
+    def __init__(self, events, factory, unload):
+        self.events = events
+        super().__init__(factory=factory, unload=unload)
+
+    def acquire(self, root, key):
+        self.events.append(("acquire", key))
+        return super().acquire(root, key)
+
+
 def make_pipeline_context(
     lease,
     *,
@@ -155,6 +272,61 @@ def queue_with(*chunks):
 
 def pcm(value, samples=160):
     return int(value).to_bytes(2, "little", signed=True) * samples
+
+
+def make_model_config(engine="Whisper", compute_type="auto"):
+    return SimpleNamespace(
+        ENABLE_TRANSCRIPTION_SEND=True,
+        ENABLE_TRANSCRIPTION_RECEIVE=True,
+        SELECTED_MIC_HOST="host",
+        SELECTED_MIC_DEVICE="mic-device",
+        SELECTED_SPEAKER_DEVICE="speaker-device",
+        MIC_RECORD_TIMEOUT=1,
+        MIC_PHRASE_TIMEOUT=3,
+        MIC_THRESHOLD=100,
+        MIC_AUTOMATIC_THRESHOLD=False,
+        MIC_MAX_PHRASES=10,
+        SPEAKER_RECORD_TIMEOUT=1,
+        SPEAKER_PHRASE_TIMEOUT=3,
+        SPEAKER_THRESHOLD=100,
+        SPEAKER_AUTOMATIC_THRESHOLD=False,
+        SPEAKER_MAX_PHRASES=10,
+        SELECTED_TRANSCRIPTION_ENGINE=engine,
+        PATH_DATA="unused-root",
+        WHISPER_WEIGHT_TYPE="tiny",
+        VOSK_WEIGHT_TYPE=None,
+        PARAKEET_WEIGHT_TYPE=None,
+        SENSEVOICE_WEIGHT_TYPE=None,
+        SELECTED_TRANSCRIPTION_COMPUTE_DEVICE={
+            "device": "cuda",
+            "device_index": 2,
+        },
+        SELECTED_TRANSCRIPTION_COMPUTE_TYPE=compute_type,
+        WHISPER_DECODING_PROFILE="balanced",
+    )
+
+
+def make_bare_model(manager=None):
+    instance = object.__new__(model_module.Model)
+    instance.ensure_initialized = lambda: None
+    instance.whisper_runtime_manager = manager
+    instance.mic_print_transcript = None
+    instance.mic_audio_recorder = None
+    instance.mic_audio_queue = None
+    instance.mic_transcriber = None
+    instance.mic_transcript_stop_event = None
+    instance.mic_whisper_runtime_lease = None
+    instance.speaker_print_transcript = None
+    instance.speaker_audio_recorder = None
+    instance.speaker_audio_queue = None
+    instance.speaker_transcriber = None
+    instance.speaker_transcript_stop_event = None
+    instance.speaker_whisper_runtime_lease = None
+    instance.transcription_pipeline_metrics = []
+    instance.transcription_recovery_requests = []
+    instance._startTranscriptStallWatchdog = lambda *args: None
+    instance.changeMicTranscriptStatus = lambda: None
+    return instance
 
 
 class TranscriberPipelineTests(unittest.TestCase):
@@ -320,6 +492,118 @@ class TranscriberPipelineTests(unittest.TestCase):
             ("transcription", "success"),
             [(event.stage, event.outcome) for event in events],
         )
+        self.assertIn(
+            ("transcription", "stale"),
+            [(event.stage, event.outcome) for event in events],
+        )
+
+    def test_outer_whisper_processing_failure_is_terminal_and_returns_false(self):
+        lease = FakeLease()
+        events = []
+        recovery_requests = []
+        cleanup_states = []
+
+        def request_recovery(*args):
+            self.assertFalse(args[-1].is_set())
+            recovery_requests.append(args)
+
+        context = make_pipeline_context(
+            lease,
+            events=events,
+            request_recovery=request_recovery,
+        )
+        transcriber = make_transcriber(lease, context)
+        original_clear = transcriber.clearLiveAudioSample
+
+        def clear_audio():
+            original_clear()
+            cleanup_states.append(transcriber.audio_sources["last_sample"])
+
+        transcriber.clearLiveAudioSample = clear_audio
+        transcriber.audio_sources["process_data_func"] = lambda: (_ for _ in ()).throw(
+            RuntimeError("fake processing failure")
+        )
+
+        result = transcriber.transcribeAudioQueue(
+            queue_with(
+                AudioChunk(
+                    pcm(100),
+                    datetime.now(timezone.utc),
+                    time.perf_counter(),
+                )
+            ),
+            ["English"],
+            ["United States"],
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(cleanup_states, [b""])
+        self.assertEqual(len(recovery_requests), 1)
+        self.assertTrue(recovery_requests[0][-1].is_set())
+        terminal = [
+            (event.outcome, event.error_code)
+            for event in events
+            if event.stage == "transcription" and event.outcome != "running"
+        ]
+        self.assertEqual(terminal, [("error", "whisper_inference_failed")])
+
+    def test_silent_whisper_audio_completes_running_metric_without_inference(self):
+        lease = FakeLease()
+        events = []
+        context = make_pipeline_context(lease, events=events)
+        transcriber = make_transcriber(lease, context)
+
+        result = transcriber.transcribeAudioQueue(
+            queue_with(
+                AudioChunk(
+                    pcm(0),
+                    datetime.now(timezone.utc),
+                    time.perf_counter(),
+                )
+            ),
+            ["English"],
+            ["United States"],
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(lease.calls, [])
+        self.assertEqual(
+            [
+                event.outcome
+                for event in events
+                if event.stage == "transcription"
+            ],
+            ["running", "success"],
+        )
+
+    def test_missing_languages_ends_running_metric_with_input_error(self):
+        lease = FakeLease()
+        events = []
+        context = make_pipeline_context(lease, events=events)
+        transcriber = make_transcriber(lease, context)
+
+        result = transcriber.transcribeAudioQueue(
+            queue_with(
+                AudioChunk(
+                    pcm(100),
+                    datetime.now(timezone.utc),
+                    time.perf_counter(),
+                )
+            ),
+            [],
+            [],
+        )
+
+        self.assertFalse(result)
+        terminal = [
+            (event.outcome, event.error_code)
+            for event in events
+            if event.stage == "transcription" and event.outcome != "running"
+        ]
+        self.assertEqual(
+            terminal,
+            [("error", "transcription_languages_unavailable")],
+        )
 
     def test_whisper_failure_clears_audio_and_only_requests_recovery(self):
         lease = FakeLease(error=RuntimeError("fake inference failed"))
@@ -341,7 +625,7 @@ class TranscriberPipelineTests(unittest.TestCase):
             "models.transcription.transcription_whisper.getWhisperModel",
             side_effect=AssertionError("failure path reloaded Whisper"),
         ) as helpers:
-            self.assertTrue(
+            self.assertFalse(
                 transcriber.transcribeAudioQueue(
                     audio_queue,
                     ["English"],
@@ -399,7 +683,7 @@ class TranscriberPipelineTests(unittest.TestCase):
             )
         )
 
-        self.assertTrue(
+        self.assertFalse(
             transcriber.transcribeAudioQueue(
                 audio_queue,
                 ["English"],
@@ -427,6 +711,202 @@ class TranscriberPipelineTests(unittest.TestCase):
             )
 
         log_error.assert_not_called()
+
+
+class ModelWhisperLeaseIntegrationTests(unittest.TestCase):
+    def test_cuda_auto_and_int8_share_one_resolved_runtime_key(self):
+        factory_keys = []
+        unloaded = []
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: factory_keys.append(key) or object(),
+            unload=unloaded.append,
+        )
+        instance = make_bare_model(manager)
+        fake_config = make_model_config(compute_type="auto")
+
+        with (
+            patch.object(model_module, "config", fake_config),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+        ):
+            auto_lease = instance._acquireWhisperRuntimeLease()
+            fake_config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "int8"
+            int8_lease = instance._acquireWhisperRuntimeLease()
+
+        self.assertEqual(len(factory_keys), 1)
+        self.assertEqual(factory_keys[0].compute_type, "int8_float16")
+        self.assertEqual(auto_lease.key, factory_keys[0])
+        self.assertEqual(int8_lease.key, factory_keys[0])
+        auto_lease.close()
+        self.assertEqual(unloaded, [])
+        int8_lease.close()
+        self.assertEqual(len(unloaded), 1)
+
+    def test_mic_and_speaker_share_manager_and_stop_join_before_source_close(self):
+        events = []
+        contexts = []
+        factory_keys = []
+        unloaded = []
+        manager = RecordingRuntimeManager(
+            events,
+            factory=lambda root, key: factory_keys.append(key) or object(),
+            unload=lambda model: unloaded.append(model),
+        )
+        instance = make_bare_model(manager)
+        fake_config = make_model_config()
+        fake_devices = SimpleNamespace(
+            getMicDevices=lambda: {
+                "host": [{"name": "mic-device"}],
+            },
+            getSpeakerDevices=lambda: [{"name": "speaker-device"}],
+        )
+        FakeMicRecorder.events = events
+        FakeSpeakerRecorder.events = events
+        FakeThreadFnc.events = events
+        FakeConstructedTranscriber.events = events
+        FakeConstructedTranscriber.contexts = contexts
+
+        with (
+            patch.object(model_module, "config", fake_config),
+            patch.object(model_module, "device_manager", fake_devices),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+            patch.object(
+                model_module,
+                "SelectedMicEnergyAndAudioRecorder",
+                FakeMicRecorder,
+            ),
+            patch.object(
+                model_module,
+                "SelectedSpeakerEnergyAndAudioRecorder",
+                FakeSpeakerRecorder,
+            ),
+            patch.object(model_module, "AudioTranscriber", FakeConstructedTranscriber),
+            patch.object(model_module, "threadFnc", FakeThreadFnc),
+        ):
+            instance.startMicTranscript(lambda result: None)
+            instance.startSpeakerTranscript(lambda result: None)
+
+            mic_lease = instance.mic_whisper_runtime_lease
+            speaker_lease = instance.speaker_whisper_runtime_lease
+            original_mic_close = mic_lease.close
+            original_speaker_close = speaker_lease.close
+            mic_lease.close = lambda: events.append(("lease_close", "mic")) or original_mic_close()
+            speaker_lease.close = lambda: events.append(("lease_close", "speaker")) or original_speaker_close()
+
+            instance.stopMicTranscript()
+            self.assertTrue(mic_lease.closed)
+            self.assertFalse(speaker_lease.closed)
+            self.assertEqual(unloaded, [])
+            instance.stopSpeakerTranscript()
+
+        self.assertIs(instance.whisper_runtime_manager, manager)
+        self.assertEqual(len(factory_keys), 1)
+        self.assertEqual(factory_keys[0].compute_type, "int8_float16")
+        self.assertEqual(
+            [event[0] for event in events if event[0] in ("acquire", "construct")],
+            ["acquire", "construct", "acquire", "construct"],
+        )
+        self.assertEqual([context.source for context in contexts], [PipelineSource.MIC, PipelineSource.SPEAKER])
+        self.assertIs(contexts[0].whisper_runtime_lease, mic_lease)
+        self.assertIs(contexts[1].whisper_runtime_lease, speaker_lease)
+        self.assertLess(
+            events.index(("thread_join", "mic", model_module.TRANSCRIPT_THREAD_JOIN_TIMEOUT)),
+            events.index(("lease_close", "mic")),
+        )
+        self.assertLess(
+            events.index(("thread_join", "speaker", model_module.TRANSCRIPT_THREAD_JOIN_TIMEOUT)),
+            events.index(("lease_close", "speaker")),
+        )
+        self.assertTrue(speaker_lease.closed)
+        self.assertEqual(len(unloaded), 1)
+
+    def test_final_stop_waits_for_active_inference_after_join_timeout(self):
+        iterator_entered = Event()
+        release_iterator = Event()
+        unloaded = []
+
+        class BlockingModel:
+            def transcribe(self, audio, **options):
+                def segments():
+                    iterator_entered.set()
+                    release_iterator.wait(1)
+                    yield SimpleNamespace(text="done")
+
+                return segments(), SimpleNamespace(language="en")
+
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: BlockingModel(),
+            unload=unloaded.append,
+        )
+        instance = make_bare_model(manager)
+        fake_config = make_model_config()
+        with (
+            patch.object(model_module, "config", fake_config),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+        ):
+            lease = instance._acquireWhisperRuntimeLease()
+        instance.mic_whisper_runtime_lease = lease
+        instance.mic_print_transcript = object()
+        instance.mic_transcriber = object()
+        instance.mic_audio_queue = object()
+        instance.mic_transcript_stop_event = Event()
+        join_timed_out = Event()
+        instance._requestTranscriptThreadStop = lambda thread: join_timed_out.set() or False
+
+        inference_done = Event()
+        stop_done = Event()
+        errors = []
+
+        def infer():
+            try:
+                lease.transcribe("audio")
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                inference_done.set()
+
+        def stop():
+            try:
+                instance.stopMicTranscript()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                stop_done.set()
+
+        inference_thread = Thread(target=infer, daemon=True)
+        inference_thread.start()
+        self.assertTrue(iterator_entered.wait(1))
+        stop_thread = Thread(target=stop, daemon=True)
+        stop_thread.start()
+        self.assertTrue(join_timed_out.wait(1))
+        self.assertFalse(stop_done.wait(0.05))
+        self.assertEqual(unloaded, [])
+
+        release_iterator.set()
+        self.assertTrue(inference_done.wait(1))
+        self.assertTrue(stop_done.wait(1))
+        inference_thread.join(1)
+        stop_thread.join(1)
+        self.assertEqual(errors, [])
+        self.assertTrue(lease.closed)
+        self.assertEqual(len(unloaded), 1)
+
+    def test_non_whisper_context_keeps_runtime_lease_none(self):
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: self.fail("non-Whisper loaded a model"),
+            unload=lambda model: None,
+        )
+        instance = make_bare_model(manager)
+        fake_config = make_model_config(engine="Google")
+
+        with patch.object(model_module, "config", fake_config):
+            lease = instance._acquireWhisperRuntimeLease()
+            context = instance._makeTranscriberPipelineContext(
+                PipelineSource.MIC,
+                lease,
+            )
+
+        self.assertIsNone(lease)
+        self.assertIsNone(context.whisper_runtime_lease)
 
 
 if __name__ == "__main__":

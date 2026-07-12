@@ -35,7 +35,11 @@ from models.transcription.whisper_runtime import (
 from models.translation.translation_languages import translation_lang
 from models.transcription.transcription_languages import transcription_lang
 from models.translation.translation_utils import checkCTranslate2Weight, checkCTranslate2Tokenizer, downloadCTranslate2Weight, downloadCTranslate2Tokenizer, backwardCompatibleRenameWeightsDir
-from models.transcription.transcription_whisper import checkWhisperWeight, downloadWhisperWeight
+from models.transcription.transcription_whisper import (
+    checkWhisperWeight,
+    downloadWhisperWeight,
+    resolveWhisperComputeType,
+)
 from models.transcription.transcription_vosk import checkVoskWeight, downloadVoskWeight
 from models.transcription.transcription_parakeet import checkParakeetWeight, downloadParakeetWeight
 from models.transcription.transcription_sensevoice import checkSenseVoiceWeight, downloadSenseVoiceWeight
@@ -198,11 +202,18 @@ class Model:
             return None
         if checkWhisperWeight(config.PATH_DATA, config.WHISPER_WEIGHT_TYPE) is not True:
             return None
+        device = config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device"]
+        device_index = config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device_index"]
+        compute_type = resolveWhisperComputeType(
+            device,
+            device_index,
+            config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+        )
         key = WhisperRuntimeKey(
             weight_type=config.WHISPER_WEIGHT_TYPE,
-            device=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device"],
-            device_index=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device_index"],
-            compute_type=config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+            device=device,
+            device_index=device_index,
+            compute_type=compute_type,
         )
         return self.whisper_runtime_manager.acquire(config.PATH_DATA, key)
 
