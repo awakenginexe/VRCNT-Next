@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from threading import Condition
+from enum import Enum, auto
+from threading import Condition, get_ident
 from typing import Any, Callable, Optional
-
-from .transcription_whisper import getWhisperModel, unloadWhisperModel
 
 
 @dataclass(frozen=True)
@@ -32,6 +31,8 @@ class WhisperRuntimeClosed(RuntimeError):
 
 
 def _default_factory(root: str, key: WhisperRuntimeKey) -> object:
+    from .transcription_whisper import getWhisperModel
+
     return getWhisperModel(
         root,
         key.weight_type,
@@ -39,6 +40,46 @@ def _default_factory(root: str, key: WhisperRuntimeKey) -> object:
         device_index=key.device_index,
         compute_type=key.compute_type,
     )
+
+
+def _default_unload(model: object) -> None:
+    from .transcription_whisper import unloadWhisperModel
+
+    unloadWhisperModel(model)
+
+
+class _RuntimeState(Enum):
+    EMPTY = auto()
+    READY = auto()
+    DRAINING = auto()
+    UNLOADING = auto()
+    UNLOAD_FAILED = auto()
+    SHUTDOWN = auto()
+
+
+@dataclass(frozen=True)
+class _UnloadFailure:
+    error_type: type[BaseException]
+    message: str
+
+    def new_exception(self) -> BaseException:
+        try:
+            return self.error_type(self.message)
+        except BaseException:
+            return RuntimeError(
+                f"Whisper runtime unload failed: {self.error_type.__name__}: "
+                f"{self.message}"
+            )
+
+
+@dataclass
+class _UnloadAttempt:
+    attempt_id: int
+    generation: int
+    model: Optional[object]
+    owner_thread_id: Optional[int] = None
+    completed: bool = False
+    failure: Optional[_UnloadFailure] = None
 
 
 class WhisperRuntimeLease:
@@ -49,10 +90,12 @@ class WhisperRuntimeLease:
         manager: WhisperRuntimeManager,
         root: str,
         key: WhisperRuntimeKey,
+        generation: int,
     ) -> None:
         self._manager = manager
         self._root = root
         self._key = key
+        self._generation = generation
         self._closed = False
 
     @property
@@ -91,40 +134,50 @@ class WhisperRuntimeManager:
         if unload is not None and unload_model is not None:
             raise TypeError("pass either unload or unload_model, not both")
         self._factory = model_factory or factory or _default_factory
-        self._unload = unload_model or unload or unloadWhisperModel
+        self._unload = unload_model or unload or _default_unload
         self._condition = Condition()
         self._model: Optional[object] = None
         self._root: Optional[str] = None
         self._key: Optional[WhisperRuntimeKey] = None
         self._leases: set[WhisperRuntimeLease] = set()
         self._active_inference = 0
-        self._closing = False
-        self._shutdown = False
+        self._state = _RuntimeState.EMPTY
+        self._shutdown_requested = False
+        self._generation = 0
+        self._next_unload_attempt_id = 0
+        self._unload_attempt: Optional[_UnloadAttempt] = None
 
     def acquire(self, root: str, key: WhisperRuntimeKey) -> WhisperRuntimeLease:
         with self._condition:
-            if self._shutdown:
+            if self._shutdown_requested:
                 raise WhisperRuntimeClosed("Whisper runtime manager is shut down")
-            if self._closing:
-                raise WhisperRuntimeBusy("Whisper runtime is closing")
-            if self._model is not None and self._key != key:
+            if self._state not in (_RuntimeState.EMPTY, _RuntimeState.READY):
+                raise WhisperRuntimeBusy("Whisper runtime is not available")
+            if self._state is _RuntimeState.READY and self._key != key:
                 raise WhisperRuntimeBusy(
                     f"Whisper runtime {self._key!r} is still in use"
                 )
-            if self._model is None:
-                self._model = self._factory(root, key)
+            if self._state is _RuntimeState.EMPTY:
+                model = self._factory(root, key)
+                self._model = model
                 self._root = root
                 self._key = key
-            lease = WhisperRuntimeLease(self, root, key)
+                self._generation += 1
+                self._state = _RuntimeState.READY
+            lease = WhisperRuntimeLease(self, root, key, self._generation)
             self._leases.add(lease)
             return lease
 
     def _ensure_lease_can_transcribe(self, lease: WhisperRuntimeLease) -> None:
-        if self._shutdown:
+        if self._shutdown_requested:
             raise WhisperRuntimeClosed("Whisper runtime manager is shut down")
         if lease._closed or lease not in self._leases:
             raise WhisperRuntimeClosed("Whisper runtime lease is closed")
-        if self._model is None or self._key != lease._key:
+        if (
+            self._state is not _RuntimeState.READY
+            or self._model is None
+            or self._key != lease._key
+        ):
             raise WhisperRuntimeClosed("Whisper runtime lease is stale")
 
     def _transcribe(
@@ -152,52 +205,147 @@ class WhisperRuntimeManager:
                 self._active_inference = 0
                 self._condition.notify_all()
 
-    def _unload_current_locked(self) -> None:
+    def _begin_drain_locked(self) -> None:
         model = self._model
         if model is None:
-            return
-        self._model = None
-        self._root = None
-        self._key = None
+            raise RuntimeError("Whisper runtime lost model ownership")
+        self._next_unload_attempt_id += 1
+        self._unload_attempt = _UnloadAttempt(
+            attempt_id=self._next_unload_attempt_id,
+            generation=self._generation,
+            model=model,
+        )
+        self._state = _RuntimeState.DRAINING
+        self._condition.notify_all()
+
+    def _run_unload_attempt(self, attempt: _UnloadAttempt) -> None:
+        model = attempt.model
+        if model is None:
+            raise RuntimeError("Whisper runtime unload attempt lost its model")
+        owner_error: Optional[BaseException] = None
+        failure: Optional[_UnloadFailure] = None
         try:
             self._unload(model)
-        finally:
-            del model
+        except BaseException as unload_error:
+            owner_error = unload_error
+            try:
+                error_message = str(unload_error)
+            except BaseException:
+                error_message = type(unload_error).__name__
+            failure = _UnloadFailure(type(unload_error), error_message)
+
+        with self._condition:
+            attempt.failure = failure
+            attempt.completed = True
+            attempt.model = None
+            attempt.owner_thread_id = None
+            if failure is None:
+                self._model = None
+                self._root = None
+                self._key = None
+                self._state = (
+                    _RuntimeState.SHUTDOWN
+                    if self._shutdown_requested
+                    else _RuntimeState.EMPTY
+                )
+                self._unload_attempt = None
+            else:
+                self._state = _RuntimeState.UNLOAD_FAILED
+            self._condition.notify_all()
+
+        if owner_error is not None:
+            raise owner_error
+
+    def _drain_and_unload(self, retry_failed: bool) -> None:
+        owns_attempt = False
+        failure: Optional[_UnloadFailure] = None
+        with self._condition:
+            if self._state in (_RuntimeState.EMPTY, _RuntimeState.SHUTDOWN):
+                return
+            if self._state is _RuntimeState.UNLOAD_FAILED:
+                if not retry_failed:
+                    return
+                self._begin_drain_locked()
+            elif self._state not in (
+                _RuntimeState.DRAINING,
+                _RuntimeState.UNLOADING,
+            ):
+                raise RuntimeError(f"invalid unload state: {self._state!r}")
+
+            attempt = self._unload_attempt
+            if attempt is None:
+                raise RuntimeError("Whisper runtime has no unload attempt")
+
+            while not attempt.completed:
+                if (
+                    self._state is _RuntimeState.DRAINING
+                    and self._unload_attempt is attempt
+                    and not self._active_inference
+                ):
+                    self._state = _RuntimeState.UNLOADING
+                    attempt.owner_thread_id = get_ident()
+                    self._condition.notify_all()
+                    owns_attempt = True
+                    break
+                if attempt.owner_thread_id == get_ident():
+                    raise RuntimeError(
+                        "unload callback cannot join its own unload attempt"
+                    )
+                self._condition.wait()
+
+            if not owns_attempt:
+                failure = attempt.failure
+
+        if owns_attempt:
+            self._run_unload_attempt(attempt)
+        elif failure is not None:
+            raise failure.new_exception()
 
     def _close_lease(self, lease: WhisperRuntimeLease) -> None:
+        should_finish = False
         with self._condition:
             if lease._closed:
-                return
-            lease._closed = True
-            self._leases.discard(lease)
-            if self._leases:
+                should_finish = (
+                    lease._generation == self._generation
+                    and self._state
+                    in (_RuntimeState.DRAINING, _RuntimeState.UNLOADING)
+                )
+            else:
+                lease._closed = True
+                self._leases.discard(lease)
+                self._condition.notify_all()
+                if self._leases:
+                    return
+                if self._state is _RuntimeState.READY:
+                    self._begin_drain_locked()
+                should_finish = self._state in (
+                    _RuntimeState.DRAINING,
+                    _RuntimeState.UNLOADING,
+                )
+
+            if not should_finish:
                 return
 
-            self._closing = True
-            self._condition.notify_all()
-            try:
-                while self._active_inference:
-                    self._condition.wait()
-                self._unload_current_locked()
-            finally:
-                self._closing = False
-                self._condition.notify_all()
+        self._drain_and_unload(retry_failed=False)
 
     def shutdown(self) -> None:
         with self._condition:
-            self._shutdown = True
+            self._shutdown_requested = True
             for lease in self._leases:
                 lease._closed = True
             self._leases.clear()
-            self._closing = True
             self._condition.notify_all()
-            try:
-                while self._active_inference:
-                    self._condition.wait()
-                self._unload_current_locked()
-            finally:
-                self._closing = False
+            if self._state is _RuntimeState.EMPTY:
+                self._state = _RuntimeState.SHUTDOWN
                 self._condition.notify_all()
+                return
+            if self._state is _RuntimeState.SHUTDOWN:
+                return
+            retry_failed = self._state is _RuntimeState.UNLOAD_FAILED
+            if self._state is _RuntimeState.READY:
+                self._begin_drain_locked()
+
+        self._drain_and_unload(retry_failed=retry_failed)
 
 
 __all__ = [
