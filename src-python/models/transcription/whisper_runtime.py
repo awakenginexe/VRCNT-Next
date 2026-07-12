@@ -205,18 +205,20 @@ class WhisperRuntimeManager:
                 self._active_inference = 0
                 self._condition.notify_all()
 
-    def _begin_drain_locked(self) -> None:
+    def _begin_drain_locked(self) -> _UnloadAttempt:
         model = self._model
         if model is None:
             raise RuntimeError("Whisper runtime lost model ownership")
         self._next_unload_attempt_id += 1
-        self._unload_attempt = _UnloadAttempt(
+        attempt = _UnloadAttempt(
             attempt_id=self._next_unload_attempt_id,
             generation=self._generation,
             model=model,
         )
+        self._unload_attempt = attempt
         self._state = _RuntimeState.DRAINING
         self._condition.notify_all()
+        return attempt
 
     def _run_unload_attempt(self, attempt: _UnloadAttempt) -> None:
         model = attempt.model
@@ -256,30 +258,15 @@ class WhisperRuntimeManager:
         if owner_error is not None:
             raise owner_error
 
-    def _drain_and_unload(self, retry_failed: bool) -> None:
+    def _drain_and_unload(self, attempt: _UnloadAttempt) -> None:
         owns_attempt = False
         failure: Optional[_UnloadFailure] = None
         with self._condition:
-            if self._state in (_RuntimeState.EMPTY, _RuntimeState.SHUTDOWN):
-                return
-            if self._state is _RuntimeState.UNLOAD_FAILED:
-                if not retry_failed:
-                    return
-                self._begin_drain_locked()
-            elif self._state not in (
-                _RuntimeState.DRAINING,
-                _RuntimeState.UNLOADING,
-            ):
-                raise RuntimeError(f"invalid unload state: {self._state!r}")
-
-            attempt = self._unload_attempt
-            if attempt is None:
-                raise RuntimeError("Whisper runtime has no unload attempt")
-
             while not attempt.completed:
+                if self._unload_attempt is not attempt:
+                    raise RuntimeError("Whisper runtime replaced an active unload attempt")
                 if (
                     self._state is _RuntimeState.DRAINING
-                    and self._unload_attempt is attempt
                     and not self._active_inference
                 ):
                     self._state = _RuntimeState.UNLOADING
@@ -302,14 +289,15 @@ class WhisperRuntimeManager:
             raise failure.new_exception()
 
     def _close_lease(self, lease: WhisperRuntimeLease) -> None:
-        should_finish = False
+        attempt: Optional[_UnloadAttempt] = None
         with self._condition:
             if lease._closed:
-                should_finish = (
+                if (
                     lease._generation == self._generation
                     and self._state
                     in (_RuntimeState.DRAINING, _RuntimeState.UNLOADING)
-                )
+                ):
+                    attempt = self._unload_attempt
             else:
                 lease._closed = True
                 self._leases.discard(lease)
@@ -317,18 +305,20 @@ class WhisperRuntimeManager:
                 if self._leases:
                     return
                 if self._state is _RuntimeState.READY:
-                    self._begin_drain_locked()
-                should_finish = self._state in (
+                    attempt = self._begin_drain_locked()
+                elif self._state in (
                     _RuntimeState.DRAINING,
                     _RuntimeState.UNLOADING,
-                )
+                ):
+                    attempt = self._unload_attempt
 
-            if not should_finish:
+            if attempt is None:
                 return
 
-        self._drain_and_unload(retry_failed=False)
+        self._drain_and_unload(attempt)
 
     def shutdown(self) -> None:
+        attempt: Optional[_UnloadAttempt] = None
         with self._condition:
             self._shutdown_requested = True
             for lease in self._leases:
@@ -341,11 +331,17 @@ class WhisperRuntimeManager:
                 return
             if self._state is _RuntimeState.SHUTDOWN:
                 return
-            retry_failed = self._state is _RuntimeState.UNLOAD_FAILED
-            if self._state is _RuntimeState.READY:
-                self._begin_drain_locked()
+            if self._state in (_RuntimeState.READY, _RuntimeState.UNLOAD_FAILED):
+                attempt = self._begin_drain_locked()
+            elif self._state in (
+                _RuntimeState.DRAINING,
+                _RuntimeState.UNLOADING,
+            ):
+                attempt = self._unload_attempt
+            if attempt is None:
+                raise RuntimeError("Whisper runtime has no shutdown unload attempt")
 
-        self._drain_and_unload(retry_failed=retry_failed)
+        self._drain_and_unload(attempt)
 
 
 __all__ = [

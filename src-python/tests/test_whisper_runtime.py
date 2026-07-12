@@ -108,6 +108,22 @@ def pause_condition_waiter_after_wake(manager, thread_name):
     return paused, resume
 
 
+def pause_before_drain_entry(manager, thread_name):
+    """Pause one lifecycle caller after attempt selection but before joining it."""
+    paused = threading.Event()
+    resume = threading.Event()
+    original_drain = manager._drain_and_unload
+
+    def observed_drain(*args, **kwargs):
+        if threading.current_thread().name == thread_name:
+            paused.set()
+            resume.wait()
+        return original_drain(*args, **kwargs)
+
+    manager._drain_and_unload = observed_drain
+    return paused, resume
+
+
 class WhisperRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.key_a = WhisperRuntimeKey("tiny", "cpu", 0, "int8")
@@ -494,6 +510,75 @@ class WhisperRuntimeTests(unittest.TestCase):
             shutdown_outcome,
             RuntimeError,
         )
+        self.assertEqual(unload_attempts, [model])
+
+        manager.shutdown()
+        self.assertEqual(unload_attempts, [model, model])
+
+    def test_paused_final_close_joins_selected_attempt_after_replacement_load(self):
+        factory = RecordingFactory()
+        unloaded = []
+        manager = WhisperRuntimeManager(factory=factory, unload=unloaded.append)
+        lease_a = manager.acquire("app-root", self.key_a)
+        model_a = factory.models[0]
+
+        close_paused, resume_close = pause_before_drain_entry(
+            manager,
+            "selected-close",
+        )
+        self.addCleanup(resume_close.set)
+        close_thread, close_done, close_outcome = run_in_thread(
+            "selected-close", lease_a.close
+        )
+        self.assertTrue(close_paused.wait(WAIT_SECONDS))
+
+        lease_a.close()
+        self.assertEqual(unloaded, [model_a])
+        lease_b = manager.acquire("app-root", self.key_b)
+        model_b = factory.models[-1]
+
+        resume_close.set()
+        self.assert_thread_finished(close_thread, close_done, close_outcome)
+        self.assertEqual(unloaded, [model_a])
+
+        lease_b.close()
+        self.assertEqual(unloaded, [model_a, model_b])
+
+    def test_paused_shutdown_observes_selected_fast_unload_failure(self):
+        factory = RecordingFactory()
+        unload_attempts = []
+
+        def fail_once_unload(model):
+            unload_attempts.append(model)
+            if len(unload_attempts) == 1:
+                raise RuntimeError("selected unload failed")
+
+        manager = WhisperRuntimeManager(factory=factory, unload=fail_once_unload)
+        lease = manager.acquire("app-root", self.key_a)
+        model = factory.models[0]
+
+        shutdown_paused, resume_shutdown = pause_before_drain_entry(
+            manager,
+            "selected-shutdown",
+        )
+        self.addCleanup(resume_shutdown.set)
+        shutdown_thread, shutdown_done, shutdown_outcome = run_in_thread(
+            "selected-shutdown", manager.shutdown
+        )
+        self.assertTrue(shutdown_paused.wait(WAIT_SECONDS))
+
+        with self.assertRaisesRegex(RuntimeError, "selected unload failed"):
+            lease.close()
+        self.assertEqual(unload_attempts, [model])
+
+        resume_shutdown.set()
+        self.assert_thread_failed(
+            shutdown_thread,
+            shutdown_done,
+            shutdown_outcome,
+            RuntimeError,
+        )
+        self.assertRegex(str(shutdown_outcome["error"]), "selected unload failed")
         self.assertEqual(unload_attempts, [model])
 
         manager.shutdown()
