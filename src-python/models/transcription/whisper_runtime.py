@@ -311,6 +311,38 @@ class WhisperRuntimeManager:
 
         self._drain_and_unload(attempt)
 
+    def retry_failed_unload(self) -> None:
+        """Retry a retained failed unload without shutting down the manager."""
+        attempt: Optional[_UnloadAttempt] = None
+        with self._condition:
+            if self._shutdown_requested:
+                raise WhisperRuntimeClosed(
+                    "Whisper runtime manager is shut down"
+                )
+            if self._state is _RuntimeState.EMPTY:
+                return
+            if self._state is _RuntimeState.UNLOAD_FAILED:
+                if self._leases:
+                    raise RuntimeError(
+                        "Whisper runtime retained leases after unload failure"
+                    )
+                attempt = self._begin_drain_locked()
+            elif self._state in (
+                _RuntimeState.DRAINING,
+                _RuntimeState.UNLOADING,
+            ):
+                attempt = self._unload_attempt
+            else:
+                raise WhisperRuntimeBusy(
+                    "Whisper runtime has no failed unload to retry"
+                )
+            if attempt is None:
+                raise RuntimeError(
+                    "Whisper runtime lost its retry unload attempt"
+                )
+
+        self._drain_and_unload(attempt)
+
     def shutdown(self) -> None:
         attempt: Optional[_UnloadAttempt] = None
         with self._condition:

@@ -373,6 +373,12 @@ class AudioTranscriber:
                             pass
                     if len(languages) > 0 and google_error_count >= len(languages):
                         self._handleRecognitionFailure()
+                        self.clearLiveAudioSample()
+                        emit_terminal_metric(
+                            "error",
+                            "google_recognition_failed",
+                        )
+                        return False
                 case "Whisper":
                     try:
                         context = self.pipeline_context
@@ -450,7 +456,13 @@ class AudioTranscriber:
                             pcm16 = audio_data.get_raw_data(convert_rate=16000, convert_width=2)
                             result_text = self.vosk_recognizer.transcribe(pcm16, sample_rate=16000)
                         except Exception:
-                            result_text = ""
+                            errorLogging()
+                            self.clearLiveAudioSample()
+                            emit_terminal_metric(
+                                "error",
+                                "vosk_inference_failed",
+                            )
+                            return False
                         if result_text:
                             primary = languages[0] if languages else None
                             confidences.append({"confidence": 1.0, "text": result_text, "language": primary})
@@ -464,7 +476,13 @@ class AudioTranscriber:
                         try:
                             result_text = self.parakeet_model.transcribe(pcm, sample_rate=16000)
                         except Exception:
-                            result_text = ""
+                            errorLogging()
+                            self.clearLiveAudioSample()
+                            emit_terminal_metric(
+                                "error",
+                                "parakeet_inference_failed",
+                            )
+                            return False
                         if result_text:
                             primary = languages[0] if languages else None
                             confidences.append({"confidence": 1.0, "text": result_text, "language": primary})
@@ -492,8 +510,13 @@ class AudioTranscriber:
                                 )
                                 result_language_code = source_language if source_language != "auto" else ""
                         except Exception:
-                            result_text = ""
-                            result_language_code = ""
+                            errorLogging()
+                            self.clearLiveAudioSample()
+                            emit_terminal_metric(
+                                "error",
+                                "sensevoice_inference_failed",
+                            )
+                            return False
                         if result_text:
                             primary = (
                                 languages[0] if len(languages) == 1
@@ -521,6 +544,12 @@ class AudioTranscriber:
                 return False
             else:
                 self._handleRecognitionFailure()
+                self.clearLiveAudioSample()
+                emit_terminal_metric(
+                    "error",
+                    "audio_processing_failed",
+                )
+                return False
         finally:
             if self.transcription_engine == "Whisper":
                 self.clearLiveAudioSample()

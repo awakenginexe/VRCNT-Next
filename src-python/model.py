@@ -257,8 +257,8 @@ class Model:
             request_recovery=self._recordTranscriptionRecoveryRequest,
         )
 
-    @staticmethod
     def _closeWhisperRuntimeLease(
+        self,
         lease: Optional[WhisperRuntimeLease],
     ) -> None:
         if lease is None:
@@ -267,6 +267,11 @@ class Model:
             lease.close()
         except Exception:
             errorLogging()
+            try:
+                self.whisper_runtime_manager.retry_failed_unload()
+            except Exception:
+                errorLogging()
+                raise
 
     def ensure_initialized(self) -> None:
         """Ensure the model has been initialized. This is safe to call from
@@ -885,6 +890,13 @@ class Model:
         return result
 
     def startMicTranscript(self, fnc):
+        try:
+            return self._startMicTranscript(fnc)
+        except Exception:
+            self.stopMicTranscript()
+            raise
+
+    def _startMicTranscript(self, fnc):
         self.ensure_initialized()
         if config.ENABLE_TRANSCRIPTION_SEND is False:
             return
@@ -943,22 +955,10 @@ class Model:
                     ),
                 )
             except Exception:
-                if self.mic_whisper_runtime_lease is whisper_runtime_lease:
-                    self.mic_whisper_runtime_lease = None
-                self._closeWhisperRuntimeLease(whisper_runtime_lease)
-                self._requestRecorderStop(self.mic_audio_recorder, resume_first=True)
-                self.mic_audio_recorder = None
-                self.mic_audio_queue = None
                 raise
 
             if config.ENABLE_TRANSCRIPTION_SEND is False:
-                self._requestRecorderStop(self.mic_audio_recorder, resume_first=True)
-                self.mic_audio_recorder = None
-                self.mic_transcriber = None
-                self.mic_audio_queue = None
-                if self.mic_whisper_runtime_lease is whisper_runtime_lease:
-                    self.mic_whisper_runtime_lease = None
-                self._closeWhisperRuntimeLease(whisper_runtime_lease)
+                self.stopMicTranscript()
                 return
 
             audio_queue = self.mic_audio_queue
@@ -1208,11 +1208,20 @@ class Model:
             self.mic_print_transcript = None
 
         whisper_runtime_lease = self.mic_whisper_runtime_lease
-        self.mic_whisper_runtime_lease = None
-        self._closeWhisperRuntimeLease(whisper_runtime_lease)
-        self.mic_transcriber = None
-        self.mic_audio_queue = None
-        self.mic_transcript_stop_event = None
+        close_error = None
+        try:
+            self._closeWhisperRuntimeLease(whisper_runtime_lease)
+        except Exception as error:
+            close_error = error
+        else:
+            if self.mic_whisper_runtime_lease is whisper_runtime_lease:
+                self.mic_whisper_runtime_lease = None
+        finally:
+            self.mic_transcriber = None
+            self.mic_audio_queue = None
+            self.mic_transcript_stop_event = None
+        if close_error is not None:
+            raise close_error
         # if isinstance(self.mic_get_energy, threadFnc):
         #     self.mic_get_energy.stop()
         #     self.mic_get_energy = None
@@ -1261,6 +1270,13 @@ class Model:
             self.mic_energy_recorder = None
 
     def startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> None:
+        try:
+            return self._startSpeakerTranscript(fnc)
+        except Exception:
+            self.stopSpeakerTranscript()
+            raise
+
+    def _startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> None:
         self.ensure_initialized()
         if config.ENABLE_TRANSCRIPTION_RECEIVE is False:
             return
@@ -1319,22 +1335,10 @@ class Model:
                     ),
                 )
             except Exception:
-                if self.speaker_whisper_runtime_lease is whisper_runtime_lease:
-                    self.speaker_whisper_runtime_lease = None
-                self._closeWhisperRuntimeLease(whisper_runtime_lease)
-                self._requestRecorderStop(self.speaker_audio_recorder, resume_first=True)
-                self.speaker_audio_recorder = None
-                self.speaker_audio_queue = None
                 raise
 
             if config.ENABLE_TRANSCRIPTION_RECEIVE is False:
-                self._requestRecorderStop(self.speaker_audio_recorder, resume_first=True)
-                self.speaker_audio_recorder = None
-                self.speaker_transcriber = None
-                self.speaker_audio_queue = None
-                if self.speaker_whisper_runtime_lease is whisper_runtime_lease:
-                    self.speaker_whisper_runtime_lease = None
-                self._closeWhisperRuntimeLease(whisper_runtime_lease)
+                self.stopSpeakerTranscript()
                 return
 
             transcriber = self.speaker_transcriber
@@ -1469,11 +1473,20 @@ class Model:
             self.speaker_print_transcript = None
 
         whisper_runtime_lease = self.speaker_whisper_runtime_lease
-        self.speaker_whisper_runtime_lease = None
-        self._closeWhisperRuntimeLease(whisper_runtime_lease)
-        self.speaker_transcriber = None
-        self.speaker_audio_queue = None
-        self.speaker_transcript_stop_event = None
+        close_error = None
+        try:
+            self._closeWhisperRuntimeLease(whisper_runtime_lease)
+        except Exception as error:
+            close_error = error
+        else:
+            if self.speaker_whisper_runtime_lease is whisper_runtime_lease:
+                self.speaker_whisper_runtime_lease = None
+        finally:
+            self.speaker_transcriber = None
+            self.speaker_audio_queue = None
+            self.speaker_transcript_stop_event = None
+        if close_error is not None:
+            raise close_error
         # if isinstance(self.speaker_get_energy, threadFnc):
         #     self.speaker_get_energy.stop()
         #     self.speaker_get_energy = None

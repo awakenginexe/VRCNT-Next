@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import unittest
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, fields
 from datetime import datetime, timedelta, timezone
 from threading import Event, Thread
@@ -187,6 +188,18 @@ class FakeThreadFnc:
         return False
 
 
+class FailingStartThreadFnc(FakeThreadFnc):
+    def start(self):
+        super().start()
+        raise RuntimeError(f"{self.label} thread start failed")
+
+
+class FailingConstructThreadFnc(FakeThreadFnc):
+    def __init__(self, fnc, end_fnc=None, *args, **kwargs):
+        label = "mic" if "Mic" in fnc.__name__ else "speaker"
+        raise RuntimeError(f"{label} thread construction failed")
+
+
 class FakeConstructedTranscriber:
     events = None
     contexts = None
@@ -263,6 +276,24 @@ def make_transcriber(lease, context):
     return instance
 
 
+def make_non_whisper_transcriber(engine, events, recovery_requests):
+    context = make_pipeline_context(
+        None,
+        events=events,
+        request_recovery=lambda *args: recovery_requests.append(args),
+    )
+    instance = AudioTranscriber(
+        speaker=False,
+        source=FakeSource(),
+        phrase_timeout=3,
+        max_phrases=10,
+        transcription_engine="Google",
+        pipeline_context=context,
+    )
+    instance.transcription_engine = engine
+    return instance
+
+
 def queue_with(*chunks):
     queue = LatestQueue(maxsize=max(1, len(chunks)))
     for chunk in chunks:
@@ -327,6 +358,43 @@ def make_bare_model(manager=None):
     instance._startTranscriptStallWatchdog = lambda *args: None
     instance.changeMicTranscriptStatus = lambda: None
     return instance
+
+
+@contextmanager
+def patched_model_startup(
+    events,
+    contexts,
+    fake_config,
+    *,
+    thread_type=FakeThreadFnc,
+):
+    fake_devices = SimpleNamespace(
+        getMicDevices=lambda: {"host": [{"name": "mic-device"}]},
+        getSpeakerDevices=lambda: [{"name": "speaker-device"}],
+    )
+    FakeMicRecorder.events = events
+    FakeSpeakerRecorder.events = events
+    thread_type.events = events
+    FakeConstructedTranscriber.events = events
+    FakeConstructedTranscriber.contexts = contexts
+    with (
+        patch.object(model_module, "config", fake_config),
+        patch.object(model_module, "device_manager", fake_devices),
+        patch.object(model_module, "checkWhisperWeight", return_value=True),
+        patch.object(
+            model_module,
+            "SelectedMicEnergyAndAudioRecorder",
+            FakeMicRecorder,
+        ),
+        patch.object(
+            model_module,
+            "SelectedSpeakerEnergyAndAudioRecorder",
+            FakeSpeakerRecorder,
+        ),
+        patch.object(model_module, "AudioTranscriber", FakeConstructedTranscriber),
+        patch.object(model_module, "threadFnc", thread_type),
+    ):
+        yield
 
 
 class TranscriberPipelineTests(unittest.TestCase):
@@ -605,6 +673,177 @@ class TranscriberPipelineTests(unittest.TestCase):
             [("error", "transcription_languages_unavailable")],
         )
 
+    def test_each_non_whisper_engine_exception_is_terminal_error(self):
+        cases = (
+            (
+                "Google",
+                "google_recognition_failed",
+                lambda transcriber: setattr(
+                    transcriber,
+                    "audio_recognizer",
+                    SimpleNamespace(
+                        recognize_google=lambda *args, **kwargs: (_ for _ in ()).throw(
+                            RuntimeError("google failed")
+                        )
+                    ),
+                ),
+            ),
+            (
+                "Vosk",
+                "vosk_inference_failed",
+                lambda transcriber: setattr(
+                    transcriber,
+                    "vosk_recognizer",
+                    SimpleNamespace(
+                        transcribe=lambda *args, **kwargs: (_ for _ in ()).throw(
+                            RuntimeError("vosk failed")
+                        )
+                    ),
+                ),
+            ),
+            (
+                "Parakeet",
+                "parakeet_inference_failed",
+                lambda transcriber: setattr(
+                    transcriber,
+                    "parakeet_model",
+                    SimpleNamespace(
+                        transcribe=lambda *args, **kwargs: (_ for _ in ()).throw(
+                            RuntimeError("parakeet failed")
+                        )
+                    ),
+                ),
+            ),
+            (
+                "SenseVoice",
+                "sensevoice_inference_failed",
+                lambda transcriber: setattr(
+                    transcriber,
+                    "sensevoice_model",
+                    SimpleNamespace(
+                        recognize=lambda *args, **kwargs: (_ for _ in ()).throw(
+                            RuntimeError("sensevoice failed")
+                        )
+                    ),
+                ),
+            ),
+        )
+
+        for engine, error_code, configure in cases:
+            with self.subTest(engine=engine):
+                events = []
+                recovery_requests = []
+                transcriber = make_non_whisper_transcriber(
+                    engine,
+                    events,
+                    recovery_requests,
+                )
+                configure(transcriber)
+                with patch.object(transcriber_module, "errorLogging"):
+                    result = transcriber.transcribeAudioQueue(
+                        queue_with(
+                            AudioChunk(
+                                pcm(100),
+                                datetime.now(timezone.utc),
+                                time.perf_counter(),
+                            )
+                        ),
+                        ["English"],
+                        ["United States"],
+                    )
+
+                self.assertFalse(result)
+                self.assertEqual(recovery_requests, [])
+                self.assertEqual(transcriber.audio_sources["last_sample"], b"")
+                terminal = [
+                    (event.outcome, event.error_code)
+                    for event in events
+                    if event.stage == "transcription"
+                    and event.outcome != "running"
+                ]
+                self.assertEqual(terminal, [("error", error_code)])
+                self.assertNotIn(
+                    ("transcription", "success"),
+                    [(event.stage, event.outcome) for event in events],
+                )
+
+    def test_non_whisper_outer_processing_exceptions_never_request_recovery(self):
+        for engine in ("Google", "Vosk", "Parakeet", "SenseVoice"):
+            with self.subTest(engine=engine):
+                events = []
+                recovery_requests = []
+                transcriber = make_non_whisper_transcriber(
+                    engine,
+                    events,
+                    recovery_requests,
+                )
+                transcriber.audio_sources["process_data_func"] = lambda: (
+                    _ for _ in ()
+                ).throw(RuntimeError("audio processing failed"))
+                with patch.object(transcriber_module, "errorLogging"):
+                    result = transcriber.transcribeAudioQueue(
+                        queue_with(
+                            AudioChunk(
+                                pcm(100),
+                                datetime.now(timezone.utc),
+                                time.perf_counter(),
+                            )
+                        ),
+                        ["English"],
+                        ["United States"],
+                    )
+
+                self.assertFalse(result)
+                self.assertEqual(recovery_requests, [])
+                self.assertEqual(transcriber.audio_sources["last_sample"], b"")
+                terminal = [
+                    (event.outcome, event.error_code)
+                    for event in events
+                    if event.stage == "transcription"
+                    and event.outcome != "running"
+                ]
+                self.assertEqual(
+                    terminal,
+                    [("error", "audio_processing_failed")],
+                )
+
+    def test_google_unknown_value_remains_successful_empty_result(self):
+        events = []
+        recovery_requests = []
+        transcriber = make_non_whisper_transcriber(
+            "Google",
+            events,
+            recovery_requests,
+        )
+        transcriber.audio_recognizer = SimpleNamespace(
+            recognize_google=lambda *args, **kwargs: (_ for _ in ()).throw(
+                transcriber_module.UnknownValueError()
+            )
+        )
+
+        result = transcriber.transcribeAudioQueue(
+            queue_with(
+                AudioChunk(
+                    pcm(100),
+                    datetime.now(timezone.utc),
+                    time.perf_counter(),
+                )
+            ),
+            ["English"],
+            ["United States"],
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(recovery_requests, [])
+        self.assertEqual(
+            [
+                event.outcome
+                for event in events
+                if event.stage == "transcription"
+            ],
+            ["running", "success"],
+        )
+
     def test_whisper_failure_clears_audio_and_only_requests_recovery(self):
         lease = FakeLease(error=RuntimeError("fake inference failed"))
         recovery_requests = []
@@ -714,6 +953,68 @@ class TranscriberPipelineTests(unittest.TestCase):
 
 
 class ModelWhisperLeaseIntegrationTests(unittest.TestCase):
+    def test_runtime_failed_unload_can_retry_without_shutdown(self):
+        attempts = []
+
+        def fail_once(model):
+            attempts.append(model)
+            if len(attempts) == 1:
+                raise RuntimeError("first unload failed")
+
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: object(),
+            unload=fail_once,
+        )
+        key = runtime_module.WhisperRuntimeKey(
+            "tiny",
+            "cpu",
+            0,
+            "int8",
+        )
+        lease = manager.acquire("unused-root", key)
+
+        with self.assertRaisesRegex(RuntimeError, "first unload failed"):
+            lease.close()
+        manager.retry_failed_unload()
+
+        self.assertEqual(len(attempts), 2)
+        replacement = manager.acquire("unused-root", key)
+        replacement.close()
+        self.assertEqual(len(attempts), 3)
+
+    def test_runtime_repeated_failed_retry_can_succeed_later(self):
+        attempts = []
+
+        def fail_twice(model):
+            attempts.append(model)
+            if len(attempts) <= 2:
+                raise RuntimeError(f"unload failed {len(attempts)}")
+
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: object(),
+            unload=fail_twice,
+        )
+        key = runtime_module.WhisperRuntimeKey(
+            "tiny",
+            "cpu",
+            0,
+            "int8",
+        )
+        lease = manager.acquire("unused-root", key)
+
+        with self.assertRaisesRegex(RuntimeError, "unload failed 1"):
+            lease.close()
+        with self.assertRaisesRegex(RuntimeError, "unload failed 2"):
+            manager.retry_failed_unload()
+        with self.assertRaises(runtime_module.WhisperRuntimeBusy):
+            manager.acquire("unused-root", key)
+        manager.retry_failed_unload()
+
+        self.assertEqual(len(attempts), 3)
+        replacement = manager.acquire("unused-root", key)
+        replacement.close()
+        self.assertEqual(len(attempts), 4)
+
     def test_cuda_auto_and_int8_share_one_resolved_runtime_key(self):
         factory_keys = []
         unloaded = []
@@ -907,6 +1208,185 @@ class ModelWhisperLeaseIntegrationTests(unittest.TestCase):
 
         self.assertIsNone(lease)
         self.assertIsNone(context.whisper_runtime_lease)
+
+    def test_mic_startup_failures_roll_back_every_owned_resource(self):
+        cases = (
+            ("thread_construct", FailingConstructThreadFnc),
+            ("thread_start", FailingStartThreadFnc),
+            ("watchdog", FakeThreadFnc),
+            ("status", FakeThreadFnc),
+        )
+        for stage, thread_type in cases:
+            with self.subTest(stage=stage):
+                events = []
+                contexts = []
+                unloaded = []
+                manager = WhisperRuntimeManager(
+                    factory=lambda root, key: object(),
+                    unload=unloaded.append,
+                )
+                instance = make_bare_model(manager)
+                if stage == "watchdog":
+                    instance._startTranscriptStallWatchdog = lambda *args: (_ for _ in ()).throw(
+                        RuntimeError("watchdog failed")
+                    )
+                if stage == "status":
+                    instance.changeMicTranscriptStatus = lambda: (_ for _ in ()).throw(
+                        RuntimeError("status failed")
+                    )
+
+                with patched_model_startup(
+                    events,
+                    contexts,
+                    make_model_config(),
+                    thread_type=thread_type,
+                ):
+                    with self.assertRaises(RuntimeError):
+                        instance.startMicTranscript(lambda result: None)
+
+                self.assertIsNone(instance.mic_audio_recorder)
+                self.assertIsNone(instance.mic_audio_queue)
+                self.assertIsNone(instance.mic_transcriber)
+                self.assertIsNone(instance.mic_print_transcript)
+                self.assertIsNone(instance.mic_transcript_stop_event)
+                self.assertIsNone(instance.mic_whisper_runtime_lease)
+                self.assertIn(("stop_recorder", "mic"), events)
+                if stage != "thread_construct":
+                    self.assertIn(("thread_stop", "mic"), events)
+                    self.assertIn(
+                        (
+                            "thread_join",
+                            "mic",
+                            model_module.TRANSCRIPT_THREAD_JOIN_TIMEOUT,
+                        ),
+                        events,
+                    )
+                self.assertEqual(len(unloaded), 1)
+
+    def test_speaker_watchdog_failure_rolls_back_started_worker_and_lease(self):
+        events = []
+        contexts = []
+        unloaded = []
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: object(),
+            unload=unloaded.append,
+        )
+        instance = make_bare_model(manager)
+        instance._startTranscriptStallWatchdog = lambda *args: (_ for _ in ()).throw(
+            RuntimeError("speaker watchdog failed")
+        )
+
+        with patched_model_startup(
+            events,
+            contexts,
+            make_model_config(),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "speaker watchdog failed"):
+                instance.startSpeakerTranscript(lambda result: None)
+
+        self.assertIsNone(instance.speaker_audio_recorder)
+        self.assertIsNone(instance.speaker_audio_queue)
+        self.assertIsNone(instance.speaker_transcriber)
+        self.assertIsNone(instance.speaker_print_transcript)
+        self.assertIsNone(instance.speaker_transcript_stop_event)
+        self.assertIsNone(instance.speaker_whisper_runtime_lease)
+        self.assertIn(("stop_recorder", "speaker"), events)
+        self.assertIn(("thread_stop", "speaker"), events)
+        self.assertIn(
+            (
+                "thread_join",
+                "speaker",
+                model_module.TRANSCRIPT_THREAD_JOIN_TIMEOUT,
+            ),
+            events,
+        )
+        self.assertEqual(len(unloaded), 1)
+
+    def test_model_stop_retries_fail_once_unload_and_clears_lease(self):
+        attempts = []
+
+        def fail_once(model):
+            attempts.append(model)
+            if len(attempts) == 1:
+                raise RuntimeError("transient unload failure")
+
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: object(),
+            unload=fail_once,
+        )
+        instance = make_bare_model(manager)
+        fake_config = make_model_config()
+        with (
+            patch.object(model_module, "config", fake_config),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+        ):
+            lease = instance._acquireWhisperRuntimeLease()
+        instance.mic_whisper_runtime_lease = lease
+
+        with patch.object(model_module, "errorLogging"):
+            instance.stopMicTranscript()
+
+        self.assertEqual(len(attempts), 2)
+        self.assertIsNone(instance.mic_whisper_runtime_lease)
+        self.assertTrue(lease.closed)
+        with (
+            patch.object(model_module, "config", fake_config),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+        ):
+            replacement = instance._acquireWhisperRuntimeLease()
+        replacement.close()
+        self.assertEqual(len(attempts), 3)
+
+    def test_model_stop_retains_lease_after_repeated_failure_then_retries(self):
+        attempts = []
+
+        def fail_twice(model):
+            attempts.append(model)
+            if len(attempts) <= 2:
+                raise RuntimeError(f"persistent unload failure {len(attempts)}")
+
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: object(),
+            unload=fail_twice,
+        )
+        instance = make_bare_model(manager)
+        fake_config = make_model_config()
+        with (
+            patch.object(model_module, "config", fake_config),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+        ):
+            lease = instance._acquireWhisperRuntimeLease()
+        instance.mic_whisper_runtime_lease = lease
+        instance.mic_audio_recorder = object()
+        instance.mic_audio_queue = object()
+        instance.mic_transcriber = object()
+
+        with (
+            patch.object(model_module, "errorLogging"),
+            self.assertRaisesRegex(RuntimeError, "persistent unload failure 2"),
+        ):
+            instance.stopMicTranscript()
+
+        self.assertIs(instance.mic_whisper_runtime_lease, lease)
+        self.assertIsNone(instance.mic_audio_recorder)
+        self.assertIsNone(instance.mic_audio_queue)
+        self.assertIsNone(instance.mic_transcriber)
+        self.assertEqual(len(attempts), 2)
+        with self.assertRaises(runtime_module.WhisperRuntimeBusy):
+            manager.acquire("unused-root", lease.key)
+
+        with patch.object(model_module, "errorLogging"):
+            instance.stopMicTranscript()
+
+        self.assertEqual(len(attempts), 3)
+        self.assertIsNone(instance.mic_whisper_runtime_lease)
+        with (
+            patch.object(model_module, "config", fake_config),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+        ):
+            replacement = instance._acquireWhisperRuntimeLease()
+        replacement.close()
+        self.assertEqual(len(attempts), 4)
 
 
 if __name__ == "__main__":
