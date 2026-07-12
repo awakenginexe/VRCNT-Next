@@ -1,3 +1,4 @@
+import importlib
 import json
 import os
 import sys
@@ -10,14 +11,17 @@ from unittest.mock import Mock, call, patch
 SRC_PYTHON = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, SRC_PYTHON)
 
-# Import the real Whisper helper before installing the lightweight runtime
-# stubs used for config/controller/mainloop imports below.
-from models.transcription import transcription_whisper as whisper
-
-
-_temp_data = tempfile.TemporaryDirectory()
-_previous_local_app_data = os.environ.get("LOCALAPPDATA")
-os.environ["LOCALAPPDATA"] = _temp_data.name
+_MISSING = object()
+_saved_modules = {}
+_temp_data = None
+_local_app_data_patcher = None
+_get_compute_device_list_patcher = None
+_transcription_package = None
+_previous_whisper_attribute = _MISSING
+whisper = None
+config_module = None
+controller_module = None
+mainloop = None
 
 
 class _DeviceManagerStub:
@@ -28,7 +32,13 @@ class _DeviceManagerStub:
         return {"device": {"name": "NoDevice"}}
 
 
+def _remember_module(name):
+    if name not in _saved_modules:
+        _saved_modules[name] = sys.modules.get(name, _MISSING)
+
+
 def _module(name, **attributes):
+    _remember_module(name)
     module = types.ModuleType(name)
     for key, value in attributes.items():
         setattr(module, key, value)
@@ -36,66 +46,160 @@ def _module(name, **attributes):
     return module
 
 
-# Config initialization must not inspect Torch/CTranslate2 devices or audio
-# hardware during this focused unit test.
-import utils
+def _remove_module(name):
+    _remember_module(name)
+    sys.modules.pop(name, None)
 
-utils.getComputeDeviceList = lambda: [
-    {
-        "device": "cpu",
-        "device_index": 0,
-        "device_name": "cpu",
-        "compute_types": ["auto", "float32"],
+
+def _import_whisper_with_real_requests():
+    requests_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "requests" or name.startswith("requests.")
     }
-]
-_module("torch", cuda=types.SimpleNamespace(is_available=lambda: False))
-_module("device_manager", device_manager=_DeviceManagerStub())
-_module(
-    "models.translation.translation_languages",
-    translation_lang={},
-    loadTranslationLanguages=lambda *args, **kwargs: {},
-)
-_module("models.translation.translation_utils", ctranslate2_weights={})
-_module("models.transcription.transcription_languages", transcription_lang={})
-_module(
-    "models.transcription.transcription_vosk",
-    _MODELS={},
-    getVoskModelMeta=lambda *args, **kwargs: {},
-)
-_module(
-    "models.transcription.transcription_parakeet",
-    _MODELS={},
-    getParakeetModelMeta=lambda *args, **kwargs: {},
-)
-_module(
-    "models.transcription.transcription_sensevoice",
-    _MODELS={},
-    getSenseVoiceModelMeta=lambda *args, **kwargs: {},
-)
-
-import config as config_module
+    for name in requests_modules:
+        sys.modules.pop(name, None)
+    try:
+        importlib.import_module("requests")
+        return importlib.import_module("models.transcription.transcription_whisper")
+    finally:
+        for name in list(sys.modules):
+            if name == "requests" or name.startswith("requests."):
+                sys.modules.pop(name, None)
+        sys.modules.update(requests_modules)
 
 
-_model_stub = types.SimpleNamespace()
-_module(
-    "model",
-    model=_model_stub,
-    collapseTranslationEngineSelection=lambda value: value,
-    normalizeTranslationEngineSelection=lambda value: value,
-)
-_module("resource_usage", collect_resource_usage=lambda: {})
+def _restore_test_environment():
+    global _temp_data
 
-import controller as controller_module
-import mainloop
+    if config_module is not None:
+        timer = getattr(config_module.config, "_timer", None)
+        if timer is not None and hasattr(timer, "cancel"):
+            timer.cancel()
+
+    if _get_compute_device_list_patcher is not None:
+        _get_compute_device_list_patcher.stop()
+
+    if _transcription_package is not None:
+        if _previous_whisper_attribute is _MISSING:
+            try:
+                delattr(_transcription_package, "transcription_whisper")
+            except AttributeError:
+                pass
+        else:
+            setattr(
+                _transcription_package,
+                "transcription_whisper",
+                _previous_whisper_attribute,
+            )
+
+    for name, previous in reversed(list(_saved_modules.items())):
+        if previous is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+    _saved_modules.clear()
+
+    if _local_app_data_patcher is not None:
+        _local_app_data_patcher.stop()
+    if _temp_data is not None:
+        _temp_data.cleanup()
+        _temp_data = None
+
+
+def setUpModule():
+    global _temp_data
+    global _local_app_data_patcher
+    global _get_compute_device_list_patcher
+    global _transcription_package
+    global _previous_whisper_attribute
+    global whisper
+    global config_module
+    global controller_module
+    global mainloop
+
+    try:
+        _temp_data = tempfile.TemporaryDirectory()
+        _local_app_data_patcher = patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": _temp_data.name},
+        )
+        _local_app_data_patcher.start()
+
+        _remember_module("models")
+        _remember_module("models.transcription")
+        _remember_module("models.transcription.transcription_whisper")
+        _remember_module("utils")
+        _transcription_package = importlib.import_module("models.transcription")
+        _previous_whisper_attribute = getattr(
+            _transcription_package,
+            "transcription_whisper",
+            _MISSING,
+        )
+        whisper = _import_whisper_with_real_requests()
+
+        # Config initialization must not inspect Torch/CTranslate2 devices or
+        # audio hardware during this focused unit test.
+        utils = importlib.import_module("utils")
+        _get_compute_device_list_patcher = patch.object(
+            utils,
+            "getComputeDeviceList",
+            return_value=[
+                {
+                    "device": "cpu",
+                    "device_index": 0,
+                    "device_name": "cpu",
+                    "compute_types": ["auto", "float32"],
+                }
+            ],
+        )
+        _get_compute_device_list_patcher.start()
+        _module("torch", cuda=types.SimpleNamespace(is_available=lambda: False))
+        _module("device_manager", device_manager=_DeviceManagerStub())
+        _module(
+            "models.translation.translation_languages",
+            translation_lang={},
+            loadTranslationLanguages=lambda *args, **kwargs: {},
+        )
+        _module("models.translation.translation_utils", ctranslate2_weights={})
+        _module("models.transcription.transcription_languages", transcription_lang={})
+        _module(
+            "models.transcription.transcription_vosk",
+            _MODELS={},
+            getVoskModelMeta=lambda *args, **kwargs: {},
+        )
+        _module(
+            "models.transcription.transcription_parakeet",
+            _MODELS={},
+            getParakeetModelMeta=lambda *args, **kwargs: {},
+        )
+        _module(
+            "models.transcription.transcription_sensevoice",
+            _MODELS={},
+            getSenseVoiceModelMeta=lambda *args, **kwargs: {},
+        )
+
+        _remove_module("config")
+        config_module = importlib.import_module("config")
+
+        _module(
+            "model",
+            model=types.SimpleNamespace(),
+            collapseTranslationEngineSelection=lambda value: value,
+            normalizeTranslationEngineSelection=lambda value: value,
+        )
+        _module("resource_usage", collect_resource_usage=lambda: {})
+        _remove_module("controller")
+        controller_module = importlib.import_module("controller")
+        _remove_module("mainloop")
+        mainloop = importlib.import_module("mainloop")
+    except Exception:
+        _restore_test_environment()
+        raise
 
 
 def tearDownModule():
-    config_module.config._timer = None
-    if _previous_local_app_data is None:
-        os.environ.pop("LOCALAPPDATA", None)
-    else:
-        os.environ["LOCALAPPDATA"] = _previous_local_app_data
-    _temp_data.cleanup()
+    _restore_test_environment()
 
 
 class WhisperDecodingHelperTests(unittest.TestCase):
