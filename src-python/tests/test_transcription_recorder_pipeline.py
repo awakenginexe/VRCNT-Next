@@ -106,6 +106,28 @@ class ProducerAfterDisplacementQueue:
         return item
 
 
+class PersistentlyContendedQueue:
+    """Refill after every bounded replacement attempt."""
+
+    def __init__(self, oldest, competing_items):
+        self.item = oldest
+        self.competing_items = iter(competing_items)
+        self.put_attempts = 0
+
+    def put_nowait(self, item):
+        self.put_attempts += 1
+        if self.put_attempts > 1:
+            self.item = next(self.competing_items)
+        raise Full
+
+    def get_nowait(self):
+        if self.item is None:
+            raise Empty
+        item = self.item
+        self.item = None
+        return item
+
+
 def make_full_audio_queue():
     audio_queue = LatestQueue[AudioChunk](maxsize=4)
     for index in range(4):
@@ -274,22 +296,76 @@ class TranscriptionRecorderCallbackTests(unittest.TestCase):
         )
         audio_queue.put_nowait(oldest)
         dropped = []
+        observed_queue_contents = []
         recognizer = FakeRecognizer()
         recorder = BaseRecorder(object(), 300, True, 5)
         recorder.recorder = recognizer
         clock = SimpleNamespace(perf_counter=lambda: 500.0)
+
+        def observe_drop(displaced):
+            dropped.append(displaced)
+            observed_queue_contents.append(
+                audio_queue.queue[0].data
+                if audio_queue.qsize()
+                else None
+            )
 
         with patch(
             "models.transcription.transcription_recorder.time",
             new=clock,
             create=True,
         ):
-            recorder.recordIntoQueue(audio_queue, on_drop=dropped.append)
+            recorder.recordIntoQueue(audio_queue, on_drop=observe_drop)
             self.invoke_promptly(
                 recognizer.audio_callback, None, FakeAudio(b"replacement")
             )
 
         self.assertEqual(dropped, [oldest])
+        self.assertEqual(observed_queue_contents, [b"replacement"])
+        self.assertEqual(audio_queue.qsize(), 1)
+        self.assertEqual(audio_queue.get_nowait().data, b"replacement")
+
+    def test_raising_drop_callback_cannot_prevent_replacement_offer(self):
+        audio_queue = Queue(maxsize=1)
+        oldest = AudioChunk(
+            b"oldest",
+            datetime(2026, 7, 13, tzinfo=timezone.utc),
+            1.0,
+        )
+        audio_queue.put_nowait(oldest)
+        observed_queue_contents = []
+        recognizer = FakeRecognizer()
+        recorder = BaseRecorder(object(), 300, True, 5)
+        recorder.recorder = recognizer
+        clock = SimpleNamespace(perf_counter=lambda: 550.0)
+
+        def raise_after_observing_replacement(displaced):
+            self.assertIs(displaced, oldest)
+            observed_queue_contents.append(
+                audio_queue.queue[0].data
+                if audio_queue.qsize()
+                else None
+            )
+            raise RuntimeError("drop callback failed")
+
+        with patch(
+            "models.transcription.transcription_recorder.time",
+            new=clock,
+        ):
+            recorder.recordIntoQueue(
+                audio_queue,
+                on_drop=raise_after_observing_replacement,
+            )
+            with self.assertRaisesRegex(
+                RuntimeError, "drop callback failed"
+            ):
+                self.invoke_promptly(
+                    recognizer.audio_callback,
+                    None,
+                    FakeAudio(b"replacement"),
+                )
+
+        self.assertEqual(observed_queue_contents, [b"replacement"])
         self.assertEqual(audio_queue.qsize(), 1)
         self.assertEqual(audio_queue.get_nowait().data, b"replacement")
 
@@ -360,6 +436,59 @@ class TranscriptionRecorderCallbackTests(unittest.TestCase):
         self.assertEqual(dropped, [oldest, competing])
         self.assertEqual(audio_queue.item.data, b"newest")
         self.assertEqual(heartbeats, [700.0])
+
+    def test_contended_queue_reports_drops_after_bounded_attempts(self):
+        oldest = AudioChunk(
+            b"oldest",
+            datetime(2026, 7, 13, tzinfo=timezone.utc),
+            1.0,
+        )
+        first_competing = AudioChunk(
+            b"first-competing",
+            datetime(2026, 7, 13, tzinfo=timezone.utc),
+            2.0,
+        )
+        final_competing = AudioChunk(
+            b"final-competing",
+            datetime(2026, 7, 13, tzinfo=timezone.utc),
+            3.0,
+        )
+        audio_queue = PersistentlyContendedQueue(
+            oldest,
+            (first_competing, final_competing),
+        )
+        dropped = []
+        observed_queue_contents = []
+        heartbeats = []
+        recognizer = FakeRecognizer()
+        recorder = BaseRecorder(object(), 300, True, 5)
+        recorder.recorder = recognizer
+        clock = SimpleNamespace(perf_counter=lambda: 800.0)
+
+        def observe_drop(displaced):
+            dropped.append(displaced)
+            observed_queue_contents.append(audio_queue.item)
+
+        with patch(
+            "models.transcription.transcription_recorder.time",
+            new=clock,
+        ):
+            recorder.recordIntoQueue(
+                audio_queue,
+                on_drop=observe_drop,
+                on_heartbeat=heartbeats.append,
+            )
+            self.invoke_promptly(
+                recognizer.audio_callback, None, FakeAudio(b"newest")
+            )
+
+        self.assertEqual(dropped, [oldest, first_competing])
+        self.assertEqual(
+            observed_queue_contents,
+            [final_competing, final_competing],
+        )
+        self.assertIs(audio_queue.item, final_competing)
+        self.assertEqual(heartbeats, [800.0])
 
 
 if __name__ == "__main__":

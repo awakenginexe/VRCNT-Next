@@ -30,20 +30,25 @@ def _offer_audio(audio_queue: Any, chunk: AudioChunk, on_drop=None) -> None:
 
     # Conventional queues have no atomic replace operation. Bound recovery so
     # a continuously contended queue cannot make the capture callback spin.
+    displaced_chunks = []
     for _ in range(2):
         try:
             displaced = audio_queue.get_nowait()
         except Empty:
             pass
         else:
-            if on_drop is not None:
-                on_drop(displaced)
+            displaced_chunks.append(displaced)
 
         try:
             audio_queue.put_nowait(chunk)
-            return
         except Full:
             continue
+        else:
+            break
+
+    if on_drop is not None:
+        for displaced in displaced_chunks:
+            on_drop(displaced)
 
 
 class BaseRecorder:
