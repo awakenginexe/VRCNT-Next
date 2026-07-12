@@ -27,6 +27,7 @@ def _getWhisperModelClass():
 
 DEFAULT_WHISPER_WEIGHT_TYPE = "tiny"
 WHISPER_GPU_INT8_COMPUTE_TYPE = "int8_float16"
+WHISPER_BEAM_SIZES = {"fast": 1, "balanced": 2, "accurate": 5}
 
 _MODELS = {
     "tiny": "Systran/faster-whisper-tiny",
@@ -52,10 +53,27 @@ _FILENAMES = [
 _REQUIRED_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
 
 
-def _normalizeWhisperComputeType(device: str, compute_type: str) -> str:
-    if device == "cuda" and compute_type == "int8":
+def getWhisperBeamSize(profile) -> int:
+    normalized_profile = str(profile).lower()
+    return WHISPER_BEAM_SIZES.get(
+        normalized_profile,
+        WHISPER_BEAM_SIZES["balanced"],
+    )
+
+
+def resolveWhisperComputeType(device, device_index, requested) -> str:
+    normalized_device = str(device).lower()
+    normalized_requested = str(requested).lower()
+    if normalized_device == "cuda" and normalized_requested in ("auto", "int8"):
         return WHISPER_GPU_INT8_COMPUTE_TYPE
-    return compute_type
+    if normalized_requested != "auto":
+        return normalized_requested
+    return getBestComputeType(device=normalized_device, device_index=device_index)
+
+
+def _normalizeWhisperComputeType(device: str, compute_type: str) -> str:
+    """Backward-compatible normalization for callers with resolved requests."""
+    return resolveWhisperComputeType(device, 0, compute_type)
 
 def _isValidWhisperFile(file_path: str, filename: str) -> bool:
     if not os_path.isfile(file_path):
@@ -187,9 +205,7 @@ def getWhisperModel(
         Exception: other loading errors are propagated.
     """
     path = os_path.join(root, "weights", "whisper", weight_type)
-    if compute_type == "auto":
-        compute_type = getBestComputeType(device, device_index)
-    compute_type = _normalizeWhisperComputeType(device, compute_type)
+    compute_type = resolveWhisperComputeType(device, device_index, compute_type)
     whisper_model_class = _getWhisperModelClass()
     try:
         model = whisper_model_class(

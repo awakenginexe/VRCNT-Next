@@ -432,6 +432,12 @@ def _selected_transcription_compute_type_validator(val, inst):
         return val
     return None
 
+def _whisper_decoding_profile_validator(val, inst):
+    profile = str(val).lower()
+    if profile in ("fast", "balanced", "accurate"):
+        return profile
+    return "balanced"
+
 def _overlay_small_validator(val, inst):
     if not isinstance(val, dict):
         return None
@@ -823,6 +829,7 @@ class Config:
 
     # --- Transcription settings ---
     SELECTED_TRANSCRIPTION_COMPUTE_TYPE = ValidatedProperty('SELECTED_TRANSCRIPTION_COMPUTE_TYPE', _selected_transcription_compute_type_validator)
+    WHISPER_DECODING_PROFILE = ValidatedProperty('WHISPER_DECODING_PROFILE', _whisper_decoding_profile_validator)
 
     # --- Overlay settings ---
     OVERLAY_SMALL_LOG_SETTINGS = ValidatedProperty('OVERLAY_SMALL_LOG_SETTINGS', _overlay_small_validator)
@@ -1124,6 +1131,7 @@ class Config:
         self._PARAKEET_WEIGHT_TYPE = next(iter(self.SELECTABLE_PARAKEET_WEIGHT_TYPE_LIST), "")
         self._SENSEVOICE_WEIGHT_TYPE = next(iter(self.SELECTABLE_SENSEVOICE_WEIGHT_TYPE_LIST), "")
         self._SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "auto"
+        self._WHISPER_DECODING_PROFILE = "balanced"
         self._AUTO_CLEAR_MESSAGE_BOX = True
         self._SEND_ONLY_TRANSLATED_MESSAGES = False
         self._OVERLAY_SMALL_LOG = False

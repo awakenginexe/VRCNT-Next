@@ -2655,6 +2655,15 @@ class Controller:
         return {"status":200, "result": config.WHISPER_WEIGHT_TYPE}
 
     @staticmethod
+    def getWhisperDecodingProfile(*args, **kwargs) -> dict:
+        return {"status": 200, "result": config.WHISPER_DECODING_PROFILE}
+
+    def setWhisperDecodingProfile(self, data, *args, **kwargs) -> dict:
+        config.WHISPER_DECODING_PROFILE = str(data).lower()
+        self._requestCoordinatedTranscriptionRestart()
+        return {"status": 200, "result": config.WHISPER_DECODING_PROFILE}
+
+    @staticmethod
     def getVoskWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.VOSK_WEIGHT_TYPE}
 
@@ -3017,6 +3026,9 @@ class Controller:
             self.startTranscriptionSendMessage()
         if needs_speaker:
             self.startTranscriptionReceiveMessage()
+
+    def _requestCoordinatedTranscriptionRestart(self) -> None:
+        self._restartActiveTranscription()
 
     def swapYourLanguageAndTargetLanguage(self, *args, **kwargs) -> dict:
         your_languages = config.SELECTED_YOUR_LANGUAGES

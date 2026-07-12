@@ -354,6 +354,8 @@ mapping = {
 
     "/get/data/selected_whisper_weight_type": {"status": True, "variable":controller.getWhisperWeightType},
     "/set/data/selected_whisper_weight_type": {"status": True, "variable":controller.setWhisperWeightType},
+    "/get/data/whisper_decoding_profile": {"status": True, "variable":controller.getWhisperDecodingProfile},
+    "/set/data/whisper_decoding_profile": {"status": True, "variable":controller.setWhisperDecodingProfile},
     "/get/data/selected_vosk_weight_type": {"status": True, "variable":controller.getVoskWeightType},
     "/set/data/selected_vosk_weight_type": {"status": True, "variable":controller.setVoskWeightType},
     "/get/data/selected_parakeet_weight_type": {"status": True, "variable":controller.getParakeetWeightType},
