@@ -18,6 +18,8 @@ class WhisperRuntimeKey:
 
 @dataclass(frozen=True)
 class WhisperInferenceResult:
+    """Materialized inference fields consumed after serialized model access."""
+
     segments: tuple[Any, ...]
     info: Any
 

@@ -22,7 +22,16 @@ from models.translation.translation_translator import Translator
 from models.osc.osc import OSCHandler
 from models.transcription.transcription_recorder import SelectedMicEnergyAndAudioRecorder, SelectedSpeakerEnergyAndAudioRecorder
 from models.transcription.transcription_recorder import SelectedMicEnergyRecorder, SelectedSpeakerEnergyRecorder
-from models.transcription.transcription_transcriber import AudioTranscriber
+from models.pipeline.pipeline_types import PipelineSource, PipelineStatusEvent
+from models.transcription.transcription_transcriber import (
+    AudioTranscriber,
+    TranscriberPipelineContext,
+)
+from models.transcription.whisper_runtime import (
+    WhisperRuntimeKey,
+    WhisperRuntimeLease,
+    WhisperRuntimeManager,
+)
 from models.translation.translation_languages import translation_lang
 from models.transcription.transcription_languages import transcription_lang
 from models.translation.translation_utils import checkCTranslate2Weight, checkCTranslate2Tokenizer, downloadCTranslate2Weight, downloadCTranslate2Tokenizer, backwardCompatibleRenameWeightsDir
@@ -135,6 +144,7 @@ class Model:
         self.mic_print_transcript = None
         self.mic_audio_recorder = None
         self.mic_transcriber = None
+        self.mic_whisper_runtime_lease = None
         self.mic_transcript_stop_event = None
         self.mic_energy_recorder = None
         self.mic_energy_plot_progressbar = None
@@ -142,6 +152,7 @@ class Model:
         self.speaker_audio_queue = None
         self.speaker_audio_recorder = None
         self.speaker_transcriber = None
+        self.speaker_whisper_runtime_lease = None
         self.speaker_transcript_stop_event = None
         self.speaker_energy_recorder = None
         self.speaker_energy_plot_progressbar = None
@@ -176,8 +187,75 @@ class Model:
         self.check_speaker_energy_fnc: Callable[[float], None] = lambda v: None
         self.clipboard = Clipboard()
         self.telemetry = Telemetry()
+        self.whisper_runtime_manager = WhisperRuntimeManager()
+        self.transcription_pipeline_metrics: list[PipelineStatusEvent] = []
+        self.transcription_recovery_requests: list[dict[str, object]] = []
 
         self._inited = True
+
+    def _acquireWhisperRuntimeLease(self) -> Optional[WhisperRuntimeLease]:
+        if config.SELECTED_TRANSCRIPTION_ENGINE != "Whisper":
+            return None
+        if checkWhisperWeight(config.PATH_DATA, config.WHISPER_WEIGHT_TYPE) is not True:
+            return None
+        key = WhisperRuntimeKey(
+            weight_type=config.WHISPER_WEIGHT_TYPE,
+            device=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device"],
+            device_index=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device_index"],
+            compute_type=config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+        )
+        return self.whisper_runtime_manager.acquire(config.PATH_DATA, key)
+
+    def _recordTranscriptionPipelineMetric(
+        self,
+        event: PipelineStatusEvent,
+    ) -> None:
+        self.transcription_pipeline_metrics.append(event)
+
+    def _recordTranscriptionRecoveryRequest(
+        self,
+        source: PipelineSource,
+        generation: int,
+        reason: str,
+        safe_to_restart: Event,
+    ) -> None:
+        # Task 9 replaces this recorder with the recovery coordinator. It must
+        # never wait here because inference cleanup owns the Event signal.
+        self.transcription_recovery_requests.append(
+            {
+                "source": source,
+                "generation": generation,
+                "reason": reason,
+                "safe_to_restart": safe_to_restart,
+            }
+        )
+
+    def _makeTranscriberPipelineContext(
+        self,
+        source: PipelineSource,
+        lease: Optional[WhisperRuntimeLease],
+    ) -> TranscriberPipelineContext:
+        generation = 0
+        return TranscriberPipelineContext(
+            source=source,
+            whisper_runtime_lease=lease,
+            whisper_decoding_profile=config.WHISPER_DECODING_PROFILE,
+            generation=generation,
+            is_generation_current=lambda candidate: candidate == generation,
+            emit_metric=self._recordTranscriptionPipelineMetric,
+            request_recovery=self._recordTranscriptionRecoveryRequest,
+        )
+
+    @staticmethod
+    def _closeWhisperRuntimeLease(
+        lease: Optional[WhisperRuntimeLease],
+    ) -> None:
+        if lease is None:
+            return
+        try:
+            lease.close()
+        except Exception:
+            errorLogging()
 
     def ensure_initialized(self) -> None:
         """Ensure the model has been initialized. This is safe to call from
@@ -830,7 +908,10 @@ class Model:
             )
             # self.mic_audio_recorder.recordIntoQueue(self.mic_audio_queue, mic_energy_queue)
             self.mic_audio_recorder.recordIntoQueue(self.mic_audio_queue, None)
+            whisper_runtime_lease = None
             try:
+                whisper_runtime_lease = self._acquireWhisperRuntimeLease()
+                self.mic_whisper_runtime_lease = whisper_runtime_lease
                 self.mic_transcriber = AudioTranscriber(
                     speaker=False,
                     source=self.mic_audio_recorder.source,
@@ -845,8 +926,15 @@ class Model:
                     device=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device"],
                     device_index=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device_index"],
                     compute_type=config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+                    pipeline_context=self._makeTranscriberPipelineContext(
+                        PipelineSource.MIC,
+                        whisper_runtime_lease,
+                    ),
                 )
             except Exception:
+                if self.mic_whisper_runtime_lease is whisper_runtime_lease:
+                    self.mic_whisper_runtime_lease = None
+                self._closeWhisperRuntimeLease(whisper_runtime_lease)
                 self._requestRecorderStop(self.mic_audio_recorder, resume_first=True)
                 self.mic_audio_recorder = None
                 self.mic_audio_queue = None
@@ -857,6 +945,9 @@ class Model:
                 self.mic_audio_recorder = None
                 self.mic_transcriber = None
                 self.mic_audio_queue = None
+                if self.mic_whisper_runtime_lease is whisper_runtime_lease:
+                    self.mic_whisper_runtime_lease = None
+                self._closeWhisperRuntimeLease(whisper_runtime_lease)
                 return
 
             audio_queue = self.mic_audio_queue
@@ -1105,6 +1196,9 @@ class Model:
         if self.mic_print_transcript is thread:
             self.mic_print_transcript = None
 
+        whisper_runtime_lease = self.mic_whisper_runtime_lease
+        self.mic_whisper_runtime_lease = None
+        self._closeWhisperRuntimeLease(whisper_runtime_lease)
         self.mic_transcriber = None
         self.mic_audio_queue = None
         self.mic_transcript_stop_event = None
@@ -1190,7 +1284,10 @@ class Model:
             )
             # self.speaker_audio_recorder.recordIntoQueue(speaker_audio_queue, speaker_energy_queue)
             self.speaker_audio_recorder.recordIntoQueue(speaker_audio_queue, None)
+            whisper_runtime_lease = None
             try:
+                whisper_runtime_lease = self._acquireWhisperRuntimeLease()
+                self.speaker_whisper_runtime_lease = whisper_runtime_lease
                 self.speaker_transcriber = AudioTranscriber(
                     speaker=True,
                     source=self.speaker_audio_recorder.source,
@@ -1205,8 +1302,15 @@ class Model:
                     device=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device"],
                     device_index=config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE["device_index"],
                     compute_type=config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+                    pipeline_context=self._makeTranscriberPipelineContext(
+                        PipelineSource.SPEAKER,
+                        whisper_runtime_lease,
+                    ),
                 )
             except Exception:
+                if self.speaker_whisper_runtime_lease is whisper_runtime_lease:
+                    self.speaker_whisper_runtime_lease = None
+                self._closeWhisperRuntimeLease(whisper_runtime_lease)
                 self._requestRecorderStop(self.speaker_audio_recorder, resume_first=True)
                 self.speaker_audio_recorder = None
                 self.speaker_audio_queue = None
@@ -1217,6 +1321,9 @@ class Model:
                 self.speaker_audio_recorder = None
                 self.speaker_transcriber = None
                 self.speaker_audio_queue = None
+                if self.speaker_whisper_runtime_lease is whisper_runtime_lease:
+                    self.speaker_whisper_runtime_lease = None
+                self._closeWhisperRuntimeLease(whisper_runtime_lease)
                 return
 
             transcriber = self.speaker_transcriber
@@ -1350,6 +1457,9 @@ class Model:
         if self.speaker_print_transcript is thread:
             self.speaker_print_transcript = None
 
+        whisper_runtime_lease = self.speaker_whisper_runtime_lease
+        self.speaker_whisper_runtime_lease = None
+        self._closeWhisperRuntimeLease(whisper_runtime_lease)
         self.speaker_transcriber = None
         self.speaker_audio_queue = None
         self.speaker_transcript_stop_event = None
