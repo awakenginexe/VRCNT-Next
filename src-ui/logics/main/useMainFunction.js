@@ -90,6 +90,12 @@ export const useMainFunction = () => {
         "transcription_receive",
     );
 
+    const clearPendingMainFunctionStatuses = () => {
+        updateTranslationStatus((current) => current.data);
+        updateTranscriptionSendStatus((current) => current.data);
+        updateTranscriptionReceiveStatus((current) => current.data);
+    };
+
     const clearPendingMainFunctionError = ({ endpoint, errorCode, result }) => {
         const operation = resolveFailedMainFunction({ endpoint, errorCode });
         if (!operation) return false;
@@ -127,6 +133,7 @@ export const useMainFunction = () => {
         toggleForeground,
         updateForegroundStatus,
 
+        clearPendingMainFunctionStatuses,
         clearPendingMainFunctionError,
     };
 };

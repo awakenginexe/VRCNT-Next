@@ -13,6 +13,7 @@ import {
     useIsBackendReady,
     useNotificationStatus,
 } from "@logics_common";
+import { useMainFunction } from "@logics_main";
 import { isBenignSidecarStderr } from "@logics_common/sidecarStderrUtils.js";
 
 export const StartPythonController = () => {
@@ -40,6 +41,7 @@ const useStartPython = () => {
     const { showNotification_Error } = useNotificationStatus();
     const { updateInitStatus } = useInitStatus();
     const { currentIsBackendReady } = useIsBackendReady();
+    const { clearPendingMainFunctionStatuses } = useMainFunction();
     const { t } = useI18n();
     const backendReadyRef = useRef(currentIsBackendReady.data);
     const startupErrorNotifiedRef = useRef(false);
@@ -78,6 +80,7 @@ const useStartPython = () => {
                 markBackendStartupError(termination);
                 return;
             }
+            clearPendingMainFunctionStatuses();
             showNotification_Error(
                 t("blocking_operation.backend_disconnected"),
                 {

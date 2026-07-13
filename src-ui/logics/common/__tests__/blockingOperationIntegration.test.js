@@ -255,6 +255,90 @@ test("receive errors clear main-function pending state before notifying", () => 
     );
 });
 
+test("post-ready sidecar close settles every pending main-function status", () => {
+    const mainFunctionSource = readSource(mainFunctionPath);
+    const recoveryBody = mainFunctionSource.match(
+        /const clearPendingMainFunctionStatuses = \(\) => \{([\s\S]*?)\n    \};/,
+    )?.[1] ?? "";
+
+    assert.notEqual(
+        recoveryBody,
+        "",
+        "useMainFunction must expose one recovery API for backend termination",
+    );
+    for (const updateStatus of [
+        "updateTranslationStatus",
+        "updateTranscriptionSendStatus",
+        "updateTranscriptionReceiveStatus",
+    ]) {
+        assert.match(
+            recoveryBody,
+            new RegExp(
+                `${updateStatus}\\(\\(current\\)\\s*=>\\s*current\\.data\\);`,
+            ),
+            `${updateStatus} must functionally preserve data while settling pending state`,
+        );
+    }
+    assert.doesNotMatch(recoveryBody, /Foreground/);
+    assert.match(mainFunctionSource, /clearPendingMainFunctionStatuses,/);
+
+    const startPythonSource = readSource(startPythonPath);
+    const hookStart = startPythonSource.indexOf("const useStartPython = () => {");
+    const markerStart = startPythonSource.indexOf(
+        "const markBackendStartupError",
+        hookStart,
+    );
+    const hookSetup = startPythonSource.slice(hookStart, markerStart);
+    assert.match(
+        startPythonSource,
+        /import\s+\{\s*useMainFunction\s*\}\s+from\s+["']@logics_main["'];/,
+    );
+    assert.match(
+        hookSetup,
+        /const\s+\{\s*clearPendingMainFunctionStatuses\s*\}\s*=\s*useMainFunction\(\)/,
+    );
+
+    const closeHandlerStart = startPythonSource.indexOf('command.on("close"');
+    const stdoutHandlerStart = startPythonSource.indexOf(
+        'command.stdout.on("data"',
+        closeHandlerStart,
+    );
+    const closeHandlerSource = startPythonSource.slice(
+        closeHandlerStart,
+        stdoutHandlerStart,
+    );
+    const preReadyCheck = closeHandlerSource.indexOf(
+        "if (backendReadyRef.current !== true)",
+    );
+    const earlyCloseMark = closeHandlerSource.indexOf(
+        "markBackendStartupError(termination)",
+    );
+    const earlyCloseReturn = closeHandlerSource.indexOf("return;", earlyCloseMark);
+    const recoverPending = closeHandlerSource.indexOf(
+        "clearPendingMainFunctionStatuses()",
+    );
+    const disconnectedNotice = closeHandlerSource.indexOf(
+        't("blocking_operation.backend_disconnected")',
+    );
+    assert.ok(
+        preReadyCheck >= 0
+            && preReadyCheck < earlyCloseMark
+            && earlyCloseMark < earlyCloseReturn
+            && earlyCloseReturn < recoverPending
+            && recoverPending < disconnectedNotice,
+        "only post-ready close may settle activation atoms, before disconnect copy",
+    );
+    assert.equal(
+        (closeHandlerSource.match(/clearPendingMainFunctionStatuses\(\)/g) ?? []).length,
+        1,
+    );
+    assert.doesNotMatch(
+        closeHandlerSource.slice(preReadyCheck, earlyCloseReturn),
+        /clearPendingMainFunctionStatuses/,
+    );
+    assert.doesNotMatch(closeHandlerSource, /updateIsBackendReady\(false\)/);
+});
+
 test("sidecar startup failures produce terminal InitStatus and deduplicated copy", () => {
     const source = readSource(startPythonPath);
 
@@ -377,6 +461,11 @@ test("main-function switches keep native semantics and pending focus identity", 
     );
     assert.match(buttonOpeningTag, /type=["']button["']/);
     assert.match(buttonOpeningTag, /role=["']switch["']/);
+    assert.match(
+        buttonOpeningTag,
+        /aria-label=\{switchLabel\}/,
+        "compact switches need the same stable accessible name as their visible label",
+    );
     assert.match(
         buttonOpeningTag,
         /aria-checked=\{currentState\.data\s*===\s*true\}/,

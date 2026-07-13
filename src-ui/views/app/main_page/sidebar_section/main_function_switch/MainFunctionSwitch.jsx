@@ -137,6 +137,7 @@ export const SwitchContainer = ({ switchLabel, switch_id, children, currentState
             <button
                 type="button"
                 role="switch"
+                aria-label={switchLabel}
                 aria-checked={currentState.data === true}
                 aria-busy={currentState.state === "pending"}
                 disabled={isDisabled}
