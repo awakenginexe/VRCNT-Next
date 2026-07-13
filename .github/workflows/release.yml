@@ -41,6 +41,72 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Prefetch pinned CUDA wheel
+        env:
+          HF_XET_HIGH_PERFORMANCE: '1'
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check huggingface_hub==0.32.2 hf-xet==1.1.2
+
+          $wheelName = "sherpa_onnx-1.13.0+cuda12.cudnn9-cp311-cp311-win_amd64.whl"
+          $wheelDir = Join-Path $env:RUNNER_TEMP "vrcnt-cuda-wheel"
+          New-Item -ItemType Directory -Path $wheelDir -Force | Out-Null
+          $env:CUDA_WHEEL_DIR = $wheelDir
+
+          $prefetchScript = @'
+          import hashlib
+          import os
+          import shutil
+          from pathlib import Path
+
+          from huggingface_hub import hf_hub_download
+
+          filename = "sherpa_onnx-1.13.0+cuda12.cudnn9-cp311-cp311-win_amd64.whl"
+          expected_sha256 = "d05cffbd8df3d69f33b6665afcfefaf05d42e1c73038b2c6ba8118cfeac2a88e"
+          source = Path(
+              hf_hub_download(
+                  repo_id="csukuangfj2/sherpa-onnx-wheels",
+                  filename=f"cuda/1.13.0/{filename}",
+              )
+          )
+          destination = Path(os.environ["CUDA_WHEEL_DIR"]) / filename
+          shutil.copy2(source, destination)
+
+          digest = hashlib.sha256()
+          with destination.open("rb") as wheel:
+              for chunk in iter(lambda: wheel.read(1024 * 1024), b""):
+                  digest.update(chunk)
+
+          actual_sha256 = digest.hexdigest()
+          if actual_sha256 != expected_sha256:
+              raise SystemExit(
+                  f"CUDA wheel SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}"
+              )
+          print(f"Verified pinned CUDA wheel at {destination}")
+          '@
+
+          $prefetchMaxAttempts = 4
+          for ($prefetchAttempt = 1; $prefetchAttempt -le $prefetchMaxAttempts; $prefetchAttempt++) {
+            $prefetchScript | python -
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+
+            if ($prefetchAttempt -eq $prefetchMaxAttempts) {
+              throw "CUDA wheel prefetch failed after $prefetchMaxAttempts attempts."
+            }
+
+            $delaySeconds = 30 * [Math]::Pow(2, $prefetchAttempt - 1)
+            Write-Warning "CUDA wheel prefetch attempt $prefetchAttempt failed; retrying in $delaySeconds seconds."
+            Start-Sleep -Seconds $delaySeconds
+          }
+
+          $wheelPath = Join-Path $wheelDir $wheelName
+          if (-not (Test-Path -LiteralPath $wheelPath)) {
+            throw "Verified CUDA wheel was not found at $wheelPath."
+          }
+          "VRCNT_CUDA_WHEEL_PATH=$wheelPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Setup Python environment
         shell: pwsh
         run: |

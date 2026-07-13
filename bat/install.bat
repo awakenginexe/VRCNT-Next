@@ -22,4 +22,8 @@ python -m venv .venv_cuda
 REM install packages for .venv_cuda
 call .venv_cuda/Scripts/activate
 python.exe -m pip install --upgrade pip
-pip install --no-cache-dir --force-reinstall -r requirements_cuda.txt
+if defined VRCNT_CUDA_WHEEL_PATH (
+    pip install --no-cache-dir --force-reinstall "%VRCNT_CUDA_WHEEL_PATH%" -r requirements_cuda.txt
+) else (
+    pip install --no-cache-dir --force-reinstall -r requirements_cuda.txt
+)

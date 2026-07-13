@@ -9,6 +9,10 @@ const workflow = fs.readFileSync(
     path.join(repoRoot, ".github/workflows/release.yml"),
     "utf8",
 );
+const pythonInstaller = fs.readFileSync(
+    path.join(repoRoot, "bat/install.bat"),
+    "utf8",
+);
 
 
 test("release workflow can republish an existing tag without moving it", () => {
@@ -45,4 +49,25 @@ test("release workflow retries transient Hugging Face upload failures", () => {
     assert.match(workflow, /\$script \| python -/);
     assert.match(workflow, /Hugging Face upload attempt \$uploadAttempt failed/);
     assert.match(workflow, /Hugging Face upload failed after \$uploadMaxAttempts attempts/);
+});
+
+
+test("release workflow prefetches and verifies the pinned CUDA wheel through hf-xet", () => {
+    assert.match(workflow, /Prefetch pinned CUDA wheel/);
+    assert.match(workflow, /hf_hub_download/);
+    assert.match(workflow, /HF_XET_HIGH_PERFORMANCE/);
+    assert.match(
+        workflow,
+        /d05cffbd8df3d69f33b6665afcfefaf05d42e1c73038b2c6ba8118cfeac2a88e/,
+    );
+    assert.match(workflow, /VRCNT_CUDA_WHEEL_PATH=.*GITHUB_ENV/);
+});
+
+
+test("Python setup deterministically installs an explicitly prefetched CUDA wheel", () => {
+    assert.match(pythonInstaller, /if defined VRCNT_CUDA_WHEEL_PATH/);
+    assert.match(
+        pythonInstaller,
+        /pip install --no-cache-dir --force-reinstall "%VRCNT_CUDA_WHEEL_PATH%" -r requirements_cuda\.txt/,
+    );
 });
