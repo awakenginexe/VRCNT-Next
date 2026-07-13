@@ -536,20 +536,16 @@ class Controller:
             and isinstance(update.message, str)
             and bool(update.message)
         ]
-        successful_slots = {target.target_slot for target, _ in successful_pairs}
         successful_translations = [
             update.message for _, update in successful_pairs
         ]
-        successful_target_languages = Controller._languageMap(
-            language_snapshots,
-            successful_slots,
-        )
+        destination_languages = Controller._languageMap(language_snapshots)
         successful_transliterations = [
             list(update.transliteration) for _, update in successful_pairs
         ]
         return (
             successful_translations,
-            successful_target_languages,
+            destination_languages,
             successful_transliterations,
         )
 
@@ -639,7 +635,7 @@ class Controller:
         output_config = task.output_config
         (
             successful_translations,
-            successful_target_languages,
+            destination_languages,
             successful_transliterations,
         ) = self._successfulOutputViews(task, output_config.target_languages)
         original_transliteration = list(task.original_transliteration)
@@ -724,7 +720,7 @@ class Controller:
                         None,
                         None,
                         successful_translations,
-                        successful_target_languages,
+                        destination_languages,
                         original_transliteration,
                         successful_transliterations,
                     )
@@ -734,7 +730,7 @@ class Controller:
                         task.original_message,
                         self._primaryLanguage(output_config.your_languages),
                         successful_translations,
-                        successful_target_languages,
+                        destination_languages,
                         original_transliteration,
                         successful_transliterations,
                     )
@@ -778,7 +774,7 @@ class Controller:
                             "src_languages": self._languageMap(
                                 output_config.your_languages
                             ),
-                            "dst_languages": successful_target_languages,
+                            "dst_languages": destination_languages,
                             "message": task.original_message,
                             "translation": successful_translations,
                             "transliteration": successful_transliterations,
@@ -822,7 +818,7 @@ class Controller:
         output_config = task.output_config
         (
             successful_translations,
-            successful_target_languages,
+            destination_languages,
             successful_transliterations,
         ) = self._successfulOutputViews(
             task,
@@ -871,7 +867,7 @@ class Controller:
                         None,
                         None,
                         successful_translations,
-                        successful_target_languages,
+                        destination_languages,
                         original_transliteration,
                         successful_transliterations,
                     )
@@ -880,7 +876,7 @@ class Controller:
                         task.original_message,
                         task.source_language,
                         successful_translations,
-                        successful_target_languages,
+                        destination_languages,
                         original_transliteration,
                         successful_transliterations,
                     )
@@ -912,7 +908,7 @@ class Controller:
                         None,
                         None,
                         successful_translations,
-                        successful_target_languages,
+                        destination_languages,
                         original_transliteration,
                         successful_transliterations,
                     )
@@ -922,7 +918,7 @@ class Controller:
                         task.original_message,
                         task.source_language,
                         successful_translations,
-                        successful_target_languages,
+                        destination_languages,
                         original_transliteration,
                         successful_transliterations,
                     )
@@ -986,7 +982,7 @@ class Controller:
                             "src_languages": self._languageMap(
                                 output_config.target_languages
                             ),
-                            "dst_languages": successful_target_languages,
+                            "dst_languages": destination_languages,
                             "message": task.original_message,
                             "translation": successful_translations,
                             "transliteration": successful_transliterations,

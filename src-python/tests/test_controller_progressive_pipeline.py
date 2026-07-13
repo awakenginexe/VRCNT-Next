@@ -646,7 +646,11 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
         self.assertEqual(overlay_args[3], ["deux"])
         self.assertEqual(
             overlay_args[4],
-            {"2": {"language": "French", "country": "France", "enable": True}},
+            {
+                "1": {"language": "Japanese", "country": "Japan", "enable": True},
+                "2": {"language": "French", "country": "France", "enable": True},
+                "3": {"language": "Thai", "country": "Thailand", "enable": False},
+            },
         )
         websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
         self.assertEqual(
@@ -666,6 +670,82 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
         fake_model.addTranslationHistory.assert_called_once_with("mic", "spoken")
         controller.run.assert_called_once()
         self.assertEqual(controller.run.call_args.args[1], "/run/error_translation_engine")
+
+    def test_speaker_partial_success_keeps_complete_overlay_and_websocket_language_maps(self):
+        controller = controller_module.Controller()
+        controller.run_mapping = {
+            "error_translation_engine": "/run/error_translation_engine"
+        }
+        controller.run = Mock()
+        controller._is_overlay_available = Mock(return_value=True)
+        fake_model = self._effect_model()
+        transliteration = ({"text": "deux", "reading": "deu"},)
+        task = FinalOutputTask(
+            trace_id="speaker-partial",
+            generation=0,
+            source=PipelineSource.SPEAKER,
+            original_message="heard",
+            source_language="English",
+            original_transliteration=(),
+            targets=(
+                TranslationTarget("1", "Japanese", "Japan"),
+                TranslationTarget("2", "French", "France"),
+            ),
+            translations=(
+                TranslationUpdate(
+                    "speaker-partial",
+                    "2",
+                    TranslationStatus.SUCCESS,
+                    "Bing",
+                    "deux",
+                    transliteration,
+                    11,
+                    0,
+                    None,
+                ),
+                TranslationUpdate(
+                    "speaker-partial",
+                    "1",
+                    TranslationStatus.ERROR,
+                    "Google",
+                    None,
+                    (),
+                    10,
+                    0,
+                    "failed",
+                ),
+            ),
+            output_config=_output_snapshot(),
+            started_at_monotonic=1.0,
+        )
+
+        with patch.object(controller_module, "model", fake_model):
+            controller._finalizeSpeakerOutput(task)
+
+        complete_destinations = {
+            "1": {"language": "Japanese", "country": "Japan", "enable": True},
+            "2": {"language": "French", "country": "France", "enable": True},
+            "3": {"language": "Thai", "country": "Thailand", "enable": False},
+        }
+        small_overlay_args = fake_model.createOverlayImageSmallLog.call_args.args
+        self.assertEqual(small_overlay_args[2], ["deux"])
+        self.assertEqual(small_overlay_args[3], complete_destinations)
+        self.assertEqual(small_overlay_args[5], [list(transliteration)])
+        large_overlay_args = fake_model.createOverlayImageLargeLog.call_args.args
+        self.assertEqual(large_overlay_args[3], ["deux"])
+        self.assertEqual(large_overlay_args[4], complete_destinations)
+        self.assertEqual(large_overlay_args[6], [list(transliteration)])
+        websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
+        self.assertEqual(websocket_payload["dst_languages"], complete_destinations)
+        self.assertEqual(websocket_payload["translation"], ["deux"])
+        self.assertEqual(
+            websocket_payload["transliteration"],
+            [list(transliteration)],
+        )
+        self.assertEqual(
+            websocket_payload["src_languages"]["3"],
+            {"language": "Thai", "country": "Thailand", "enable": False},
+        )
 
     def test_speaker_failure_keeps_original_only_metadata_without_translated_effects(self):
         controller = controller_module.Controller()
