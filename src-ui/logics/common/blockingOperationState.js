@@ -2,6 +2,15 @@ export const BLOCKING_OPERATION_DELAY_MS = 250;
 export const WARM_OPERATION_MS = 5_000;
 export const LONG_OPERATION_MS = 30_000;
 
+const primaryTranslationProvider = (selection) => (
+    Array.isArray(selection) ? selection[0] : selection
+);
+
+export const translationSelectionUsesCTranslate2 = (transition) => (
+    primaryTranslationProvider(transition?.current) === "CTranslate2"
+    || primaryTranslationProvider(transition?.proposed) === "CTranslate2"
+);
+
 const ACTIVATION_OPERATIONS = [
     {
         id: "translation",
@@ -50,6 +59,7 @@ export const getBlockingOperationCandidate = ({
     translationStatus,
     transcriptionSendStatus,
     transcriptionReceiveStatus,
+    translationSelectionPending = false,
 }) => {
     if (initStatus?.phase === "error") return null;
 
@@ -76,7 +86,11 @@ export const getBlockingOperationCandidate = ({
             transcriptionSendStatus,
             transcriptionReceiveStatus,
         }[operation.statusField];
-        if (status?.state === "pending" && status.data === false) {
+        const activationPending = status?.state === "pending"
+            && status.data === false;
+        const selectionPending = operation.id === "translation"
+            && translationSelectionPending;
+        if (activationPending || selectionPending) {
             return {
                 id: operation.id,
                 titleKey: operation.titleKey,

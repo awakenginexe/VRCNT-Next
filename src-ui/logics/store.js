@@ -346,6 +346,11 @@ export const { atomInstance: Atom_SelectedTranslationEngines, useHook: useStore_
     IS_TAURI_RUNTIME ? {1:"", 2:"", 3:""} : {1:"DeepL_API", 2:"CTranslate2", 3:"Google"},
     "SelectedTranslationEngines"
 );
+export const { atomInstance: Atom_TranslationEngineSelectionTransition, useHook: useStore_TranslationEngineSelectionTransition } = createAtomWithHook(
+    null,
+    "TranslationEngineSelectionTransition",
+    {is_state_ok: true}
+);
 export const { atomInstance: Atom_IsOpenedTranslatorSelector, useHook: useStore_IsOpenedTranslatorSelector } = createAtomWithHook(false, "IsOpenedTranslatorSelector");
 export const { atomInstance: Atom_IsOpenedTranscriptionEngineSelector, useHook: useStore_IsOpenedTranscriptionEngineSelector } = createAtomWithHook(false, "IsOpenedTranscriptionEngineSelector");
 

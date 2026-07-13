@@ -1,9 +1,13 @@
-import { useStore_SelectedPresetTabNumber, useStore_SelectedYourLanguages, useStore_SelectedYourTranslationLanguages, useStore_SelectedTargetLanguages, useStore_TranslationEngines, useStore_SelectedTranslationEngines, useStore_SelectableLanguageList } from "@store";
+import { useStore_SelectedPresetTabNumber, useStore_SelectedYourLanguages, useStore_SelectedYourTranslationLanguages, useStore_SelectedTargetLanguages, useStore_TranslationEngines, useStore_SelectedTranslationEngines, useStore_TranslationEngineSelectionTransition, useStore_SelectableLanguageList } from "@store";
 import { useStdoutToPython } from "@useStdoutToPython";
 import { translator_status } from "@ui_configs";
+import { useI18n } from "@useI18n";
+import { useNotificationStatus } from "../common/useNotificationStatus";
 
 export const useLanguageSettings = () => {
     const { asyncStdoutToPython } = useStdoutToPython();
+    const { showNotification_Error } = useNotificationStatus();
+    const { t } = useI18n();
 
     const {
         currentSelectedYourLanguages,
@@ -32,9 +36,13 @@ export const useLanguageSettings = () => {
     } = useStore_TranslationEngines();
     const {
         currentSelectedTranslationEngines,
-        updateSelectedTranslationEngines,
+        updateSelectedTranslationEngines: commitSelectedTranslationEngines,
         pendingSelectedTranslationEngines,
     } = useStore_SelectedTranslationEngines();
+    const {
+        currentTranslationEngineSelectionTransition,
+        updateTranslationEngineSelectionTransition,
+    } = useStore_TranslationEngineSelectionTransition();
 
     const {
         currentSelectableLanguageList,
@@ -224,11 +232,40 @@ export const useLanguageSettings = () => {
         asyncStdoutToPython("/get/data/selected_translation_engines");
     };
 
-    const setSelectedTranslationEngines = (selected_translator) => {
+    const settleSelectedTranslationEngineSelection = () => {
+        commitSelectedTranslationEngines((current) => current.data);
+        updateTranslationEngineSelectionTransition(null);
+    };
+
+    const updateSelectedTranslationEngines = (payload) => {
+        commitSelectedTranslationEngines(payload);
+        updateTranslationEngineSelectionTransition(null);
+    };
+
+    const setSelectedTranslationEngines = async (selected_translator) => {
+        if (currentSelectedTranslationEngines.state === "pending") return;
+        const presetKey = getPresetKey();
+        const currentSelection = currentSelectedTranslationEngines.data?.[presetKey] ?? "";
         pendingSelectedTranslationEngines();
+        updateTranslationEngineSelectionTransition({
+            preset_key: presetKey,
+            current: currentSelection,
+            proposed: selected_translator,
+        });
         const send_obj = structuredClone(currentSelectedTranslationEngines.data ?? {});
-        send_obj[getPresetKey()] = selected_translator;
-        asyncStdoutToPython("/set/data/selected_translation_engines", send_obj);
+        send_obj[presetKey] = selected_translator;
+        const transportResult = await asyncStdoutToPython(
+            "/set/data/selected_translation_engines",
+            send_obj,
+        );
+        if (!transportResult.ok) {
+            settleSelectedTranslationEngineSelection();
+            showNotification_Error(
+                t("blocking_operation.backend_unavailable"),
+                { category_id: "backend_unavailable" },
+            );
+        }
+        return transportResult;
     };
 
     const swapSelectedLanguages = () => {
@@ -287,6 +324,8 @@ export const useLanguageSettings = () => {
         getSelectedTranslationEngines,
         updateSelectedTranslationEngines,
         setSelectedTranslationEngines,
+        settleSelectedTranslationEngineSelection,
+        currentTranslationEngineSelectionTransition,
 
         swapSelectedLanguages,
         updateBothSelectedLanguages,

@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useMainFunction } from "../main/useMainFunction";
-import { getBlockingOperationCandidate } from "./blockingOperationState.js";
+import { useLanguageSettings } from "../main/useLanguageSettings";
+import {
+    getBlockingOperationCandidate,
+    translationSelectionUsesCTranslate2,
+} from "./blockingOperationState.js";
 import { useInitProgress } from "./useInitProgress";
 import { useInitStatus } from "./useInitStatus";
 import { useIsBackendReady } from "./useIsBackendReady";
@@ -15,13 +19,23 @@ export const useBlockingOperation = () => {
         currentTranscriptionSendStatus,
         currentTranscriptionReceiveStatus,
     } = useMainFunction();
+    const {
+        currentSelectedTranslationEngines,
+        currentTranslationEngineSelectionTransition,
+    } = useLanguageSettings();
+    const translationSelectionPending = currentTranslationStatus.data === true
+        && currentSelectedTranslationEngines.state === "pending"
+        && translationSelectionUsesCTranslate2(
+            currentTranslationEngineSelectionTransition.data,
+        );
     const startedAtByOperationRef = useRef({});
     const [nowMs, setNowMs] = useState(() => Date.now());
     const activeById = {
         startup: currentIsBackendReady.data !== true
             && currentInitStatus.data.phase !== "error",
         translation: currentTranslationStatus.state === "pending"
-            && currentTranslationStatus.data === false,
+            && currentTranslationStatus.data === false
+            || translationSelectionPending,
         transcription_send: currentTranscriptionSendStatus.state === "pending"
             && currentTranscriptionSendStatus.data === false,
         transcription_receive: currentTranscriptionReceiveStatus.state === "pending"
@@ -52,6 +66,7 @@ export const useBlockingOperation = () => {
         translationStatus: currentTranslationStatus,
         transcriptionSendStatus: currentTranscriptionSendStatus,
         transcriptionReceiveStatus: currentTranscriptionReceiveStatus,
+        translationSelectionPending,
     });
     const startedAt = candidate
         ? startedAtByOperationRef.current[candidate.id] ?? nowMs

@@ -164,6 +164,13 @@ export const useReceiveRoutes = () => {
     const receiveRoutes = (parsed_data) => {
         const { endpoint, status, result } = parsed_data;
 
+        const settleTranslationEngineSelection = () => {
+            if (endpoint === "/set/data/selected_translation_engines") {
+                hook_results.useLanguageSettings
+                    ?.settleSelectedTranslationEngineSelection?.();
+            }
+        };
+
         if (endpoint === "/run/initialization_complete") {
             Object.entries(result).forEach(([ep, value]) => {
                 if (ep in routes) {
@@ -186,6 +193,7 @@ export const useReceiveRoutes = () => {
                 break;
 
             case 400:
+                settleTranslationEngineSelection();
                 hook_results.useMainFunction?.clearPendingMainFunctionError?.({
                     endpoint,
                     errorCode: result?.error_code,
@@ -206,6 +214,7 @@ export const useReceiveRoutes = () => {
 
             case 500:
             case 503: {
+                settleTranslationEngineSelection();
                 hook_results.useMainFunction?.clearPendingMainFunctionError?.({
                     endpoint,
                     errorCode: result?.error_code,

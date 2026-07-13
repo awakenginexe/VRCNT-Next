@@ -14,6 +14,7 @@ import {
     useNotificationStatus,
 } from "@logics_common";
 import { useMainFunction } from "@logics_main";
+import { useLanguageSettings } from "@logics_main";
 import { isBenignSidecarStderr } from "@logics_common/sidecarStderrUtils.js";
 
 export const StartPythonController = () => {
@@ -42,6 +43,7 @@ const useStartPython = () => {
     const { updateInitStatus } = useInitStatus();
     const { currentIsBackendReady } = useIsBackendReady();
     const { clearPendingMainFunctionStatuses } = useMainFunction();
+    const { settleSelectedTranslationEngineSelection } = useLanguageSettings();
     const { t } = useI18n();
     const backendReadyRef = useRef(currentIsBackendReady.data);
     const startupErrorNotifiedRef = useRef(false);
@@ -81,6 +83,7 @@ const useStartPython = () => {
                 return;
             }
             clearPendingMainFunctionStatuses();
+            settleSelectedTranslationEngineSelection();
             showNotification_Error(
                 t("blocking_operation.backend_disconnected"),
                 {

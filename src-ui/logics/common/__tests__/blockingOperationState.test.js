@@ -7,6 +7,7 @@ import {
     getMainFunctionPendingCopyKey,
     readBooleanBackendResult,
     resolveFailedMainFunction,
+    translationSelectionUsesCTranslate2,
 } from "../blockingOperationState.js";
 
 const createInput = (overrides = {}) => ({
@@ -22,6 +23,7 @@ const createInput = (overrides = {}) => ({
     translationStatus: { state: "ok", data: false },
     transcriptionSendStatus: { state: "ok", data: false },
     transcriptionReceiveStatus: { state: "ok", data: false },
+    translationSelectionPending: false,
     ...overrides,
 });
 
@@ -105,6 +107,36 @@ test("a pending deactivation whose old value is true is ignored", () => {
     }));
 
     assert.equal(operation, null);
+});
+
+test("enabled CTranslate2 provider transitions reuse translation blocking", () => {
+    const operation = getBlockingOperationCandidate(createInput({
+        translationStatus: { state: "ok", data: true },
+        translationSelectionPending: true,
+    }));
+
+    assert.equal(operation.id, "translation");
+    assert.equal(operation.titleKey, "main_page.translation");
+    assert.equal(operation.delayMs, BLOCKING_OPERATION_DELAY_MS);
+});
+
+test("provider transition helper checks primary providers only", () => {
+    assert.equal(translationSelectionUsesCTranslate2({
+        current: "Google",
+        proposed: "CTranslate2",
+    }), true);
+    assert.equal(translationSelectionUsesCTranslate2({
+        current: "CTranslate2",
+        proposed: "Bing",
+    }), true);
+    assert.equal(translationSelectionUsesCTranslate2({
+        current: ["Google", "CTranslate2"],
+        proposed: ["Google", "Bing"],
+    }), false);
+    assert.equal(translationSelectionUsesCTranslate2({
+        current: ["Google", "Bing"],
+        proposed: "Bing",
+    }), false);
 });
 
 test("foreground pending state is not a blocking-operation input", () => {
