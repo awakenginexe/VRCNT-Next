@@ -585,6 +585,74 @@ class PipelineLifecycleTests(unittest.TestCase):
             )
             self.assertFalse(restarted.wait(0.1))
 
+    def test_recovery_burst_keeps_older_current_request_when_newer_requests_are_stale(self):
+        fake_model = _RecoveryModel()
+        fake_model.active[PipelineSource.SPEAKER] = False
+        safe_wait_entered = threading.Event()
+        release_safe_wait = threading.Event()
+        safe_to_restart = threading.Event()
+        stale_checked = threading.Event()
+
+        class ControlledSafeEvent:
+            def wait(self, _timeout):
+                safe_wait_entered.set()
+                release_safe_wait.wait()
+                return safe_to_restart.is_set()
+
+        original_is_current = fake_model.isSourcePipelineGenerationCurrent
+
+        def is_current(source, generation):
+            if source is PipelineSource.SPEAKER:
+                stale_checked.set()
+            return original_is_current(source, generation)
+
+        fake_model.isSourcePipelineGenerationCurrent = is_current
+
+        with patch.object(controller_module, "model", fake_model):
+            controller = Controller()
+            restarted = []
+            controller._requestCoordinatedTranscriptionRestart = (
+                lambda reason="configuration_changed", **_kwargs: (
+                    restarted.append(reason) or True
+                )
+            )
+            fake_model.callback(
+                PipelineSource.MIC,
+                3,
+                "mic_inference_failed",
+                ControlledSafeEvent(),
+            )
+            self.assertTrue(safe_wait_entered.wait(WAIT_SECONDS))
+
+            # Five offers force one queue displacement. Every newer request is
+            # stale, so the current MIC request already being coordinated must
+            # remain the recovery candidate.
+            for generation in (1, 2, 4, 5, 7):
+                stale_safe = threading.Event()
+                stale_safe.set()
+                fake_model.callback(
+                    PipelineSource.SPEAKER,
+                    generation,
+                    "speaker_inference_failed",
+                    stale_safe,
+                )
+            self.assertEqual(controller._transcription_recovery_queue.qsize(), 4)
+
+            release_safe_wait.set()
+            self.assertTrue(stale_checked.wait(WAIT_SECONDS))
+            safe_to_restart.set()
+            self.assertTrue(fake_model.recovery_metric_event.wait(WAIT_SECONDS))
+
+            self.assertEqual(restarted, ["mic_inference_failed"])
+            self.assertEqual(
+                fake_model.recovered,
+                [(PipelineSource.MIC, "mic_inference_failed")],
+            )
+            self.assertEqual(fake_model.recovery_failed, [])
+            self.assertTrue(controller._transcription_recovery_thread.is_alive())
+            controller.shutdown()
+            self.assertFalse(controller._transcription_recovery_thread.is_alive())
+
     def test_user_stop_winning_before_restart_lock_ignores_recovery_request(self):
         fake_model = _RecoveryModel()
         fake_model.active[PipelineSource.SPEAKER] = False
@@ -726,6 +794,356 @@ class PipelineLifecycleTests(unittest.TestCase):
             ["stop-mic", "stop-speaker", "start-mic", "start-speaker"],
         )
         self.assertTrue(result)
+
+    def test_source_pipeline_replacement_is_atomic_with_concurrent_stop(self):
+        instance = object.__new__(Model)
+        instance._inited = True
+        instance.translator = object()
+        instance._source_session_lock = threading.RLock()
+        instance._source_pipeline_generations = {PipelineSource.MIC: 1}
+        instance._source_pipeline_generation_counters = {
+            PipelineSource.MIC: 1,
+            PipelineSource.SPEAKER: 0,
+        }
+        instance._source_transcription_sessions = {}
+        instance._source_heartbeat_timestamps = {}
+        instance.transcription_pipeline_metrics = []
+        instance.speaker_source_pipeline = None
+
+        old_stop_entered = threading.Event()
+        release_old_stop = threading.Event()
+        replacement_done = threading.Event()
+        stop_done = threading.Event()
+        live_lock = threading.Lock()
+        live_count = 1
+        max_live_count = 1
+
+        class ControlledPipeline:
+            def __init__(self, **_kwargs):
+                self.is_old = False
+                self.running = False
+
+            def start(self, _generation):
+                nonlocal live_count, max_live_count
+                with live_lock:
+                    self.running = True
+                    live_count += 1
+                    max_live_count = max(max_live_count, live_count)
+
+            def stop(self, _generation, discard_pending=True):
+                del discard_pending
+                nonlocal live_count
+                if self.is_old:
+                    old_stop_entered.set()
+                    release_old_stop.wait()
+                with live_lock:
+                    if self.running:
+                        self.running = False
+                        live_count -= 1
+
+        old_pipeline = ControlledPipeline()
+        old_pipeline.is_old = True
+        old_pipeline.running = True
+        instance.mic_source_pipeline = old_pipeline
+        callbacks = {
+            "emit_initial": lambda _trace: None,
+            "emit_update": lambda _update: None,
+            "emit_metric": lambda _event: None,
+            "emit_final": lambda _task: None,
+        }
+
+        with patch.object(model_module, "SourcePipeline", ControlledPipeline):
+            replacement_thread = threading.Thread(
+                target=lambda: (
+                    instance.ensureSourcePipeline(PipelineSource.MIC, callbacks, 2),
+                    replacement_done.set(),
+                )
+            )
+            replacement_thread.start()
+            self.addCleanup(release_old_stop.set)
+            self.addCleanup(replacement_thread.join, WAIT_SECONDS)
+            self.assertTrue(old_stop_entered.wait(WAIT_SECONDS))
+
+            # Identity detaches atomically before an old worker is joined.
+            self.assertFalse(
+                instance.isSourcePipelineGenerationCurrent(PipelineSource.MIC, 1)
+            )
+            self.assertIsNone(instance.getSourcePipeline(PipelineSource.MIC))
+
+            stop_thread = threading.Thread(
+                target=lambda: (
+                    instance.stopSourcePipeline(PipelineSource.MIC),
+                    stop_done.set(),
+                )
+            )
+            stop_thread.start()
+            self.addCleanup(stop_thread.join, WAIT_SECONDS)
+
+            # A stop racing the replacement owns the next source transition;
+            # it cannot observe the temporary detach and return too early.
+            self.assertFalse(stop_done.wait(0.1))
+            release_old_stop.set()
+            self.assertTrue(replacement_done.wait(WAIT_SECONDS))
+            self.assertTrue(stop_done.wait(WAIT_SECONDS))
+            replacement_thread.join()
+            stop_thread.join()
+
+        self.assertIsNone(instance.getSourcePipeline(PipelineSource.MIC))
+        self.assertFalse(
+            instance.isSourcePipelineGenerationCurrent(PipelineSource.MIC, 2)
+        )
+        self.assertEqual(live_count, 0)
+        self.assertEqual(max_live_count, 1)
+
+    def test_runtime_setting_transactions_are_serialized_and_report_restart_failure(self):
+        controller = Controller()
+        controller.run_mapping = {
+            "selected_transcription_compute_type": "/compute-type",
+        }
+        first_restart_entered = threading.Event()
+        release_first_restart = threading.Event()
+        second_setter_done = threading.Event()
+        snapshots = []
+        responses = {}
+        restart_call_lock = threading.Lock()
+        restart_call_count = 0
+        original_device = dict(
+            controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE
+        )
+        original_compute_type = (
+            controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE
+        )
+        original_profile = controller_module.config.WHISPER_DECODING_PROFILE
+        self.addCleanup(controller.shutdown)
+
+        def restart():
+            nonlocal restart_call_count
+            with restart_call_lock:
+                call_index = restart_call_count
+                restart_call_count += 1
+            before = (
+                controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE[
+                    "device"
+                ],
+                controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE[
+                    "device_index"
+                ],
+                controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+            )
+            if call_index == 0:
+                first_restart_entered.set()
+                release_first_restart.wait()
+            after = (
+                controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE[
+                    "device"
+                ],
+                controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE[
+                    "device_index"
+                ],
+                controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE,
+            )
+            with restart_call_lock:
+                snapshots.append((call_index, before, after))
+            return True
+
+        try:
+            with patch.object(
+                controller,
+                "_normalizeTranscriptionRuntimeSelection",
+                return_value=False,
+            ):
+                controller._requestCoordinatedTranscriptionRestart = restart
+
+                first = threading.Thread(
+                    target=lambda: responses.setdefault(
+                        "device",
+                        controller.setSelectedTranscriptionComputeDevice(
+                            {"device": "cpu", "device_index": 0}
+                        ),
+                    )
+                )
+                second = threading.Thread(
+                    target=lambda: (
+                        responses.setdefault(
+                            "compute_type",
+                            controller.setSelectedTranscriptionComputeType("int8"),
+                        ),
+                        second_setter_done.set(),
+                    )
+                )
+                first.start()
+                self.addCleanup(release_first_restart.set)
+                self.addCleanup(first.join, WAIT_SECONDS)
+                self.assertTrue(first_restart_entered.wait(WAIT_SECONDS))
+                second.start()
+                self.addCleanup(second.join, WAIT_SECONDS)
+                self.assertFalse(second_setter_done.wait(0.1))
+                release_first_restart.set()
+                first.join()
+                second.join()
+
+                self.assertEqual(
+                    sorted(snapshots),
+                    [
+                        (0, ("cpu", 0, "auto"), ("cpu", 0, "auto")),
+                        (1, ("cpu", 0, "int8"), ("cpu", 0, "int8")),
+                    ],
+                )
+                self.assertEqual(responses["device"]["status"], 200)
+                self.assertEqual(
+                    responses["device"]["result"]["device"],
+                    "cpu",
+                )
+                self.assertEqual(
+                    responses["device"]["result"]["device_index"],
+                    0,
+                )
+                self.assertEqual(
+                    responses["compute_type"],
+                    {"status": 200, "result": "int8"},
+                )
+
+                controller._requestCoordinatedTranscriptionRestart = lambda: False
+                failure = controller.setWhisperDecodingProfile("accurate")
+                self.assertEqual(
+                    controller_module.config.WHISPER_DECODING_PROFILE,
+                    "accurate",
+                )
+                self.assertEqual(
+                    failure,
+                    {
+                        "status": 500,
+                        "result": "accurate",
+                        "error_code": "transcription_restart_failed",
+                    },
+                )
+        finally:
+            release_first_restart.set()
+            controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE = (
+                original_device
+            )
+            controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = (
+                original_compute_type
+            )
+            controller_module.config.WHISPER_DECODING_PROFILE = original_profile
+
+    def test_shutdown_waits_for_inflight_start_then_rejects_resurrection(self):
+        fake_model = _RecoveryModel()
+        fake_model.active = {
+            PipelineSource.MIC: False,
+            PipelineSource.SPEAKER: False,
+        }
+        setup_entered = threading.Event()
+        release_setup = threading.Event()
+        start_done = threading.Event()
+        shutdown_done = threading.Event()
+        setup_calls = []
+        shutdown_response = {}
+
+        def shutdown_pipelines():
+            fake_model.shutdown_calls += 1
+            fake_model.active[PipelineSource.MIC] = False
+            fake_model.active[PipelineSource.SPEAKER] = False
+
+        fake_model.shutdownTranscriptionPipelines = shutdown_pipelines
+        with patch.object(controller_module, "model", fake_model):
+            controller = Controller()
+
+            def blocked_setup():
+                setup_calls.append("start")
+                setup_entered.set()
+                release_setup.wait()
+                fake_model.active[PipelineSource.MIC] = True
+                return True
+
+            controller._startTranscriptionSendMessageUnlocked = blocked_setup
+            start_thread = threading.Thread(
+                target=lambda: (
+                    controller.startTranscriptionSendMessage(),
+                    start_done.set(),
+                )
+            )
+            start_thread.start()
+            self.addCleanup(release_setup.set)
+            self.addCleanup(start_thread.join, WAIT_SECONDS)
+            self.assertTrue(setup_entered.wait(WAIT_SECONDS))
+
+            shutdown_thread = threading.Thread(
+                target=lambda: (
+                    shutdown_response.setdefault("value", controller.shutdown()),
+                    shutdown_done.set(),
+                )
+            )
+            shutdown_thread.start()
+            self.addCleanup(shutdown_thread.join, WAIT_SECONDS)
+
+            # Shutdown first establishes terminal intent under the same lock;
+            # it cannot finish while setup still owns that lock.
+            self.assertFalse(shutdown_done.wait(0.1))
+            release_setup.set()
+            self.assertTrue(start_done.wait(WAIT_SECONDS))
+            self.assertTrue(shutdown_done.wait(WAIT_SECONDS))
+            start_thread.join()
+            shutdown_thread.join()
+
+            self.assertEqual(
+                shutdown_response["value"],
+                {"status": 200, "result": True},
+            )
+            self.assertFalse(fake_model.active[PipelineSource.MIC])
+            self.assertEqual(fake_model.shutdown_calls, 1)
+            self.assertFalse(controller.startTranscriptionSendMessage())
+            self.assertEqual(setup_calls, ["start"])
+
+    def test_shutdown_releases_restart_lock_while_joining_blocked_coordinator(self):
+        fake_model = _RecoveryModel()
+        fake_model.active[PipelineSource.SPEAKER] = False
+        coordinator_before_lock = threading.Event()
+        release_coordinator = threading.Event()
+        queue_closed = threading.Event()
+        shutdown_done = threading.Event()
+
+        with patch.object(controller_module, "model", fake_model):
+            controller = Controller()
+            original_restart = controller._requestCoordinatedTranscriptionRestart
+
+            def paused_restart(reason="configuration_changed", **kwargs):
+                coordinator_before_lock.set()
+                release_coordinator.wait()
+                return original_restart(reason, **kwargs)
+
+            controller._requestCoordinatedTranscriptionRestart = paused_restart
+            original_close = controller._transcription_recovery_queue.close
+
+            def tracked_close():
+                original_close()
+                queue_closed.set()
+
+            controller._transcription_recovery_queue.close = tracked_close
+            safe = threading.Event()
+            safe.set()
+            fake_model.callback(
+                PipelineSource.MIC,
+                3,
+                "mic_inference_failed",
+                safe,
+            )
+            self.assertTrue(coordinator_before_lock.wait(WAIT_SECONDS))
+
+            shutdown_thread = threading.Thread(
+                target=lambda: (controller.shutdown(), shutdown_done.set())
+            )
+            shutdown_thread.start()
+            self.addCleanup(release_coordinator.set)
+            self.addCleanup(shutdown_thread.join, WAIT_SECONDS)
+            self.assertTrue(queue_closed.wait(WAIT_SECONDS))
+            release_coordinator.set()
+            self.assertTrue(shutdown_done.wait(WAIT_SECONDS))
+            shutdown_thread.join()
+
+            self.assertFalse(controller._transcription_recovery_thread.is_alive())
+            self.assertEqual(fake_model.recovered, [])
+            self.assertEqual(fake_model.recovery_failed, [])
 
     def test_controller_shutdown_stops_pipelines_before_telemetry(self):
         fake_model = _RecoveryModel()
