@@ -7,7 +7,13 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.pipeline.pipeline_types import TranslationAttempt, TranslationStatus
+from models.pipeline.pipeline_types import (
+    FinalOutputTask,
+    PipelineSource,
+    TranslationAttempt,
+    TranslationStatus,
+    TranslationUpdate,
+)
 from models.translation import translation_translator
 from models.translation.translation_translator import Translator
 import controller as controller_module
@@ -86,6 +92,19 @@ class RecordingContextClient:
 
     def translate(self, message, input_lang, output_lang):
         return self.context
+
+
+class CaptureStartedPipeline:
+    """Deterministic source-session boundary for controller integration tests."""
+
+    def __init__(self, emit_initial):
+        self.emit_initial = emit_initial
+        self.traces = []
+
+    def submit_trace(self, trace):
+        self.traces.append(trace)
+        self.emit_initial(trace)
+        return True
 
 
 class TranslationAttemptTests(unittest.TestCase):
@@ -512,6 +531,19 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
             _ENABLE_TRANSCRIPTION_RECEIVE=True,
             _SEND_RECEIVED_MESSAGE_TO_VRC=True,
             _ENABLE_CLIPBOARD=True,
+            _WEBSOCKET_SERVER=True,
+            _SEND_MESSAGE_FORMAT_PARTS={
+                "message": {"prefix": "", "suffix": ""},
+                "separator": "\n",
+                "translation": {"prefix": "", "separator": "\n", "suffix": ""},
+                "translation_first": False,
+            },
+            _RECEIVED_MESSAGE_FORMAT_PARTS={
+                "message": {"prefix": "", "suffix": ""},
+                "separator": "\n",
+                "translation": {"prefix": "", "separator": "\n", "suffix": ""},
+                "translation_first": False,
+            },
         )
 
     def _fake_model(self):
@@ -527,9 +559,30 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
         def transliterate(message, **kwargs):
             self.assertIs(type(message), str)
             self.assertTrue(message)
-            return f"kana:{message}"
+            return [{"orig": message, "hira": f"kana:{message}"}]
 
         fake_model.convertMessageToTransliteration.side_effect = transliterate
+        fake_model.getTranslationHistory.return_value = []
+        fake_model.getSourcePipelineGeneration.return_value = 0
+        fake_model.isSourcePipelineGenerationCurrent.return_value = True
+
+        def pipeline_transliterate(message, language, output_config):
+            if language != "Japanese":
+                return ()
+            if (
+                not output_config.convert_message_to_hiragana
+                and not output_config.convert_message_to_romaji
+            ):
+                return ()
+            return tuple(
+                fake_model.convertMessageToTransliteration(
+                    message,
+                    hiragana=output_config.convert_message_to_hiragana,
+                    romaji=output_config.convert_message_to_romaji,
+                )
+            )
+
+        fake_model.transliterateTranscriptionMessage.side_effect = pipeline_transliterate
         return fake_model
 
     def _controller(self):
@@ -549,6 +602,102 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
     @staticmethod
     def _run_payload(controller, endpoint):
         return next(call.args[2] for call in controller.run.call_args_list if call.args[1] == endpoint)
+
+    def _run_progressive_output(
+        self,
+        controller,
+        fake_model,
+        source,
+        result,
+        legacy_translation_result,
+    ):
+        pipeline = CaptureStartedPipeline(controller._emitInitialTranscriptionTrace)
+        fake_model.getSourcePipeline.return_value = pipeline
+
+        callback = (
+            controller.micMessage
+            if source is PipelineSource.MIC
+            else controller.speakerMessage
+        )
+        callback({**result, "started_at_monotonic": 10.0})
+        self.assertEqual(len(pipeline.traces), 1)
+        trace = pipeline.traces[0]
+
+        values, flags = legacy_translation_result
+        updates = []
+        for index, target in enumerate(trace.targets):
+            value = values[index] if index < len(values) else None
+            succeeded = (
+                index < len(flags)
+                and flags[index] is True
+                and isinstance(value, str)
+                and bool(value)
+            )
+            if succeeded:
+                transliteration = fake_model.transliterateTranscriptionMessage(
+                    value,
+                    target.language,
+                    trace.output_config,
+                )
+                update = TranslationUpdate(
+                    trace_id=trace.trace_id,
+                    target_slot=target.target_slot,
+                    status=TranslationStatus.SUCCESS,
+                    engine="Google",
+                    message=value,
+                    transliteration=transliteration,
+                    duration_ms=1,
+                    queue_position=0,
+                    error_code=None,
+                )
+            else:
+                update = TranslationUpdate(
+                    trace_id=trace.trace_id,
+                    target_slot=target.target_slot,
+                    status=TranslationStatus.ERROR,
+                    engine="Google",
+                    message=None,
+                    transliteration=(),
+                    duration_ms=1,
+                    queue_position=0,
+                    error_code="provider_error",
+                )
+            updates.append(update)
+            controller._emitTranslationUpdate(update)
+
+        task = FinalOutputTask(
+            trace_id=trace.trace_id,
+            generation=trace.generation,
+            source=trace.source,
+            original_message=trace.original_message,
+            source_language=trace.source_language,
+            original_transliteration=trace.original_transliteration,
+            targets=trace.targets,
+            translations=tuple(updates),
+            output_config=trace.output_config,
+            started_at_monotonic=trace.started_at_monotonic,
+        )
+        if source is PipelineSource.MIC:
+            controller._finalizeMicOutput(task)
+        else:
+            controller._finalizeSpeakerOutput(task)
+
+        source_endpoint = (
+            "/transcription/mic"
+            if source is PipelineSource.MIC
+            else "/transcription/speaker"
+        )
+        self.assertEqual(controller.run.call_args_list[0].args[1], source_endpoint)
+        initial_payload = controller.run.call_args_list[0].args[2]
+        self.assertTrue(
+            all(item["message"] is None for item in initial_payload["translations"])
+        )
+        self.assertTrue(
+            all(update.message is None or isinstance(update.message, str) for update in updates)
+        )
+        fake_model.getInputTranslate.assert_not_called()
+        fake_model.getOutputTranslate.assert_not_called()
+        return trace, tuple(updates)
 
     def test_chat_partial_failure_keeps_string_slots_and_sanitizes_side_effects(self):
         fake_model = self._fake_model()
@@ -626,23 +775,37 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
         controller = self._controller()
 
         with patch.object(controller_module, "model", fake_model), self._config_patch():
-            controller.micMessage({"text": "spoken", "language": "English"})
+            _, updates = self._run_progressive_output(
+                controller,
+                fake_model,
+                PipelineSource.MIC,
+                {"text": "spoken", "language": "English"},
+                fake_model.getInputTranslate.return_value,
+            )
             current_selection = controller_module.config.SELECTED_TRANSLATION_ENGINES
 
         payload = self._run_payload(controller, "/transcription/mic")
-        self.assertEqual([item["message"] for item in payload["translations"]], ["translated", ""])
+        self.assertEqual([item["message"] for item in payload["translations"]], [None, None])
+        self.assertEqual([update.message for update in updates], ["translated", None])
+        self.assertEqual(
+            [update.status for update in updates],
+            [TranslationStatus.SUCCESS, TranslationStatus.ERROR],
+        )
         expected_target = {
             "1": {"enable": True, "language": "Japanese", "country": "Japan"}
         }
-        self.assertTrue(controller.messageFormatter.call_args_list)
-        for formatter_call in controller.messageFormatter.call_args_list:
-            self.assertEqual(formatter_call.args[1], ["translated"])
+        controller.messageFormatter.assert_not_called()
+        fake_model.oscSendMessage.assert_called_once_with("spoken\ntranslated")
+        fake_model.setCopyToClipboardAndPasteFromClipboard.assert_called_once_with(
+            "spoken\ntranslated"
+        )
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["translated"])
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[4], expected_target)
         websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
         self.assertEqual(websocket_payload["translation"], ["translated"])
         self.assertEqual(websocket_payload["dst_languages"], expected_target)
         fake_model.logger.info.assert_called_once_with("[SENT] spoken (translated)")
+        fake_model.convertMessageToTransliteration.assert_called_once()
         self.assertEqual(current_selection, {"1": ["Google", "Bing"]})
         controller.changeToCTranslate2Process.assert_not_called()
 
@@ -652,13 +815,20 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
         controller = self._controller()
 
         with patch.object(controller_module, "model", fake_model), self._config_patch():
-            controller.micMessage({"text": "spoken", "language": "English"})
+            _, updates = self._run_progressive_output(
+                controller,
+                fake_model,
+                PipelineSource.MIC,
+                {"text": "spoken", "language": "English"},
+                fake_model.getInputTranslate.return_value,
+            )
 
         expected_target = {
             "2": {"enable": True, "language": "French", "country": "France"}
         }
         payload = self._run_payload(controller, "/transcription/mic")
-        self.assertEqual([item["message"] for item in payload["translations"]], ["", "deux"])
+        self.assertEqual([item["message"] for item in payload["translations"]], [None, None])
+        self.assertEqual([update.message for update in updates], [None, "deux"])
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["deux"])
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[4], expected_target)
         websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
@@ -672,14 +842,22 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
         controller = self._controller()
 
         with patch.object(controller_module, "model", fake_model), self._config_patch():
-            controller.speakerMessage({"text": "heard", "language": "English"})
+            _, updates = self._run_progressive_output(
+                controller,
+                fake_model,
+                PipelineSource.SPEAKER,
+                {"text": "heard", "language": "English"},
+                fake_model.getOutputTranslate.return_value,
+            )
             current_selection = controller_module.config.SELECTED_TRANSLATION_ENGINES
 
         payload = self._run_payload(controller, "/transcription/speaker")
-        self.assertEqual([item["message"] for item in payload["translations"]], [""])
+        self.assertEqual([item["message"] for item in payload["translations"]], [None, None])
+        self.assertEqual([update.message for update in updates], [None, None])
+        self.assertTrue(all(type(update.message) is not bool for update in updates))
         fake_model.convertMessageToTransliteration.assert_not_called()
-        controller.messageFormatter.assert_called_once_with("RECEIVED", [], "heard")
-        fake_model.oscSendMessage.assert_called_once_with("formatted")
+        controller.messageFormatter.assert_not_called()
+        fake_model.oscSendMessage.assert_called_once_with("heard")
         self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[2], [])
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], [])
         self.assertEqual(fake_model.websocketSendMessage.call_args.args[0]["translation"], [])
@@ -693,13 +871,20 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
         controller = self._controller()
 
         with patch.object(controller_module, "model", fake_model), self._config_patch():
-            controller.speakerMessage({"text": "heard", "language": "English"})
+            _, updates = self._run_progressive_output(
+                controller,
+                fake_model,
+                PipelineSource.SPEAKER,
+                {"text": "heard", "language": "English"},
+                fake_model.getOutputTranslate.return_value,
+            )
 
         expected_target = {
             "1": {"enable": True, "language": "Japanese", "country": "Japan"}
         }
         payload = self._run_payload(controller, "/transcription/speaker")
-        self.assertEqual([item["message"] for item in payload["translations"]], ["ichi", ""])
+        self.assertEqual([item["message"] for item in payload["translations"]], [None, None])
+        self.assertEqual([update.message for update in updates], ["ichi", None])
         self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[2], ["ichi"])
         self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[3], expected_target)
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["ichi"])
@@ -715,13 +900,20 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
         controller = self._controller()
 
         with patch.object(controller_module, "model", fake_model), self._config_patch():
-            controller.speakerMessage({"text": "heard", "language": "English"})
+            _, updates = self._run_progressive_output(
+                controller,
+                fake_model,
+                PipelineSource.SPEAKER,
+                {"text": "heard", "language": "English"},
+                fake_model.getOutputTranslate.return_value,
+            )
 
         expected_target = {
             "2": {"enable": True, "language": "French", "country": "France"}
         }
         payload = self._run_payload(controller, "/transcription/speaker")
-        self.assertEqual([item["message"] for item in payload["translations"]], ["", "deux"])
+        self.assertEqual([item["message"] for item in payload["translations"]], [None, None])
+        self.assertEqual([update.message for update in updates], [None, "deux"])
         self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[2], ["deux"])
         self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[3], expected_target)
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["deux"])
