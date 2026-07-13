@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from queue import Queue
+from unittest.mock import patch
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -15,6 +16,7 @@ from models.pipeline.pipeline_types import (
     TranscriptionTrace,
 )
 from models.pipeline.source_pipeline import SourcePipeline
+from models.pipeline import source_pipeline as source_pipeline_module
 
 
 def make_trace(trace_id, started_at):
@@ -230,6 +232,69 @@ class OutputWorkerTests(unittest.TestCase):
         self.assertFalse(pipeline._translation_thread.is_alive())
         self.assertFalse(pipeline._output_thread.is_alive())
         self.assertTrue(pipeline._output_queue.empty())
+        with pipeline._records_lock:
+            self.assertEqual(pipeline._records, {})
+
+    def test_output_metric_failures_never_skip_finalizer_cleanup_or_next_task(self):
+        condition = threading.Condition()
+        final_calls = []
+        removed = []
+        raised_metrics = {
+            ("running-metric", "running"),
+            ("error-metric", "error"),
+            ("success-metric", "success"),
+        }
+
+        def flaky_metric(metric):
+            if (metric.trace_id, metric.outcome) in raised_metrics:
+                raise RuntimeError(f"metric failed: {metric.outcome}")
+
+        def finalizer(task):
+            final_calls.append(task.trace_id)
+            if task.trace_id == "error-metric":
+                raise RuntimeError("expected finalizer failure")
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            object(),
+            lambda *_: (),
+            lambda _trace: None,
+            lambda _update: None,
+            flaky_metric,
+            finalizer,
+            lambda generation: generation == 5,
+        )
+        original_remove = pipeline._remove_record
+
+        def observe_remove(trace_id, expected=None):
+            original_remove(trace_id, expected)
+            with condition:
+                removed.append(trace_id)
+                condition.notify_all()
+
+        pipeline._remove_record = observe_remove
+        pipeline.start(5)
+        self.addCleanup(lambda: pipeline.stop(5, discard_pending=True))
+        trace_ids = (
+            "running-metric",
+            "error-metric",
+            "success-metric",
+            "after-metric-errors",
+        )
+        with patch.object(source_pipeline_module.logger, "exception") as log_exception:
+            for trace_id in trace_ids:
+                pipeline.submit_trace(make_trace(trace_id, time.monotonic()))
+
+            deadline = time.monotonic() + 2.0
+            with condition:
+                while not set(trace_ids).issubset(removed):
+                    remaining = deadline - time.monotonic()
+                    self.assertGreater(remaining, 0)
+                    condition.wait(remaining)
+            self.assertEqual(log_exception.call_count, 3)
+
+        self.assertEqual(final_calls, list(trace_ids))
+        self.assertTrue(pipeline._output_thread.is_alive())
         with pipeline._records_lock:
             self.assertEqual(pipeline._records, {})
 

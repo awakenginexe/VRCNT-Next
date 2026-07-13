@@ -342,6 +342,63 @@ class ProgressivePipelineTests(unittest.TestCase):
         release_finalizer.set()
         submitter.join(timeout=1.0)
 
+    def test_overload_terminal_metric_precedes_displaced_record_readiness(self):
+        harness = Harness()
+        translator = BlockingTranslator()
+        metric_entered = threading.Event()
+        release_metric = threading.Event()
+        displaced_final = threading.Event()
+        overload_submit_returned = threading.Event()
+
+        def blocking_metric(metric):
+            if (
+                metric.stage == "translation"
+                and metric.trace_id == "waiting-0"
+                and metric.outcome == "skipped_overload"
+            ):
+                metric_entered.set()
+                if not release_metric.wait(timeout=2.0):
+                    raise AssertionError("test did not release overload metric")
+            harness.append(harness.metrics, metric)
+
+        def observe_final(task):
+            harness.append(harness.finals, task)
+            if task.trace_id == "waiting-0":
+                displaced_final.set()
+
+        pipeline = SourcePipeline(
+            PipelineSource.SPEAKER,
+            translator,
+            lambda *_: (),
+            lambda item: harness.append(harness.initial, item),
+            lambda item: harness.append(harness.updates, item),
+            blocking_metric,
+            observe_final,
+            lambda generation: generation == 11,
+        )
+        pipeline.start(11)
+        self.addCleanup(lambda: pipeline.stop(11, discard_pending=True))
+        pipeline.submit_trace(trace("in-flight"))
+        self.assertTrue(translator.entered.wait(timeout=1.0))
+        for index in range(8):
+            pipeline.submit_trace(trace(f"waiting-{index}"))
+
+        submitter = threading.Thread(
+            target=lambda: (
+                pipeline.submit_trace(trace("waiting-8")),
+                overload_submit_returned.set(),
+            ),
+            daemon=True,
+        )
+        submitter.start()
+        self.assertTrue(metric_entered.wait(timeout=1.0))
+        translator.release.set()
+        self.assertFalse(displaced_final.wait(timeout=0.1))
+        release_metric.set()
+        self.assertTrue(overload_submit_returned.wait(timeout=1.0))
+        self.assertTrue(displaced_final.wait(timeout=1.0))
+        submitter.join(timeout=1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

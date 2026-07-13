@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from enum import Enum
+import logging
 from queue import Empty, Full, Queue
-from threading import Event, Lock, RLock, Thread, current_thread
+from threading import Condition, Event, Lock, RLock, Thread, current_thread
 from time import monotonic, time
 from typing import Callable, Optional
 
@@ -32,6 +34,15 @@ MAX_OUTPUT_TASKS_PER_SOURCE = 4
 MAX_ACTIVE_TRACES_PER_SOURCE = 16
 WORKER_POLL_SECONDS = 0.1
 PROVIDER_TIMEOUT_SECONDS = 5.0
+logger = logging.getLogger(__name__)
+
+
+class _LifecycleState(str, Enum):
+    NEW = "new"
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
 
 
 @dataclass
@@ -76,7 +87,9 @@ class SourcePipeline:
         self._stop_event = Event()
         self._output_stop_sentinel = object()
 
-        self._state_lock = RLock()
+        self._lifecycle_condition = Condition(RLock())
+        self._lifecycle_state = _LifecycleState.NEW
+        self._stopping_generation: Optional[int] = None
         self._submit_lock = Lock()
         self._records_lock = Lock()
         self._records: dict[str, _TraceRecord] = {}
@@ -89,11 +102,12 @@ class SourcePipeline:
 
     def start(self, generation: int) -> None:
         """Start the source's two daemon workers for one generation."""
-        with self._state_lock:
-            if self._translation_thread is not None or self._output_thread is not None:
+        with self._lifecycle_condition:
+            if self._lifecycle_state is not _LifecycleState.NEW:
                 raise RuntimeError("source pipeline has already been started")
+            self._lifecycle_state = _LifecycleState.STARTING
             self._generation = generation
-            self._accepting = True
+            self._accepting = False
             self._translation_thread = Thread(
                 target=self._translation_worker,
                 name=f"{self.source.value}-translation-{generation}",
@@ -106,27 +120,81 @@ class SourcePipeline:
             )
             translation_thread = self._translation_thread
             output_thread = self._output_thread
+            self._lifecycle_condition.notify_all()
 
-        output_thread.start()
-        translation_thread.start()
+        started_threads: list[Thread] = []
+        try:
+            output_thread.start()
+            started_threads.append(output_thread)
+            translation_thread.start()
+            started_threads.append(translation_thread)
+        except Exception:
+            with self._lifecycle_condition:
+                self._accepting = False
+                self._generation = None
+                self._stopping_generation = generation
+                self._lifecycle_state = _LifecycleState.STOPPING
+                self._stop_event.set()
+                self._lifecycle_condition.notify_all()
+            self._translation_queue.close()
+            self._ready_event.set()
+            for thread in started_threads:
+                thread.join()
+            with self._lifecycle_condition:
+                self._lifecycle_state = _LifecycleState.STOPPED
+                self._lifecycle_condition.notify_all()
+            raise
+
+        with self._lifecycle_condition:
+            self._accepting = True
+            self._lifecycle_state = _LifecycleState.RUNNING
+            self._lifecycle_condition.notify_all()
 
     def stop(self, generation: int, discard_pending: bool = True) -> None:
         """Close intake, invalidate the generation, wake workers, and join them.
 
         Provider and finalizer callbacks cannot be cancelled safely.  If either is
         already running, this method waits for that callback to return before the
-        corresponding worker can exit.
+        corresponding worker can exit.  ``discard_pending=False`` is intentionally
+        unsupported: invalidation is cancellation, not a graceful-drain promise.
         """
-        # Serialize intake closure with the short, non-blocking submission path:
-        # a submitter either finishes before invalidation or observes closed
-        # intake, never a half-closed queue.
-        with self._submit_lock:
-            with self._state_lock:
-                if self._generation != generation:
+        if not discard_pending:
+            raise ValueError("discard_pending=False is not supported")
+
+        initiator = False
+        while not initiator:
+            with self._lifecycle_condition:
+                while self._lifecycle_state is _LifecycleState.STARTING:
+                    self._lifecycle_condition.wait()
+                if self._lifecycle_state is _LifecycleState.STOPPING:
+                    if self._stopping_generation != generation:
+                        return
+                    while self._lifecycle_state is not _LifecycleState.STOPPED:
+                        self._lifecycle_condition.wait()
                     return
-                self._accepting = False
-                self._generation = None
-                self._stop_event.set()
+                if self._lifecycle_state is _LifecycleState.STOPPED:
+                    return
+                if (
+                    self._lifecycle_state is not _LifecycleState.RUNNING
+                    or self._generation != generation
+                ):
+                    return
+
+            # Serialize only the state transition with admission/job offers.
+            # The lifecycle condition is never held while waiting on this lock.
+            with self._submit_lock:
+                with self._lifecycle_condition:
+                    if (
+                        self._lifecycle_state is _LifecycleState.RUNNING
+                        and self._generation == generation
+                    ):
+                        self._accepting = False
+                        self._generation = None
+                        self._stopping_generation = generation
+                        self._lifecycle_state = _LifecycleState.STOPPING
+                        self._stop_event.set()
+                        self._lifecycle_condition.notify_all()
+                        initiator = True
 
         self._translation_queue.close()
         self._ready_event.set()
@@ -157,38 +225,65 @@ class SourcePipeline:
 
         with self._records_lock:
             self._records.clear()
+        with self._lifecycle_condition:
+            self._lifecycle_state = _LifecycleState.STOPPED
+            self._lifecycle_condition.notify_all()
 
     def submit_trace(self, trace: TranscriptionTrace) -> bool:
         """Synchronously publish a trace and non-blockingly schedule its slots."""
+        if not self._external_generation_current(trace.generation):
+            return False
+        record: Optional[_TraceRecord] = None
         with self._submit_lock:
             if not self._can_accept(trace.generation):
                 return False
             trace = self._snapshot_trace(trace)
 
             with self._records_lock:
+                duplicate_trace = trace.trace_id in self._records
                 over_capacity = len(self._records) >= MAX_ACTIVE_TRACES_PER_SOURCE
-                if not over_capacity:
+                if not duplicate_trace and not over_capacity:
                     record = _TraceRecord(
                         trace=trace,
                         target_slots=tuple(target.target_slot for target in trace.targets),
                     )
                     self._records[trace.trace_id] = record
 
-            self._emit_initial(trace)
+        if duplicate_trace:
+            self._reject_duplicate_trace(trace)
+            return False
 
-            if over_capacity:
-                self._reject_over_capacity(trace)
+        try:
+            self._emit_initial(deepcopy(trace))
+        except Exception:
+            if record is not None:
+                self._remove_record(trace.trace_id, record)
+            raise
+
+        if over_capacity:
+            self._reject_over_capacity(trace)
+            return False
+
+        if record is None or not self._record_is_active(record):
+            return False
+
+        if not trace.output_config.translation_enabled or not trace.targets:
+            with record.lock:
+                record.ready = True
+            self._ready_event.set()
+            return True
+
+        queued_updates: list[TranslationUpdate] = []
+        jobs: list[TranslationJob] = []
+        with self._submit_lock:
+            if (
+                not self._is_locally_current(trace.generation)
+                or not self._record_is_active(record)
+            ):
+                self._remove_record(trace.trace_id, record)
                 return False
-
-            if not trace.output_config.translation_enabled or not trace.targets:
-                with record.lock:
-                    record.ready = True
-                self._ready_event.set()
-                return True
-
             providers = tuple(trace.providers[:2])
             base_position = self._translation_queue.qsize()
-            jobs: list[TranslationJob] = []
             for slot_order, target in enumerate(trace.targets, start=1):
                 queued = TranslationUpdate(
                     trace_id=trace.trace_id,
@@ -201,7 +296,7 @@ class SourcePipeline:
                     queue_position=base_position + slot_order,
                     error_code=None,
                 )
-                self._publish_update(record, queued, terminal=False)
+                queued_updates.append(self._store_update(record, queued))
                 jobs.append(
                     TranslationJob(
                         trace_id=trace.trace_id,
@@ -217,60 +312,85 @@ class SourcePipeline:
                     )
                 )
 
-            if not providers:
-                for job in jobs:
-                    update = TranslationUpdate(
-                        trace_id=job.trace_id,
-                        target_slot=job.target.target_slot,
-                        status=TranslationStatus.ERROR,
-                        engine=None,
-                        message=None,
-                        transliteration=(),
-                        duration_ms=0,
-                        queue_position=0,
-                        error_code="no_provider_configured",
-                    )
-                    self._publish_update(record, update, terminal=True)
-                    self._emit_translation_metric(
-                        job,
-                        update,
-                        queue_depth=self._translation_queue.qsize(),
-                    )
-                return True
+        for update in queued_updates:
+            self._safe_emit_update(update)
 
+        if not self._is_current(trace.generation) or not self._record_is_active(record):
+            self._remove_record(trace.trace_id, record)
+            return False
+
+        if not providers:
+            for job in jobs:
+                update = TranslationUpdate(
+                    trace_id=job.trace_id,
+                    target_slot=job.target.target_slot,
+                    status=TranslationStatus.ERROR,
+                    engine=None,
+                    message=None,
+                    transliteration=(),
+                    duration_ms=0,
+                    queue_position=0,
+                    error_code="no_provider_configured",
+                )
+                self._publish_terminal(
+                    record,
+                    job,
+                    update,
+                    queue_depth=self._translation_queue.qsize(),
+                )
+            return True
+
+        dropped_jobs: list[tuple[TranslationJob, int]] = []
+        with self._submit_lock:
+            if (
+                not self._is_locally_current(trace.generation)
+                or not self._record_is_active(record)
+            ):
+                self._remove_record(trace.trace_id, record)
+                return False
             for job in jobs:
                 result = self._translation_queue.offer(job)
                 if not result.accepted:
                     self._remove_record(trace.trace_id, record)
                     return False
                 if result.dropped is not None:
-                    self._drop_waiting_job(result.dropped, result.depth)
-            self._ready_event.set()
-            return True
+                    dropped_jobs.append((result.dropped, result.depth))
+        for dropped, depth in dropped_jobs:
+            self._drop_waiting_job(dropped, depth)
+        self._ready_event.set()
+        return True
 
     def _can_accept(self, generation: int) -> bool:
-        with self._state_lock:
+        with self._lifecycle_condition:
             return (
-                self._accepting
+                self._lifecycle_state is _LifecycleState.RUNNING
+                and self._accepting
                 and self._generation == generation
                 and not self._stop_event.is_set()
             )
 
-    def _is_current(self, generation: int) -> bool:
-        with self._state_lock:
-            locally_current = (
-                self._generation == generation and not self._stop_event.is_set()
+    def _is_locally_current(self, generation: int) -> bool:
+        with self._lifecycle_condition:
+            return (
+                self._lifecycle_state is _LifecycleState.RUNNING
+                and self._generation == generation
+                and not self._stop_event.is_set()
             )
-        if not locally_current:
-            return False
+
+    def _external_generation_current(self, generation: int) -> bool:
         try:
             return bool(self._is_generation_current_callback(generation))
         except Exception:
             return False
 
+    def _is_current(self, generation: int) -> bool:
+        return self._is_locally_current(
+            generation
+        ) and self._external_generation_current(generation)
+
     def _reject_over_capacity(self, trace: TranscriptionTrace) -> None:
         for target in trace.targets:
-            self._emit_update(
+            self._safe_emit_update(
                 TranslationUpdate(
                     trace_id=trace.trace_id,
                     target_slot=target.target_slot,
@@ -283,7 +403,7 @@ class SourcePipeline:
                     error_code="active_trace_limit",
                 )
             )
-        self._emit_metric(
+        self._safe_emit_metric(
             self._metric(
                 trace_id=trace.trace_id,
                 stage="output",
@@ -297,8 +417,23 @@ class SourcePipeline:
             )
         )
 
+    def _reject_duplicate_trace(self, trace: TranscriptionTrace) -> None:
+        self._safe_emit_metric(
+            self._metric(
+                trace_id=trace.trace_id,
+                stage="admission",
+                engine=None,
+                target_slot=None,
+                outcome=TranslationStatus.ERROR.value,
+                queue_age_ms=0,
+                duration_ms=0,
+                queue_depth=self._translation_queue.qsize(),
+                error_code="duplicate_trace_id",
+            )
+        )
+
     def _drop_waiting_job(self, job: TranslationJob, queue_depth: int) -> None:
-        with self._state_lock:
+        with self._lifecycle_condition:
             self._dropped_count += 1
         record = self._get_record(job.trace_id)
         if record is None or not self._is_current(job.generation):
@@ -314,25 +449,47 @@ class SourcePipeline:
             queue_position=0,
             error_code="translation_queue_overload",
         )
-        self._publish_update(record, update, terminal=True)
-        self._emit_translation_metric(job, update, queue_depth=queue_depth)
+        self._publish_terminal(record, job, update, queue_depth=queue_depth)
+
+    def _store_update(
+        self,
+        record: _TraceRecord,
+        update: TranslationUpdate,
+    ) -> TranslationUpdate:
+        stored = deepcopy(update)
+        with record.lock:
+            record.translations[stored.target_slot] = stored
+        return stored
 
     def _publish_update(
         self,
         record: _TraceRecord,
         update: TranslationUpdate,
+    ) -> TranslationUpdate:
+        stored = self._store_update(record, update)
+        self._safe_emit_update(stored)
+        return stored
+
+    def _publish_terminal(
+        self,
+        record: _TraceRecord,
+        job: TranslationJob,
+        update: TranslationUpdate,
         *,
-        terminal: bool,
+        queue_depth: int,
     ) -> None:
+        stored = self._store_update(record, update)
+        self._safe_emit_update(stored)
+        self._emit_translation_metric(job, stored, queue_depth=queue_depth)
+        self._mark_terminal(record, stored.target_slot)
+
+    def _mark_terminal(self, record: _TraceRecord, target_slot: str) -> None:
         became_ready = False
         with record.lock:
-            record.translations[update.target_slot] = update
-            if terminal:
-                record.terminal_slots.add(update.target_slot)
-                if len(record.terminal_slots) == len(record.target_slots):
-                    record.ready = True
-                    became_ready = True
-        self._emit_update(update)
+            record.terminal_slots.add(target_slot)
+            if len(record.terminal_slots) == len(record.target_slots):
+                record.ready = True
+                became_ready = True
         if became_ready:
             self._ready_event.set()
 
@@ -386,7 +543,7 @@ class SourcePipeline:
                 queue_position=0,
                 error_code=None,
             )
-            self._publish_update(record, sending, terminal=False)
+            self._publish_update(record, sending)
             try:
                 attempt = self._translator.translateAttempt(
                     translator_name=provider,
@@ -412,12 +569,10 @@ class SourcePipeline:
                 return
 
             if attempt.status is TranslationStatus.SUCCESS and attempt.message is not None:
-                tokens = tuple(
-                    self._transliterate(
-                        attempt.message,
-                        job.target.language,
-                        record.trace.output_config,
-                    )
+                tokens = self._safe_transliterate(
+                    attempt.message,
+                    job.target.language,
+                    record.trace.output_config,
                 )
                 success = TranslationUpdate(
                     trace_id=job.trace_id,
@@ -430,8 +585,8 @@ class SourcePipeline:
                     queue_position=0,
                     error_code=None,
                 )
-                self._publish_update(record, success, terminal=True)
-                self._emit_translation_metric(
+                self._publish_terminal(
+                    record,
                     job,
                     success,
                     queue_depth=self._translation_queue.qsize(),
@@ -455,10 +610,20 @@ class SourcePipeline:
                 error_code=attempt.error_code or "provider_error",
             )
             last_provider = provider_index == len(providers) - 1
-            self._publish_update(record, failure, terminal=last_provider)
-            self._emit_translation_metric(job, failure, queue_depth=self._translation_queue.qsize())
             if last_provider:
+                self._publish_terminal(
+                    record,
+                    job,
+                    failure,
+                    queue_depth=self._translation_queue.qsize(),
+                )
                 return
+            self._publish_update(record, failure)
+            self._emit_translation_metric(
+                job,
+                failure,
+                queue_depth=self._translation_queue.qsize(),
+            )
 
             fallback = TranslationUpdate(
                 trace_id=job.trace_id,
@@ -471,17 +636,18 @@ class SourcePipeline:
                 queue_position=0,
                 error_code=None,
             )
-            self._publish_update(record, fallback, terminal=False)
+            self._publish_update(record, fallback)
 
     def _flush_ready_records(self) -> None:
         self._ready_event.clear()
         with self._records_lock:
             records = list(self._records.values())
         for record in records:
+            generation_current = self._is_current(record.trace.generation)
             with record.lock:
                 if not record.ready or record.final_submitted:
                     continue
-                if not self._is_current(record.trace.generation):
+                if not generation_current:
                     stale = True
                     task = None
                 else:
@@ -531,7 +697,7 @@ class SourcePipeline:
                 self._remove_record(task.trace_id)
                 continue
 
-            self._emit_metric(
+            self._safe_emit_metric(
                 self._metric(
                     trace_id=task.trace_id,
                     stage="output",
@@ -547,26 +713,28 @@ class SourcePipeline:
             outcome = "success"
             error_code = None
             try:
-                self._emit_final(task)
+                self._emit_final(deepcopy(task))
             except Exception:
                 outcome = "error"
                 error_code = "output_error"
             finally:
                 duration_ms = max(0, round((monotonic() - task.started_at_monotonic) * 1000))
-                self._emit_metric(
-                    self._metric(
-                        trace_id=task.trace_id,
-                        stage="output",
-                        engine=None,
-                        target_slot=None,
-                        outcome=outcome,
-                        queue_age_ms=None,
-                        duration_ms=duration_ms,
-                        queue_depth=self._output_queue.qsize(),
-                        error_code=error_code,
+                try:
+                    self._safe_emit_metric(
+                        self._metric(
+                            trace_id=task.trace_id,
+                            stage="output",
+                            engine=None,
+                            target_slot=None,
+                            outcome=outcome,
+                            queue_age_ms=None,
+                            duration_ms=duration_ms,
+                            queue_depth=self._output_queue.qsize(),
+                            error_code=error_code,
+                        )
                     )
-                )
-                self._remove_record(task.trace_id)
+                finally:
+                    self._remove_record(task.trace_id)
 
     def _emit_translation_metric(
         self,
@@ -575,7 +743,7 @@ class SourcePipeline:
         *,
         queue_depth: int,
     ) -> None:
-        self._emit_metric(
+        self._safe_emit_metric(
             self._metric(
                 trace_id=job.trace_id,
                 stage="translation",
@@ -588,6 +756,35 @@ class SourcePipeline:
                 error_code=update.error_code,
             )
         )
+
+    def _safe_transliterate(
+        self,
+        message: str,
+        language: str,
+        output_config: object,
+    ) -> tuple[dict[str, str], ...]:
+        try:
+            result = self._transliterate(
+                message,
+                language,
+                deepcopy(output_config),
+            )
+            return tuple(deepcopy(result))
+        except Exception:
+            logger.exception("translation transliteration callback failed")
+            return ()
+
+    def _safe_emit_update(self, update: TranslationUpdate) -> None:
+        try:
+            self._emit_update(deepcopy(update))
+        except Exception:
+            logger.exception("translation update callback failed")
+
+    def _safe_emit_metric(self, metric: PipelineStatusEvent) -> None:
+        try:
+            self._emit_metric(deepcopy(metric))
+        except Exception:
+            logger.exception("pipeline metric callback failed")
 
     def _metric(
         self,
@@ -602,7 +799,7 @@ class SourcePipeline:
         queue_depth: int,
         error_code: Optional[str],
     ) -> PipelineStatusEvent:
-        with self._state_lock:
+        with self._lifecycle_condition:
             dropped_count = self._dropped_count
         return PipelineStatusEvent(
             schema_version=1,
@@ -624,8 +821,19 @@ class SourcePipeline:
         with self._records_lock:
             return self._records.get(trace_id)
 
+    def _record_is_active(self, record: _TraceRecord) -> bool:
+        with self._records_lock:
+            return self._records.get(record.trace.trace_id) is record
+
     @staticmethod
     def _snapshot_trace(trace: TranscriptionTrace) -> TranscriptionTrace:
+        seen_slots: set[str] = set()
+        unique_targets = []
+        for target in trace.targets:
+            if target.target_slot in seen_slots:
+                continue
+            seen_slots.add(target.target_slot)
+            unique_targets.append(target)
         return TranscriptionTrace(
             trace_id=trace.trace_id,
             generation=trace.generation,
@@ -633,7 +841,7 @@ class SourcePipeline:
             original_message=trace.original_message,
             source_language=trace.source_language,
             original_transliteration=tuple(deepcopy(trace.original_transliteration)),
-            targets=tuple(trace.targets),
+            targets=tuple(unique_targets),
             providers=tuple(trace.providers),
             ctranslate2_weight_type=trace.ctranslate2_weight_type,
             context_history=tuple(deepcopy(trace.context_history)),

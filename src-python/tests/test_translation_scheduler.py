@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from collections import deque
+from unittest.mock import patch
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -19,6 +20,7 @@ from models.pipeline.pipeline_types import (
     TranslationTarget,
 )
 from models.pipeline.source_pipeline import SourcePipeline
+from models.pipeline import source_pipeline as source_pipeline_module
 
 
 def make_output_config(**overrides):
@@ -128,6 +130,30 @@ class ScriptedTranslator:
             1,
             None,
         )
+
+
+class ControlledStartThread(threading.Thread):
+    start_lock = threading.Lock()
+    start_count = 0
+    first_start_entered = threading.Event()
+    release_first_start = threading.Event()
+
+    @classmethod
+    def reset(cls):
+        with cls.start_lock:
+            cls.start_count = 0
+        cls.first_start_entered.clear()
+        cls.release_first_start.clear()
+
+    def start(self):
+        with self.start_lock:
+            type(self).start_count += 1
+            start_number = type(self).start_count
+        if start_number == 1:
+            self.first_start_entered.set()
+            if not self.release_first_start.wait(timeout=2.0):
+                raise AssertionError("test did not release first Thread.start")
+        return super().start()
 
 
 class TranslationSchedulerTests(unittest.TestCase):
@@ -360,6 +386,400 @@ class TranslationSchedulerTests(unittest.TestCase):
             snapshot_call["context_history"],
             [{"role": "user", "content": "snapshot"}],
         )
+
+    def test_initial_callback_can_reenter_submit_and_stop_without_deadlock(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        pipeline_holder = {}
+        nested_results = []
+
+        def reentrant_initial(trace):
+            recorder.emit_initial(trace)
+            if trace.trace_id == "outer":
+                nested_results.append(
+                    pipeline_holder["pipeline"].submit_trace(make_trace("inner"))
+                )
+                pipeline_holder["pipeline"].stop(7, discard_pending=True)
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            translator,
+            lambda *_: (),
+            reentrant_initial,
+            recorder.emit_update,
+            recorder.emit_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+        pipeline_holder["pipeline"] = pipeline
+        pipeline.start(7)
+        outer_result = []
+        submit_returned = threading.Event()
+
+        def submit_outer():
+            outer_result.append(pipeline.submit_trace(make_trace("outer")))
+            submit_returned.set()
+
+        submitter = threading.Thread(target=submit_outer, daemon=True)
+        submitter.start()
+        self.assertTrue(submit_returned.wait(timeout=1.0))
+        submitter.join(timeout=1.0)
+
+        self.assertEqual(nested_results, [True])
+        self.assertEqual(outer_result, [False])
+        self.assertEqual(
+            [item.trace_id for item in recorder.initial],
+            ["outer", "inner"],
+        )
+        with pipeline._records_lock:
+            self.assertEqual(pipeline._records, {})
+
+    def test_initial_callback_failure_rolls_back_record_and_jobs(self):
+        recorder = Recorder()
+
+        def failing_initial(_trace):
+            raise RuntimeError("initial transport failed")
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            ScriptedTranslator(),
+            lambda *_: (),
+            failing_initial,
+            recorder.emit_update,
+            recorder.emit_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+        pipeline.start(7)
+        self.addCleanup(lambda: pipeline.stop(7, discard_pending=True))
+
+        with self.assertRaisesRegex(RuntimeError, "initial transport failed"):
+            pipeline.submit_trace(make_trace("initial-failure"))
+
+        with pipeline._records_lock:
+            self.assertNotIn("initial-failure", pipeline._records)
+        self.assertTrue(pipeline._translation_queue.empty())
+        self.assertEqual(recorder.updates, [])
+
+    def test_duplicate_target_slots_preserve_first_and_finalize_once(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        pipeline = self.make_pipeline(translator, recorder)
+        pipeline.submit_trace(
+            make_trace(
+                "duplicate-slot",
+                targets=(
+                    TranslationTarget("same", "French", "France"),
+                    TranslationTarget("same", "German", "Germany"),
+                ),
+            )
+        )
+        self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 1))
+
+        final = recorder.finals[0]
+        self.assertEqual(len(recorder.initial[0].targets), 1)
+        self.assertEqual(
+            [(item.target_slot, item.language) for item in final.targets],
+            [("same", "French")],
+        )
+        self.assertEqual(len(final.translations), 1)
+        self.assertEqual(
+            [call["target_language"] for call in translator.calls],
+            ["French"],
+        )
+
+    def test_active_duplicate_trace_id_is_rejected_without_replacement(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        translator.block_message = "original"
+        pipeline = self.make_pipeline(translator, recorder)
+        original = make_trace("same-trace", message="original")
+        duplicate = make_trace("same-trace", message="duplicate")
+        self.assertTrue(pipeline.submit_trace(original))
+        self.assertTrue(translator.entered.wait(timeout=1.0))
+
+        self.assertFalse(pipeline.submit_trace(duplicate))
+        duplicate_metrics = [
+            item for item in recorder.metrics
+            if item.trace_id == "same-trace"
+            and item.error_code == "duplicate_trace_id"
+        ]
+        self.assertEqual(len(duplicate_metrics), 1)
+        with pipeline._records_lock:
+            self.assertEqual(
+                pipeline._records["same-trace"].trace.original_message,
+                "original",
+            )
+        translator.release.set()
+        self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 1))
+
+        self.assertEqual(
+            [call["message"] for call in translator.calls],
+            ["original"],
+        )
+        self.assertEqual(recorder.finals[0].original_message, "original")
+
+    def test_callback_failures_are_sanitized_and_workers_continue(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        update_count = 0
+        metric_count = 0
+        transliterate_count = 0
+
+        def flaky_update(update):
+            nonlocal update_count
+            update_count += 1
+            if update_count == 1:
+                raise RuntimeError("first update failed")
+            recorder.emit_update(update)
+
+        def flaky_metric(metric):
+            nonlocal metric_count
+            metric_count += 1
+            if metric_count == 1:
+                raise RuntimeError("first metric failed")
+            recorder.emit_metric(metric)
+
+        def flaky_transliterate(_message, _language, _config):
+            nonlocal transliterate_count
+            transliterate_count += 1
+            if transliterate_count == 1:
+                raise RuntimeError("first transliterator failed")
+            return ({"text": "ok", "reading": "ok"},)
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            translator,
+            flaky_transliterate,
+            recorder.emit_initial,
+            flaky_update,
+            flaky_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+        pipeline.start(7)
+        self.addCleanup(lambda: pipeline.stop(7, discard_pending=True))
+
+        with patch.object(source_pipeline_module.logger, "exception") as log_exception:
+            self.assertTrue(pipeline.submit_trace(make_trace("first-callback")))
+            self.assertTrue(pipeline.submit_trace(make_trace("second-callback")))
+            self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 2))
+            self.assertEqual(log_exception.call_count, 3)
+
+        self.assertTrue(pipeline._translation_thread.is_alive())
+        finals = {item.trace_id: item for item in recorder.finals}
+        self.assertEqual(finals["first-callback"].translations[0].transliteration, ())
+        self.assertEqual(
+            finals["second-callback"].translations[0].transliteration,
+            ({"text": "ok", "reading": "ok"},),
+        )
+
+    def test_callback_payloads_are_detached_from_internal_aggregation(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        internal_final_readings = []
+        pipeline_holder = {}
+
+        def mutating_initial(trace):
+            trace.original_transliteration[0]["reading"] = "mutated-initial"
+            trace.context_history[0]["trace"] = "mutated-context"
+            recorder.emit_initial(trace)
+
+        def mutating_update(update):
+            if update.transliteration:
+                update.transliteration[0]["reading"] = "mutated-update"
+            recorder.emit_update(update)
+
+        def mutating_final(task):
+            task.translations[0].transliteration[0]["reading"] = "mutated-final"
+            pipeline = pipeline_holder["pipeline"]
+            with pipeline._records_lock:
+                record = pipeline._records[task.trace_id]
+            with record.lock:
+                internal_final_readings.append(
+                    record.translations["target-1"].transliteration[0]["reading"]
+                )
+            recorder.emit_final(task)
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            translator,
+            lambda *_: ({"text": "bonjour", "reading": "original-reading"},),
+            mutating_initial,
+            mutating_update,
+            recorder.emit_metric,
+            mutating_final,
+            lambda generation: generation == 7,
+        )
+        pipeline_holder["pipeline"] = pipeline
+        pipeline.start(7)
+        self.addCleanup(lambda: pipeline.stop(7, discard_pending=True))
+        base = make_trace("detached")
+        detached_trace = TranscriptionTrace(
+            trace_id=base.trace_id,
+            generation=base.generation,
+            source=base.source,
+            original_message=base.original_message,
+            source_language=base.source_language,
+            original_transliteration=({"text": "hello", "reading": "original"},),
+            targets=base.targets,
+            providers=base.providers,
+            ctranslate2_weight_type=base.ctranslate2_weight_type,
+            context_history=base.context_history,
+            started_at_monotonic=base.started_at_monotonic,
+            output_config=base.output_config,
+        )
+        pipeline.submit_trace(detached_trace)
+        self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 1))
+
+        final = recorder.finals[0]
+        self.assertEqual(final.original_transliteration[0]["reading"], "original")
+        self.assertEqual(
+            final.translations[0].transliteration[0]["reading"],
+            "mutated-final",
+        )
+        self.assertEqual(
+            translator.calls[0]["context_history"],
+            [{"trace": "detached"}],
+        )
+        self.assertEqual(internal_final_readings, ["original-reading"])
+
+    def test_stop_during_starting_waits_until_both_threads_have_started(self):
+        recorder = Recorder()
+        ControlledStartThread.reset()
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            ScriptedTranslator(),
+            lambda *_: (),
+            recorder.emit_initial,
+            recorder.emit_update,
+            recorder.emit_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+        start_errors = []
+        stop_errors = []
+        start_returned = threading.Event()
+        stop_returned = threading.Event()
+
+        def start_pipeline():
+            try:
+                pipeline.start(7)
+            except Exception as error:
+                start_errors.append(error)
+            finally:
+                start_returned.set()
+
+        def stop_pipeline():
+            try:
+                pipeline.stop(7, discard_pending=True)
+            except Exception as error:
+                stop_errors.append(error)
+            finally:
+                stop_returned.set()
+
+        with patch.object(source_pipeline_module, "Thread", ControlledStartThread):
+            starter = threading.Thread(target=start_pipeline, daemon=True)
+            starter.start()
+            self.assertTrue(ControlledStartThread.first_start_entered.wait(timeout=1.0))
+            stopper = threading.Thread(target=stop_pipeline, daemon=True)
+            stopper.start()
+            self.assertFalse(stop_returned.wait(timeout=0.1))
+            ControlledStartThread.release_first_start.set()
+            self.assertTrue(start_returned.wait(timeout=1.0))
+            self.assertTrue(stop_returned.wait(timeout=1.0))
+            starter.join(timeout=1.0)
+            stopper.join(timeout=1.0)
+
+        self.assertEqual(start_errors, [])
+        self.assertEqual(stop_errors, [])
+        self.assertEqual(pipeline._lifecycle_state.value, "stopped")
+        self.assertFalse(pipeline._translation_thread.is_alive())
+        self.assertFalse(pipeline._output_thread.is_alive())
+
+    def test_concurrent_matching_stoppers_both_wait_for_provider_and_workers(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        translator.block_message = "two-stoppers"
+        pipeline = self.make_pipeline(translator, recorder)
+        pipeline.submit_trace(make_trace("two-stoppers", message="two-stoppers"))
+        self.assertTrue(translator.entered.wait(timeout=1.0))
+        first_returned = threading.Event()
+        second_returned = threading.Event()
+
+        first = threading.Thread(
+            target=lambda: (pipeline.stop(7, discard_pending=True), first_returned.set()),
+            daemon=True,
+        )
+        first.start()
+        self.assertTrue(pipeline._stop_event.wait(timeout=1.0))
+        second = threading.Thread(
+            target=lambda: (pipeline.stop(7, discard_pending=True), second_returned.set()),
+            daemon=True,
+        )
+        second.start()
+        self.assertFalse(second_returned.wait(timeout=0.1))
+        self.assertFalse(first_returned.is_set())
+
+        translator.release.set()
+        self.assertTrue(first_returned.wait(timeout=1.0))
+        self.assertTrue(second_returned.wait(timeout=1.0))
+        first.join(timeout=1.0)
+        second.join(timeout=1.0)
+        self.assertEqual(pipeline._lifecycle_state.value, "stopped")
+
+    def test_discard_pending_false_is_explicitly_unsupported(self):
+        recorder = Recorder()
+        pipeline = self.make_pipeline(ScriptedTranslator(), recorder)
+        with self.assertRaisesRegex(ValueError, "discard_pending=False"):
+            pipeline.stop(7, discard_pending=False)
+        self.assertTrue(pipeline._translation_thread.is_alive())
+
+    def test_no_provider_terminal_metric_precedes_output_readiness(self):
+        recorder = Recorder()
+        metric_entered = threading.Event()
+        release_metric = threading.Event()
+        final_called = threading.Event()
+        submit_returned = threading.Event()
+
+        def blocking_metric(metric):
+            if metric.stage == "translation" and metric.trace_id == "causal-empty":
+                metric_entered.set()
+                if not release_metric.wait(timeout=2.0):
+                    raise AssertionError("test did not release terminal metric")
+            recorder.emit_metric(metric)
+
+        def observe_final(task):
+            recorder.emit_final(task)
+            final_called.set()
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            ScriptedTranslator(),
+            lambda *_: (),
+            recorder.emit_initial,
+            recorder.emit_update,
+            blocking_metric,
+            observe_final,
+            lambda generation: generation == 7,
+        )
+        pipeline.start(7)
+        self.addCleanup(lambda: pipeline.stop(7, discard_pending=True))
+
+        submitter = threading.Thread(
+            target=lambda: (
+                pipeline.submit_trace(make_trace("causal-empty", providers=())),
+                submit_returned.set(),
+            ),
+            daemon=True,
+        )
+        submitter.start()
+        self.assertTrue(metric_entered.wait(timeout=1.0))
+        self.assertFalse(final_called.wait(timeout=0.1))
+        release_metric.set()
+        self.assertTrue(submit_returned.wait(timeout=1.0))
+        self.assertTrue(final_called.wait(timeout=1.0))
+        submitter.join(timeout=1.0)
 
     def test_success_and_fallback_state_order_and_attempt_metrics(self):
         attempts = [
