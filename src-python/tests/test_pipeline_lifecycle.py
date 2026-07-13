@@ -54,6 +54,14 @@ class _RecoveryModel:
     def isTranscriptionSourceActive(self, source):
         return self.active.get(source, False)
 
+    def stopMicTranscript(self):
+        self.active[PipelineSource.MIC] = False
+        self.generations.pop(PipelineSource.MIC, None)
+
+    def stopSpeakerTranscript(self):
+        self.active[PipelineSource.SPEAKER] = False
+        self.generations.pop(PipelineSource.SPEAKER, None)
+
     def recordTranscriptionRecovery(self, source, error_code):
         self.recovered.append((source, error_code))
         self.recovery_metric_event.set()
@@ -539,7 +547,12 @@ class PipelineLifecycleTests(unittest.TestCase):
             restarted = threading.Event()
             reasons = []
 
-            def restart(reason="configuration_changed"):
+            def restart(
+                reason="configuration_changed",
+                *,
+                expected_source=None,
+                expected_generation=None,
+            ):
                 reasons.append(reason)
                 restarted.set()
                 return True
@@ -571,6 +584,63 @@ class PipelineLifecycleTests(unittest.TestCase):
                 stale_safe,
             )
             self.assertFalse(restarted.wait(0.1))
+
+    def test_user_stop_winning_before_restart_lock_ignores_recovery_request(self):
+        fake_model = _RecoveryModel()
+        fake_model.active[PipelineSource.SPEAKER] = False
+        before_lock = threading.Event()
+        resume_restart = threading.Event()
+        request_done = threading.Event()
+        starts = []
+        self.addCleanup(resume_restart.set)
+
+        with patch.object(controller_module, "model", fake_model):
+            controller = Controller()
+            original_restart = controller._requestCoordinatedTranscriptionRestart
+
+            def paused_restart(
+                reason="configuration_changed",
+                *,
+                expected_source=None,
+                expected_generation=None,
+            ):
+                before_lock.set()
+                resume_restart.wait()
+                try:
+                    return original_restart(
+                        reason,
+                        expected_source=expected_source,
+                        expected_generation=expected_generation,
+                    )
+                finally:
+                    request_done.set()
+
+            controller._requestCoordinatedTranscriptionRestart = paused_restart
+            controller.startTranscriptionSendMessage = lambda: (
+                starts.append(PipelineSource.MIC) or True
+            )
+            safe = threading.Event()
+            safe.set()
+            fake_model.callback(
+                PipelineSource.MIC,
+                3,
+                "whisper_inference_failed",
+                safe,
+            )
+            self.assertTrue(before_lock.wait(WAIT_SECONDS))
+
+            # This uses the real Controller stop path and therefore the same
+            # restart lock that the resumed coordinated recovery must acquire.
+            controller.stopTranscriptionSendMessage()
+            resume_restart.set()
+            self.assertTrue(request_done.wait(WAIT_SECONDS))
+
+            self.assertFalse(fake_model.recovery_metric_event.wait(0.1))
+            self.assertEqual(starts, [])
+            self.assertEqual(fake_model.recovered, [])
+            self.assertEqual(fake_model.recovery_failed, [])
+            self.assertTrue(controller._transcription_recovery_thread.is_alive())
+            controller.shutdown()
 
     def test_recovery_restart_failure_or_exception_never_emits_recovered(self):
         for failing_source in (PipelineSource.MIC, PipelineSource.SPEAKER):

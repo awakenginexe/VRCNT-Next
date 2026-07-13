@@ -127,19 +127,21 @@ class Controller:
                         )
                     ):
                         try:
-                            recovered = self._requestCoordinatedTranscriptionRestart(
-                                error_code
+                            recovery_outcome = self._requestCoordinatedTranscriptionRestart(
+                                error_code,
+                                expected_source=source,
+                                expected_generation=generation,
                             )
                         except Exception:
                             errorLogging()
-                            recovered = False
+                            recovery_outcome = False
                         try:
-                            if recovered:
+                            if recovery_outcome is True:
                                 model.recordTranscriptionRecovery(
                                     source,
                                     error_code,
                                 )
-                            else:
+                            elif recovery_outcome is False:
                                 model.recordTranscriptionRecoveryFailure(
                                     source,
                                     error_code,
@@ -3674,11 +3676,48 @@ class Controller:
     def _requestCoordinatedTranscriptionRestart(
         self,
         reason: str = "configuration_changed",
-    ) -> bool:
+        *,
+        expected_source: Optional[PipelineSource] = None,
+        expected_generation: Optional[int] = None,
+    ) -> Optional[bool]:
         """Stop all active generations before any replacement runtime loads."""
         del reason  # The reason is carried by recovery metrics at the caller.
         with self._transcription_restart_lock:
             is_active = getattr(model, "isTranscriptionSourceActive", None)
+            is_generation_current = getattr(
+                model,
+                "isSourcePipelineGenerationCurrent",
+                None,
+            )
+
+            recovery_identity_supplied = (
+                expected_source is not None or expected_generation is not None
+            )
+            if recovery_identity_supplied:
+                if (
+                    expected_source is None
+                    or expected_generation is None
+                    or not callable(is_generation_current)
+                ):
+                    return None
+                try:
+                    still_current = bool(
+                        is_generation_current(
+                            expected_source,
+                            expected_generation,
+                        )
+                    )
+                    still_active = (
+                        bool(is_active(expected_source))
+                        if callable(is_active)
+                        else False
+                    )
+                except Exception:
+                    errorLogging()
+                    return None
+                if not still_current or not still_active:
+                    return None
+
             if callable(is_active):
                 active_mic = is_active(PipelineSource.MIC)
                 active_speaker = is_active(PipelineSource.SPEAKER)
