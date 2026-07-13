@@ -4093,9 +4093,17 @@ class Controller:
                 return False
             return self._startTranscriptionSendMessageUnlocked()
 
-    def _startTranscriptionSendMessageUnlocked(self) -> bool:
+    def _waitForDeviceAccessOrShutdown(self) -> bool:
         while self.device_access_status is False:
-            sleep(1)
+            # Shutdown publishes this Event before waiting for the restart
+            # lock, so a start already holding that lock can unwind promptly.
+            if self._transcription_shutdown_requested.wait(0.1):
+                return False
+        return not self._transcription_shutdown_requested.is_set()
+
+    def _startTranscriptionSendMessageUnlocked(self) -> bool:
+        if not self._waitForDeviceAccessOrShutdown():
+            return False
         self.device_access_status = False
         pipeline_ensured = False
         session_established = False
@@ -4175,8 +4183,8 @@ class Controller:
             return self._startTranscriptionReceiveMessageUnlocked()
 
     def _startTranscriptionReceiveMessageUnlocked(self) -> bool:
-        while self.device_access_status is False:
-            sleep(1)
+        if not self._waitForDeviceAccessOrShutdown():
+            return False
         self.device_access_status = False
         pipeline_ensured = False
         session_established = False
@@ -4388,11 +4396,13 @@ class Controller:
         self._normalizeSelectedYourLanguageForTranscription()
 
     def startCheckMicEnergy(self) -> None:
-        while self.device_access_status is False:
-            sleep(1)
+        if not self._waitForDeviceAccessOrShutdown():
+            return
         self.device_access_status = False
-        model.startCheckMicEnergy(self.progressBarMicEnergy)
-        self.device_access_status = True
+        try:
+            model.startCheckMicEnergy(self.progressBarMicEnergy)
+        finally:
+            self.device_access_status = True
 
     def startThreadingCheckMicEnergy(self) -> None:
         th_startCheckMicEnergy = Thread(target=self.startCheckMicEnergy)
@@ -4409,11 +4419,13 @@ class Controller:
         th_stopCheckMicEnergy.join()
 
     def startCheckSpeakerEnergy(self) -> None:
-        while self.device_access_status is False:
-            sleep(1)
+        if not self._waitForDeviceAccessOrShutdown():
+            return
         self.device_access_status = False
-        model.startCheckSpeakerEnergy(self.progressBarSpeakerEnergy)
-        self.device_access_status = True
+        try:
+            model.startCheckSpeakerEnergy(self.progressBarSpeakerEnergy)
+        finally:
+            self.device_access_status = True
 
     def startThreadingCheckSpeakerEnergy(self) -> None:
         th_startCheckSpeakerEnergy = Thread(target=self.startCheckSpeakerEnergy)
