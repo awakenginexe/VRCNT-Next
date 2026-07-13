@@ -22,6 +22,18 @@ const switchStylesPath = (
     "src-ui/views/app/main_page/sidebar_section/main_function_switch/"
     + "MainFunctionSwitch.module.scss"
 );
+const appPath = "src-ui/views/app/App.jsx";
+const appStylesPath = "src-ui/views/app/App.module.scss";
+const startupBannerPath = (
+    "src-ui/views/app/others/startup_status_banner/StartupStatusBanner.jsx"
+);
+const startupBannerStylesPath = (
+    "src-ui/views/app/others/startup_status_banner/StartupStatusBanner.module.scss"
+);
+const blockingOverlayStylesPath = (
+    "src-ui/views/app/others/blocking_operation_overlay/"
+    + "BlockingOperationOverlay.module.scss"
+);
 
 test("the blocking hook derives timing from all existing operation state", () => {
     assert.equal(
@@ -492,4 +504,112 @@ test("main-function switches keep native semantics and pending focus identity", 
     assert.match(styles, /text-align:\s*left/);
     assert.match(styles, /:focus-visible/);
     assert.doesNotMatch(styles, /pointer-events:\s*none/);
+});
+
+test("the app keeps one inert page boundary beneath the native title bar", () => {
+    const source = readSource(appPath);
+    const contentsStart = source.indexOf("const Contents = () => {");
+    const contentsSource = source.slice(contentsStart);
+    const titleBar = contentsSource.indexOf("<WindowTitleBar />");
+    const appBody = contentsSource.indexOf(
+        "<div className={styles.app_body}>",
+    );
+    const pagesWrapper = contentsSource.indexOf(
+        "className={styles.pages_wrapper}",
+    );
+    const overlayBranch = contentsSource.indexOf("{overlayProps ? (");
+
+    assert.ok(
+        titleBar >= 0 && titleBar < appBody,
+        "the native title bar must remain outside and before the app body",
+    );
+    assert.equal(
+        (contentsSource.match(/className=\{styles\.pages_wrapper\}/g) ?? []).length,
+        1,
+    );
+    assert.match(
+        contentsSource,
+        /className=\{styles\.pages_wrapper\}\s+inert=\{isBlocking \? "" : undefined\}/,
+    );
+    assert.ok(appBody < pagesWrapper && pagesWrapper < overlayBranch);
+    assert.match(
+        contentsSource,
+        /<div\s+className=\{styles\.pages_wrapper\}[\s\S]*?<ConfigPage \/>[\s\S]*?<MainPage \/>[\s\S]*?<ModalController \/>[\s\S]*?<UpdatingComponent \/>[\s\S]*?<\/div>\s*\{overlayProps \? \(/,
+    );
+    assert.match(
+        contentsSource,
+        /\{overlayProps \? \([\s\S]*?<BlockingOperationOverlay[\s\S]*?open=\{isBlocking\}[\s\S]*?\) : null\}/,
+    );
+    assert.doesNotMatch(contentsSource, /<SnackbarController/);
+    assert.match(
+        source.slice(0, contentsStart),
+        /<Contents key=\{i18n\.language\} \/>\s*<SnackbarController \/>/,
+    );
+
+    const styles = readSource(appStylesPath);
+    assert.match(styles, /\.app_body\s*\{[\s\S]*?position:\s*relative/);
+    assert.match(styles, /\.app_body\s*\{[\s\S]*?width:\s*100%/);
+    assert.match(styles, /\.app_body\s*\{[\s\S]*?flex:\s*1/);
+    assert.match(styles, /\.app_body\s*\{[\s\S]*?min-height:\s*0/);
+    assert.match(styles, /\.app_body\s*\{[\s\S]*?overflow:\s*hidden/);
+    assert.match(styles, /\.pages_wrapper\s*\{[\s\S]*?height:\s*100%/);
+
+    const overlayStyles = readSource(blockingOverlayStylesPath);
+    assert.match(overlayStyles, /\.overlay\s*\{[\s\S]*?z-index:\s*100/);
+});
+
+test("app overlay copy is localized and the startup error banner persists", () => {
+    const appSource = readSource(appPath);
+    assert.match(appSource, /useBlockingOperation\(\)/);
+    assert.match(appSource, /getMainFunctionPendingCopyKey\(/);
+    assert.match(appSource, /const overlayProps = operation === null\s*\? null/);
+    assert.match(appSource, /title:\s*t\(operation\.titleKey\)/);
+    assert.match(
+        appSource,
+        /operation\.phaseKey\s*\?\s*t\(operation\.phaseKey\)\s*:\s*operation\.phase/,
+    );
+    assert.match(
+        appSource,
+        /operation\.detailKey\s*\?\s*t\(operation\.detailKey\)\s*:\s*operation\.detail/,
+    );
+    assert.match(appSource, /blocking_operation\.progress_steps/);
+    assert.match(appSource, /current:\s*operation\.progress\.value/);
+    assert.match(appSource, /total:\s*operation\.progress\.max/);
+    assert.match(appSource, /blocking_operation\.progress_indeterminate/);
+    assert.match(appSource, /blocking_operation\.progress_label/);
+    assert.match(appSource, /blocking_operation\.elapsed/);
+    assert.match(appSource, /Math\.floor\(operation\.elapsedMs \/ 1000\)/);
+
+    const bannerSource = readSource(startupBannerPath);
+    assert.match(bannerSource, /useI18n\(\)/);
+    assert.match(
+        bannerSource,
+        /const isError = currentInitStatus\.data\.phase === "error"/,
+    );
+    assert.match(bannerSource, /if \(isError\) return undefined/);
+    assert.match(bannerSource, /setTimeout\([\s\S]*?,\s*2200\)/);
+    assert.match(
+        bannerSource,
+        /const shouldShowError = isError/,
+    );
+    assert.match(
+        bannerSource,
+        /const shouldShowOptionalStatus =[\s\S]*?currentIsBackendReady\.data === true[\s\S]*?!isError[\s\S]*?!isDismissed/,
+    );
+    assert.match(bannerSource, /blocking_operation\.startup_failed/);
+    assert.match(bannerSource, /blocking_operation\.startup_failed_detail/);
+    assert.match(
+        bannerSource,
+        /currentInitStatus\.data\.message_key\s*\|\|\s*"blocking_operation\.startup_failed"/,
+    );
+    assert.match(
+        bannerSource,
+        /currentInitStatus\.data\.detail_key\s*\|\|\s*"blocking_operation\.startup_failed_detail"/,
+    );
+    assert.match(bannerSource, /blocking_operation\.backend_startup_progress/);
+    assert.doesNotMatch(bannerSource, /Backend startup/);
+
+    const bannerStyles = readSource(startupBannerStylesPath);
+    assert.match(bannerStyles, /\.container\s*\{[\s\S]*?z-index:\s*50/);
+    assert.match(bannerStyles, /pointer-events:\s*none/);
 });

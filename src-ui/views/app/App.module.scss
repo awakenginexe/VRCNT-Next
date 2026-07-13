@@ -11,6 +11,13 @@
     align-items: center;
 }
 
+.app_body {
+    position: relative;
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
 
 .pages_wrapper {
     position: relative;
