@@ -792,7 +792,8 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
             [TranslationStatus.SUCCESS, TranslationStatus.ERROR],
         )
         expected_target = {
-            "1": {"enable": True, "language": "Japanese", "country": "Japan"}
+            "1": {"enable": True, "language": "Japanese", "country": "Japan"},
+            "2": {"enable": True, "language": "French", "country": "France"},
         }
         controller.messageFormatter.assert_not_called()
         fake_model.oscSendMessage.assert_called_once_with("spoken\ntranslated")
@@ -824,7 +825,8 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
             )
 
         expected_target = {
-            "2": {"enable": True, "language": "French", "country": "France"}
+            "1": {"enable": True, "language": "Japanese", "country": "Japan"},
+            "2": {"enable": True, "language": "French", "country": "France"},
         }
         payload = self._run_payload(controller, "/transcription/mic")
         self.assertEqual([item["message"] for item in payload["translations"]], [None, None])
@@ -880,7 +882,8 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
             )
 
         expected_target = {
-            "1": {"enable": True, "language": "Japanese", "country": "Japan"}
+            "1": {"enable": True, "language": "Japanese", "country": "Japan"},
+            "2": {"enable": True, "language": "French", "country": "France"},
         }
         payload = self._run_payload(controller, "/transcription/speaker")
         self.assertEqual([item["message"] for item in payload["translations"]], [None, None])
@@ -909,7 +912,8 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
             )
 
         expected_target = {
-            "2": {"enable": True, "language": "French", "country": "France"}
+            "1": {"enable": True, "language": "Japanese", "country": "Japan"},
+            "2": {"enable": True, "language": "French", "country": "France"},
         }
         payload = self._run_payload(controller, "/transcription/speaker")
         self.assertEqual([item["message"] for item in payload["translations"]], [None, None])
