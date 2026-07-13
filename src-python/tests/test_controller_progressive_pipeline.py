@@ -245,6 +245,7 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
                 "translations": [
                     {
                         "target_slot": "1",
+                        "language": "Japanese",
                         "message": None,
                         "transliteration": [],
                         "status": "queued",
@@ -288,8 +289,11 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
         payload = events[0][2]
         self.assertRegex(payload["trace_id"], r"^speaker-[0-9a-f-]{36}$")
         self.assertEqual(
-            [(item["target_slot"], item["engine"]) for item in payload["translations"]],
-            [("1", "Google"), ("2", "Google")],
+            [
+                (item["target_slot"], item["language"], item["engine"])
+                for item in payload["translations"]
+            ],
+            [("1", "Japanese", "Google"), ("2", "French", "Google")],
         )
         trace = pipeline.traces[0]
         self.assertEqual(trace.providers, ("Google", "Bing"))

@@ -34,6 +34,7 @@ export const TranslationEntry = ({ entry }) => {
         const stablePresentation = getTranslationPresentation(entry, stableNowMs);
         const parts = [];
 
+        if (entry?.language) parts.push(`${entry.language}:`);
         if (entry?.message) parts.push(entry.message);
         parts.push(t(stablePresentation.textKey, stablePresentation.textValues));
         if (stablePresentation.showQueuePosition) {
@@ -47,6 +48,7 @@ export const TranslationEntry = ({ entry }) => {
         entry?.duration_ms,
         entry?.engine,
         entry?.error_code,
+        entry?.language,
         entry?.message,
         entry?.previous_engine,
         entry?.queue_position,
@@ -58,25 +60,33 @@ export const TranslationEntry = ({ entry }) => {
 
     return (
         <div className={styles.container}>
-            {entry?.message != null && <MessageText item={entry} />}
-            {hasStatus && (
-                <p className={styles.status} aria-hidden="true">
-                    <span className={styles[presentation.tone]}>
-                        <span>{t(presentation.textKey, presentation.textValues)}</span>
-                        {presentation.showQueuePosition && (
-                            <>
-                                <span> · </span>
-                                <span>
-                                    {t(
-                                        "main_page.message_log.translation_status.queue_position",
-                                        { position: entry?.queue_position },
-                                    )}
-                                </span>
-                            </>
-                        )}
-                    </span>
-                </p>
-            )}
+            <div className={styles.content}>
+                {entry?.language && (
+                    <span className={styles.language}>{entry.language}:</span>
+                )}
+                {entry?.message != null && <MessageText item={entry} />}
+                {entry?.message != null && hasStatus && (
+                    <span className={styles.separator} aria-hidden="true">·</span>
+                )}
+                {hasStatus && (
+                    <p className={styles.status} aria-hidden="true">
+                        <span className={styles[presentation.tone]}>
+                            <span>{t(presentation.textKey, presentation.textValues)}</span>
+                            {presentation.showQueuePosition && (
+                                <>
+                                    <span> · </span>
+                                    <span>
+                                        {t(
+                                            "main_page.message_log.translation_status.queue_position",
+                                            { position: entry?.queue_position },
+                                        )}
+                                    </span>
+                                </>
+                            )}
+                        </span>
+                    </p>
+                )}
+            </div>
             {hasStatus && (
                 <span
                     className={styles.sr_only}

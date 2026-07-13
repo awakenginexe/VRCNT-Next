@@ -36,6 +36,7 @@ test("pending translation slots render status without requiring translated text"
     assert.match(source, /setInterval\([\s\S]*?,\s*250\)/);
     assert.match(source, /clearInterval\(/);
     assert.match(source, /entry\?\.message\s*!=\s*null\s*&&[\s\S]*?<MessageText\s+item=\{entry\}/);
+    assert.match(source, /entry\?\.language[\s\S]*?styles\.language[\s\S]*?\{entry\.language\}:/);
     assert.doesNotMatch(source, /if\s*\(\s*!entry\?\.message\s*\)\s*return null/);
     assert.doesNotMatch(source, /updateMessageLogs|useAtom|useSetAtom|jotai/i);
 });
@@ -50,6 +51,7 @@ test("translation state changes use a stable polite region without announcing ti
     assert.match(source, /aria-atomic="true"/);
     assert.match(source, /className=\{styles\.status\}[\s\S]*?aria-hidden="true"/);
     assert.match(source, /const announcement = useMemo\(/);
+    assert.match(source, /if \(entry\?\.language\) parts\.push\(`\$\{entry\.language\}:`\)/);
     assert.match(source, />\{announcement\}<\/span>/);
     assert.doesNotMatch(source, /aria-busy=/);
     assert.doesNotMatch(source, /aria-live=\{isActive \? "off" : "polite"\}/);

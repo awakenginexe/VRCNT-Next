@@ -1226,6 +1226,11 @@ class PipelineLifecycleTests(unittest.TestCase):
             controller_module.config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE
         )
         original_profile = controller_module.config.WHISPER_DECODING_PROFILE
+        cpu_device = next(
+            device
+            for device in controller_module.config.SELECTABLE_COMPUTE_DEVICE_LIST
+            if device.get("device") == "cpu"
+        )
         self.addCleanup(controller.shutdown)
 
         def restart():
@@ -1270,7 +1275,7 @@ class PipelineLifecycleTests(unittest.TestCase):
                     target=lambda: responses.setdefault(
                         "device",
                         controller.setSelectedTranscriptionComputeDevice(
-                            {"device": "cpu", "device_index": 0}
+                            cpu_device
                         ),
                     )
                 )

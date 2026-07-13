@@ -30,6 +30,7 @@ const generateTimeData = () => new Date().toLocaleTimeString(
 
 const normalizeTranslation = (entry, index, nowMs) => ({
     target_slot: String(entry.target_slot ?? index + 1),
+    language: entry.language ?? null,
     message: entry.message ?? null,
     transliteration: entry.transliteration ?? [],
     status: entry.status ?? null,

@@ -397,6 +397,7 @@ class Controller:
             "translations": [
                 {
                     "target_slot": target.target_slot,
+                    "language": target.language,
                     "message": None,
                     "transliteration": [],
                     "status": TranslationStatus.QUEUED.value,

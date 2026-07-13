@@ -12,6 +12,28 @@
     }
 }
 
+.content {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35em;
+    width: 100%;
+    max-width: 100%;
+}
+
+.language {
+    flex: 0 0 auto;
+    color: var(--dark_350_color);
+    font-size: 0.82em;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.separator {
+    color: var(--dark_350_color);
+    font-weight: 700;
+}
+
 .status {
     max-width: 100%;
     font-size: 0.82em;

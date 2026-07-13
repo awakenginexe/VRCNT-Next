@@ -17,6 +17,7 @@ const progressivePayload = () => ({
     translations: [
         {
             target_slot: "1",
+            language: "English",
             message: null,
             transliteration: [],
             status: "queued",
@@ -55,6 +56,7 @@ test("normalizes legacy translations with stable string target slots", () => {
     assert.equal(new Set(entry.messages.translations.map((item) => item.target_slot)).size, 2);
     assert.deepEqual(entry.messages.translations[0], {
         target_slot: "1",
+        language: null,
         message: "hola",
         transliteration: [],
         status: null,
@@ -78,6 +80,7 @@ test("preserves progressive trace and original while normalizing a queued slot",
     assert.deepEqual(entry.messages.translations, [
         {
             target_slot: "1",
+            language: "English",
             message: null,
             transliteration: [],
             status: "queued",
@@ -133,6 +136,7 @@ test("patches a matching translation immutably without appending a log", () => {
     );
     assert.deepEqual(patched[0].messages.translations[0], {
         target_slot: "1",
+        language: "English",
         message: "translated",
         transliteration: [{ text: "translated", pronunciation: "translated" }],
         status: "success",
