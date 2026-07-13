@@ -1,5 +1,24 @@
 const PIPELINE_SCHEMA_VERSION = 1;
 const PIPELINE_SOURCES = new Set(["mic", "speaker"]);
+const PIPELINE_STAGES = new Set([
+    "capture",
+    "queue",
+    "transcription",
+    "translation",
+    "output",
+]);
+const PIPELINE_OUTCOMES = new Set([
+    "waiting",
+    "running",
+    "sending",
+    "success",
+    "slow",
+    "fallback",
+    "timeout",
+    "error",
+    "skipped_overload",
+    "recovered",
+]);
 const PIPELINE_ERROR_OUTCOMES = new Set(["timeout", "error", "skipped_overload"]);
 const PIPELINE_ANNOUNCEMENT_OUTCOMES = new Set([
     "timeout",
@@ -40,11 +59,11 @@ const isPipelineStatusEvent = (event) => (
     && (event.trace_id === null || (typeof event.trace_id === "string" && event.trace_id.length > 0))
     && PIPELINE_SOURCES.has(event.source)
     && typeof event.stage === "string"
-    && event.stage.length > 0
+    && PIPELINE_STAGES.has(event.stage)
     && isNullableString(event.engine)
     && isNullableString(event.target_slot)
     && typeof event.outcome === "string"
-    && event.outcome.length > 0
+    && PIPELINE_OUTCOMES.has(event.outcome)
     && isNullableNonNegativeNumber(event.queue_age_ms)
     && isNullableNonNegativeNumber(event.duration_ms)
     && isNonNegativeInteger(event.queue_depth)
@@ -56,15 +75,25 @@ const isPipelineStatusEvent = (event) => (
 
 const cloneEvent = (event) => ({ ...event });
 
+const getNextTraceArrivalSequence = (traces) => (
+    Object.values(traces).reduce(
+        (latest, trace) => Math.max(latest, trace._arrival_sequence ?? 0),
+        0,
+    ) + 1
+);
+
+const compareTraceEntries = ([, left], [, right]) => (
+    left.latest_observed_at_ms - right.latest_observed_at_ms
+    || (left._arrival_sequence ?? 0) - (right._arrival_sequence ?? 0)
+);
+
 const trimTraces = (traces, maxTraces) => {
     const boundedMaximum = Number.isInteger(maxTraces) && maxTraces > 0
         ? maxTraces
         : 32;
-    const entries = Object.entries(traces);
+    const entries = Object.entries(traces).sort(compareTraceEntries);
 
-    if (entries.length <= boundedMaximum) return traces;
-
-    return Object.fromEntries(entries.slice(entries.length - boundedMaximum));
+    return Object.fromEntries(entries.slice(-boundedMaximum));
 };
 
 const mergeTraceEvent = (traces, event, maxTraces) => {
@@ -90,6 +119,11 @@ const mergeTraceEvent = (traces, event, maxTraces) => {
             currentTrace?.latest_observed_at_ms ?? 0,
             event.observed_at_ms,
         ),
+        _arrival_sequence: (
+            !currentTrace || event.observed_at_ms >= currentTrace.latest_observed_at_ms
+                ? getNextTraceArrivalSequence(traces)
+                : (currentTrace._arrival_sequence ?? 0)
+        ),
         stages: nextStages,
     };
     const nextTraces = { ...traces };
@@ -102,12 +136,7 @@ const mergeTraceEvent = (traces, event, maxTraces) => {
     }
     nextTraces[event.trace_id] = nextTrace;
 
-    const orderedTraces = Object.fromEntries(
-        Object.entries(nextTraces).sort(([, left], [, right]) => (
-            left.latest_observed_at_ms - right.latest_observed_at_ms
-        )),
-    );
-    return trimTraces(orderedTraces, maxTraces);
+    return trimTraces(nextTraces, maxTraces);
 };
 
 const mergeLatestSourceEvent = (latestBySource, event) => {
@@ -194,12 +223,9 @@ const getEventElapsedMs = (event, nowMs) => {
     if (!event) return null;
 
     if (isLatencyActive(event)) {
-        const baseDuration = event.stage === "translation"
-            ? (event.duration_ms ?? event.queue_age_ms ?? 0)
-            : (event.duration_ms ?? 0);
         return Math.max(
             0,
-            Math.round(baseDuration + Math.max(0, nowMs - event.observed_at_ms)),
+            Math.round(nowMs - event.observed_at_ms),
         );
     }
 
@@ -231,7 +257,13 @@ const getLatestTraceForSource = (traces, source) => {
             latestTrace === null
             || trace.latest_observed_at_ms >= latestTrace.latest_observed_at_ms
         ) {
-            latestTrace = trace;
+            if (
+                latestTrace === null
+                || trace.latest_observed_at_ms > latestTrace.latest_observed_at_ms
+                || (trace._arrival_sequence ?? 0) >= (latestTrace._arrival_sequence ?? 0)
+            ) {
+                latestTrace = trace;
+            }
         }
     }
     return latestTrace;
@@ -247,6 +279,7 @@ const getPipelineHealth = (events, nowMs) => {
     }
 
     const isSlow = events.some((event) => {
+        if (event.outcome === "slow") return true;
         if (!isLatencyActive(event) && event.outcome !== "success") return false;
         const elapsedMs = getEventElapsedMs(event, nowMs);
         return elapsedMs !== null && elapsedMs >= 2_000;

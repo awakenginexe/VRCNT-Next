@@ -61,7 +61,7 @@ test("trace stages keep target slots separate and reject only older updates", ()
     }));
     state = mergePipelineStatusEvent(state, makeEvent({
         target_slot: "2",
-        outcome: "waiting",
+        outcome: "sending",
         duration_ms: null,
     }));
     state = mergePipelineStatusEvent(state, makeEvent({
@@ -71,7 +71,7 @@ test("trace stages keep target slots separate and reject only older updates", ()
     }));
 
     assert.equal(state.traces["trace-1"].stages["translation:1"].outcome, "sending");
-    assert.equal(state.traces["trace-1"].stages["translation:2"].outcome, "waiting");
+    assert.equal(state.traces["trace-1"].stages["translation:2"].outcome, "sending");
 
     state = mergePipelineStatusEvent(state, makeEvent({
         target_slot: "1",
@@ -105,6 +105,25 @@ test("equal-millisecond trace retention follows arrival order and stays bounded"
         Object.keys(state.traces),
         Array.from({ length: 32 }, (_, index) => `trace-${index + 3}`),
     );
+});
+
+test("equal-millisecond retention is stable for integer-like trace IDs", () => {
+    let state = createEmptyPipelineStatusState();
+
+    for (let traceId = 100; traceId >= 68; traceId -= 1) {
+        state = mergePipelineStatusEvent(state, makeEvent({
+            trace_id: String(traceId),
+            stage: "output",
+            target_slot: null,
+            engine: null,
+            observed_at_ms: 2_500,
+        }), { maxTraces: 32 });
+    }
+
+    assert.equal(Object.keys(state.traces).length, 32);
+    assert.equal(state.traces["100"], undefined, "the oldest arrival is evicted");
+    assert.notEqual(state.traces["99"], undefined);
+    assert.notEqual(state.traces["68"], undefined, "the newest arrival is retained");
 });
 
 test("null-trace metrics stay source-local and never enter the trace dictionary", () => {
@@ -234,6 +253,36 @@ test("active queue elapsed time advances locally and terminal success freezes it
     assert.equal(selectPipelineStatusSummary(state, 9_000).queue.elapsed_ms, 375);
 });
 
+test("active cloud time excludes queue age and terminal duration is authoritative", () => {
+    let state = mergePipelineStatusEvent(
+        createEmptyPipelineStatusState(),
+        makeEvent({
+            outcome: "sending",
+            queue_age_ms: 5_000,
+            duration_ms: null,
+            observed_at_ms: 10_000,
+        }),
+    );
+
+    let summary = selectPipelineStatusSummary(state, 10_100);
+    assert.equal(summary.translation.elapsed_ms, 100);
+    assert.equal(summary.health, "healthy");
+
+    summary = selectPipelineStatusSummary(state, 12_000);
+    assert.equal(summary.translation.elapsed_ms, 2_000);
+    assert.equal(summary.health, "slow");
+
+    state = mergePipelineStatusEvent(state, makeEvent({
+        outcome: "success",
+        queue_age_ms: 5_200,
+        duration_ms: 180,
+        observed_at_ms: 12_100,
+    }));
+    summary = selectPipelineStatusSummary(state, 30_000);
+    assert.equal(summary.translation.elapsed_ms, 180);
+    assert.equal(summary.health, "healthy");
+});
+
 test("health changes at 2,000ms for active and successful latency", () => {
     const activeState = mergePipelineStatusEvent(
         createEmptyPipelineStatusState(),
@@ -293,9 +342,12 @@ test("terminal failures are errors and only exceptional or recovery events annou
     }
 
     for (const outcome of ["timeout", "error", "skipped_overload", "recovered"]) {
+        const recoveryFields = outcome === "recovered"
+            ? { trace_id: null, stage: "transcription", target_slot: null }
+            : {};
         const state = mergePipelineStatusEvent(
             createEmptyPipelineStatusState(),
-            makeEvent({ outcome, error_code: `${outcome}_code` }),
+            makeEvent({ outcome, error_code: `${outcome}_code`, ...recoveryFields }),
         );
         assert.equal(state.announcement_event.outcome, outcome);
         assert.equal(
@@ -303,4 +355,28 @@ test("terminal failures are errors and only exceptional or recovery events annou
             outcome === "recovered" ? "healthy" : "error",
         );
     }
+});
+
+test("unknown and producer-only protocol values cannot grow source status keys", () => {
+    const initial = createEmptyPipelineStatusState();
+    const invalidEvents = [
+        makeEvent({ stage: "bogus-stage" }),
+        makeEvent({ outcome: "bogus-outcome" }),
+        makeEvent({ stage: "admission", outcome: "error", target_slot: null }),
+        makeEvent({ stage: "transcription", outcome: "stale", trace_id: null, target_slot: null }),
+    ];
+
+    for (const invalidEvent of invalidEvents) {
+        assert.strictEqual(mergePipelineStatusEvent(initial, invalidEvent), initial);
+    }
+    assert.deepEqual(initial.latest_by_source, { mic: {}, speaker: {} });
+});
+
+test("the approved slow outcome maps directly to slow health", () => {
+    const initial = createEmptyPipelineStatusState();
+    const state = mergePipelineStatusEvent(initial, makeEvent({ outcome: "slow" }));
+
+    assert.notStrictEqual(state, initial);
+    assert.equal(state.traces["trace-1"].stages["translation:1"].outcome, "slow");
+    assert.equal(selectPipelineStatusSummary(state, 1_000).health, "slow");
 });
