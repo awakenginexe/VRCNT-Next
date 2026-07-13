@@ -367,6 +367,7 @@ def patched_model_startup(
     fake_config,
     *,
     thread_type=FakeThreadFnc,
+    weight_available=True,
 ):
     fake_devices = SimpleNamespace(
         getMicDevices=lambda: {"host": [{"name": "mic-device"}]},
@@ -380,7 +381,11 @@ def patched_model_startup(
     with (
         patch.object(model_module, "config", fake_config),
         patch.object(model_module, "device_manager", fake_devices),
-        patch.object(model_module, "checkWhisperWeight", return_value=True),
+        patch.object(
+            model_module,
+            "checkWhisperWeight",
+            return_value=weight_available,
+        ),
         patch.object(
             model_module,
             "SelectedMicEnergyAndAudioRecorder",
@@ -1387,6 +1392,181 @@ class ModelWhisperLeaseIntegrationTests(unittest.TestCase):
             replacement = instance._acquireWhisperRuntimeLease()
         replacement.close()
         self.assertEqual(len(attempts), 4)
+
+    def test_mic_retained_failed_lease_retries_before_google_start(self):
+        attempts = []
+
+        def fail_twice(model):
+            attempts.append(model)
+            if len(attempts) <= 2:
+                raise RuntimeError(f"retained mic unload failure {len(attempts)}")
+
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: object(),
+            unload=fail_twice,
+        )
+        instance = make_bare_model(manager)
+        whisper_config = make_model_config()
+        with (
+            patch.object(model_module, "config", whisper_config),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+        ):
+            retained_lease = instance._acquireWhisperRuntimeLease()
+        instance.mic_whisper_runtime_lease = retained_lease
+        with (
+            patch.object(model_module, "errorLogging"),
+            self.assertRaisesRegex(RuntimeError, "retained mic unload failure 2"),
+        ):
+            instance.stopMicTranscript()
+
+        events = []
+        contexts = []
+        google_config = make_model_config(engine="Google")
+        with patched_model_startup(events, contexts, google_config):
+            instance.startMicTranscript(lambda result: None)
+            self.assertIsNone(instance.mic_whisper_runtime_lease)
+            self.assertIsNone(contexts[-1].whisper_runtime_lease)
+            instance.stopMicTranscript()
+
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(retained_lease.closed)
+
+    def test_speaker_retained_failed_lease_retries_before_none_acquire(self):
+        attempts = []
+
+        def fail_twice(model):
+            attempts.append(model)
+            if len(attempts) <= 2:
+                raise RuntimeError(
+                    f"retained speaker unload failure {len(attempts)}"
+                )
+
+        manager = WhisperRuntimeManager(
+            factory=lambda root, key: object(),
+            unload=fail_twice,
+        )
+        instance = make_bare_model(manager)
+        whisper_config = make_model_config()
+        with (
+            patch.object(model_module, "config", whisper_config),
+            patch.object(model_module, "checkWhisperWeight", return_value=True),
+        ):
+            retained_lease = instance._acquireWhisperRuntimeLease()
+        instance.speaker_whisper_runtime_lease = retained_lease
+        with (
+            patch.object(model_module, "errorLogging"),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "retained speaker unload failure 2",
+            ),
+        ):
+            instance.stopSpeakerTranscript()
+
+        events = []
+        contexts = []
+        with patched_model_startup(
+            events,
+            contexts,
+            whisper_config,
+            weight_available=False,
+        ):
+            instance.startSpeakerTranscript(lambda result: None)
+            self.assertIsNone(instance.speaker_whisper_runtime_lease)
+            self.assertIsNone(contexts[-1].whisper_runtime_lease)
+            instance.stopSpeakerTranscript()
+
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(retained_lease.closed)
+
+    def test_retained_failed_lease_aborts_mirrored_start_before_recorder(self):
+        for source in ("mic", "speaker"):
+            with self.subTest(source=source):
+                attempts = []
+
+                def always_fail(model):
+                    attempts.append(model)
+                    raise RuntimeError(
+                        f"{source} retained unload failure {len(attempts)}"
+                    )
+
+                manager = WhisperRuntimeManager(
+                    factory=lambda root, key: object(),
+                    unload=always_fail,
+                )
+                instance = make_bare_model(manager)
+                whisper_config = make_model_config()
+                with (
+                    patch.object(model_module, "config", whisper_config),
+                    patch.object(
+                        model_module,
+                        "checkWhisperWeight",
+                        return_value=True,
+                    ),
+                ):
+                    retained_lease = instance._acquireWhisperRuntimeLease()
+                lease_attribute = f"{source}_whisper_runtime_lease"
+                setattr(instance, lease_attribute, retained_lease)
+                stop_source = (
+                    instance.stopMicTranscript
+                    if source == "mic"
+                    else instance.stopSpeakerTranscript
+                )
+                with (
+                    patch.object(model_module, "errorLogging"),
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        f"{source} retained unload failure 2",
+                    ),
+                ):
+                    stop_source()
+
+                events = []
+                contexts = []
+                fallback_config = make_model_config(
+                    engine="Google" if source == "mic" else "Whisper"
+                )
+                start_source = (
+                    instance.startMicTranscript
+                    if source == "mic"
+                    else instance.startSpeakerTranscript
+                )
+                with (
+                    patched_model_startup(
+                        events,
+                        contexts,
+                        fallback_config,
+                        weight_available=False,
+                    ),
+                    patch.object(model_module, "errorLogging"),
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        f"{source} retained unload failure 3",
+                    ),
+                ):
+                    start_source(lambda result: None)
+
+                self.assertEqual(len(attempts), 3)
+                self.assertIs(
+                    getattr(instance, lease_attribute),
+                    retained_lease,
+                )
+                self.assertIsNone(getattr(instance, f"{source}_audio_recorder"))
+                self.assertIsNone(getattr(instance, f"{source}_audio_queue"))
+                self.assertIsNone(getattr(instance, f"{source}_transcriber"))
+                self.assertIsNone(getattr(instance, f"{source}_print_transcript"))
+                self.assertEqual(
+                    [event for event in events if event[0] == "record"],
+                    [],
+                )
+                self.assertEqual(contexts, [])
+                self.assertEqual(
+                    [
+                        event
+                        for event in events
+                        if event[0] in ("construct", "thread_start")
+                    ],
+                    [],
+                )
 
 
 if __name__ == "__main__":

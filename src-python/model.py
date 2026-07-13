@@ -866,6 +866,16 @@ class Model:
         return result
 
     def startMicTranscript(self, fnc):
+        self.ensure_initialized()
+        if (
+            isinstance(self.mic_print_transcript, threadFnc)
+            or isinstance(
+                self.mic_audio_recorder,
+                SelectedMicEnergyAndAudioRecorder,
+            )
+            or self.mic_whisper_runtime_lease is not None
+        ):
+            self.stopMicTranscript()
         try:
             return self._startMicTranscript(fnc)
         except Exception:
@@ -885,9 +895,6 @@ class Model:
         if len(selected_mic_device) == 0 or mic_device_name == "NoDevice":
             fnc({"text": False, "language": None})
         else:
-            if isinstance(self.mic_print_transcript, threadFnc) or isinstance(self.mic_audio_recorder, SelectedMicEnergyAndAudioRecorder):
-                self.stopMicTranscript()
-
             self.mic_audio_queue = Queue()
             # self.mic_energy_queue = Queue()
 
@@ -1246,6 +1253,16 @@ class Model:
             self.mic_energy_recorder = None
 
     def startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> None:
+        self.ensure_initialized()
+        if (
+            isinstance(self.speaker_print_transcript, threadFnc)
+            or isinstance(
+                self.speaker_audio_recorder,
+                SelectedSpeakerEnergyAndAudioRecorder,
+            )
+            or self.speaker_whisper_runtime_lease is not None
+        ):
+            self.stopSpeakerTranscript()
         try:
             return self._startSpeakerTranscript(fnc)
         except Exception:
@@ -1266,9 +1283,6 @@ class Model:
             if callable(fnc):
                 fnc({"text": False, "language": None})
         else:
-            if isinstance(self.speaker_print_transcript, threadFnc) or isinstance(self.speaker_audio_recorder, SelectedSpeakerEnergyAndAudioRecorder):
-                self.stopSpeakerTranscript()
-
             speaker_audio_queue: Queue = Queue()
             self.speaker_audio_queue = speaker_audio_queue
             speaker_device = selected_speaker_device[0]
