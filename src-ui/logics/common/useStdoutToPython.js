@@ -8,13 +8,19 @@ export const useStdoutToPython = () => {
 
         // send to python
         const backend_subprocess = store.backend_subprocess;
-        if (backend_subprocess) {
-            await backend_subprocess.write(JSON.stringify(send_object) + "\n").then(() => {
-            }).catch((err) => {
-                console.log(err);
-            });
-        } else {
-            console.error("Backend subprocess is not found.", backend_subprocess);
+        if (!backend_subprocess) {
+            const error = new Error("Backend subprocess is not found.");
+            console.error(error, backend_subprocess);
+            return { ok: false, error };
+        }
+
+        try {
+            await backend_subprocess.write(JSON.stringify(send_object) + "\n");
+            return { ok: true };
+        } catch (cause) {
+            const error = cause instanceof Error ? cause : new Error(String(cause));
+            console.error(error);
+            return { ok: false, error };
         }
     };
     return { asyncStdoutToPython };

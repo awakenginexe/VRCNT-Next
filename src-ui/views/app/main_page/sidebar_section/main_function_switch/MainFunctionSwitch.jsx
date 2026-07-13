@@ -12,6 +12,7 @@ import {
     useMainFunction,
 } from "@logics_main";
 import { useIsBackendReady as useCommonIsBackendReady } from "@logics_common";
+import { getMainFunctionPendingCopyKey } from "@logics_common/blockingOperationState.js";
 import { getMainFunctionTooltipMeta } from "./mainFunctionTooltipMeta.js";
 
 export const MainFunctionSwitch = ({ forceCompact = false }) => {
@@ -84,7 +85,7 @@ export const SwitchContainer = ({ switchLabel, switch_id, children, currentState
     const { t } = useI18n();
     const [is_hovered, setIsHovered] = useState(false);
     const [is_mouse_down, setIsMouseDown] = useState(false);
-    const [pending_seconds, setPendingSeconds] = useState(0);
+    const [pending_elapsed_ms, setPendingElapsedMs] = useState(0);
 
     const { currentIsMainPageCompactMode } = useIsMainPageCompactMode();
     const isCompact = forceCompact || currentIsMainPageCompactMode.data;
@@ -109,45 +110,19 @@ export const SwitchContainer = ({ switchLabel, switch_id, children, currentState
 
     useEffect(() => {
         if (currentState.state !== "pending") {
-            setPendingSeconds(0);
+            setPendingElapsedMs(0);
             return;
         }
         const startedAt = Date.now();
         const timer = setInterval(() => {
-            setPendingSeconds(Math.floor((Date.now() - startedAt) / 1000));
-        }, 1000);
+            setPendingElapsedMs(Date.now() - startedAt);
+        }, 1_000);
         return () => clearInterval(timer);
     }, [currentState.state]);
 
-    const pending_messages = {
-        translation: {
-            start: "main_page.main_function_pending.translation_start",
-            warm: "main_page.main_function_pending.translation_warm",
-            long: "main_page.main_function_pending.translation_long",
-        },
-        transcription_send: {
-            start: "main_page.main_function_pending.transcription_send_start",
-            warm: "main_page.main_function_pending.transcription_send_warm",
-            long: "main_page.main_function_pending.transcription_send_long",
-        },
-        transcription_receive: {
-            start: "main_page.main_function_pending.transcription_receive_start",
-            warm: "main_page.main_function_pending.transcription_receive_warm",
-            long: "main_page.main_function_pending.transcription_receive_long",
-        },
-        foreground: {
-            start: "main_page.main_function_pending.foreground_start",
-            warm: "main_page.main_function_pending.foreground_warm",
-            long: "main_page.main_function_pending.foreground_long",
-        },
-    };
-
-    const getPendingMessage = () => {
-        const messages = pending_messages[switch_id] ?? pending_messages.foreground;
-        if (pending_seconds >= 30) return t(messages.long);
-        if (pending_seconds >= 5) return t(messages.warm);
-        return t(messages.start);
-    };
+    const getPendingMessage = () => t(
+        getMainFunctionPendingCopyKey(switch_id, pending_elapsed_ms),
+    );
     const tooltipMeta = getMainFunctionTooltipMeta(switch_id);
 
     return (
@@ -159,37 +134,44 @@ export const SwitchContainer = ({ switchLabel, switch_id, children, currentState
             contentClassName={styles.switch_tooltip_content}
             usePortal
         >
-            <div className={getClassNames(styles.switch_container)}
+            <button
+                type="button"
+                role="switch"
+                aria-checked={currentState.data === true}
+                aria-busy={currentState.state === "pending"}
+                disabled={isDisabled}
+                aria-disabled={currentState.state === "pending"}
+                className={getClassNames(styles.switch_container)}
                 onMouseEnter={onMouseEnter}
                 onMouseLeave={onMouseLeave}
                 onMouseDown={onMouseDown}
                 onMouseUp={onMouseUp}
                 onClick={onClick}
             >
-                <div className={styles.label_wrapper}>
+                <span className={styles.label_wrapper}>
                     <SvgComponent className={getClassNames(styles.switch_svg)} />
-                    <div className={styles.label_text_wrapper}>
-                        <p className={getClassNames(styles.switch_label)}>{switchLabel}</p>
+                    <span className={styles.label_text_wrapper}>
+                        <span className={getClassNames(styles.switch_label)}>{switchLabel}</span>
                         {currentState.state === "pending" && (
-                            <p className={getClassNames(styles.pending_status)}>{getPendingMessage()}</p>
+                            <span className={getClassNames(styles.pending_status)}>{getPendingMessage()}</span>
                         )}
                         {isDisabled && currentState.state !== "pending" && (
-                            <p className={getClassNames(styles.pending_status)}>{t("main_page.language_panels.backend_waiting")}</p>
+                            <span className={getClassNames(styles.pending_status)}>{t("main_page.language_panels.backend_waiting")}</span>
                         )}
-                    </div>
+                    </span>
                     {children}
-                </div>
+                </span>
 
-                <div className={getClassNames(styles.toggle_control)}>
+                <span className={getClassNames(styles.toggle_control)}>
                     <span className={getClassNames(styles.control)}></span>
-                </div>
+                </span>
 
-                <div className={getClassNames(styles.switch_indicator)}></div>
+                <span className={getClassNames(styles.switch_indicator)}></span>
                 {(currentState.state === "pending")
                     ? <span className={styles.loader}></span>
                     : null
                 }
-            </div>
+            </button>
         </Tooltip>
     );
 };

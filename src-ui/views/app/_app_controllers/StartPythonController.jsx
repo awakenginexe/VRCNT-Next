@@ -6,8 +6,11 @@ import { useStdoutToPython } from "@useStdoutToPython";
 import { useReceiveRoutes } from "@useReceiveRoutes";
 import { store, useStore_SelectableFontFamilyList } from "@store";
 import { arrayToObject } from "@utils";
+import { useI18n } from "@useI18n";
 
 import {
+    useInitStatus,
+    useIsBackendReady,
     useNotificationStatus,
 } from "@logics_common";
 import { isBenignSidecarStderr } from "@logics_common/sidecarStderrUtils.js";
@@ -34,11 +37,56 @@ export const StartPythonController = () => {
 
 const useStartPython = () => {
     const { receiveRoutes } = useReceiveRoutes();
-    const { showNotification_Success, showNotification_Error } = useNotificationStatus();
+    const { showNotification_Error } = useNotificationStatus();
+    const { updateInitStatus } = useInitStatus();
+    const { currentIsBackendReady } = useIsBackendReady();
+    const { t } = useI18n();
+    const backendReadyRef = useRef(currentIsBackendReady.data);
+    const startupErrorNotifiedRef = useRef(false);
+    backendReadyRef.current = currentIsBackendReady.data;
+
+    const markBackendStartupError = (error) => {
+        const messageKey = "blocking_operation.startup_failed";
+        const detailKey = "blocking_operation.startup_failed_detail";
+        updateInitStatus({
+            visible: true,
+            phase: "error",
+            message: t(messageKey),
+            detail: t(detailKey),
+            message_key: "blocking_operation.startup_failed",
+            detail_key: "blocking_operation.startup_failed_detail",
+        });
+
+        if (!startupErrorNotifiedRef.current) {
+            startupErrorNotifiedRef.current = true;
+            showNotification_Error(t(messageKey), {
+                hide_duration: null,
+                category_id: "backend_startup_failed",
+            });
+        }
+        console.error("Backend startup failed.", error);
+    };
 
     const asyncStartPython = async () => {
         const command = Command.sidecar("bin/VRCT-sidecar");
-        command.on("error", error => console.error(`error: "${error}"`));
+        command.on("error", (error) => {
+            markBackendStartupError(error);
+        });
+        command.on("close", (termination) => {
+            store.backend_subprocess = null;
+            if (backendReadyRef.current !== true) {
+                markBackendStartupError(termination);
+                return;
+            }
+            showNotification_Error(
+                t("blocking_operation.backend_disconnected"),
+                {
+                    hide_duration: null,
+                    category_id: "backend_disconnected",
+                },
+            );
+            console.error("Backend disconnected.", termination);
+        });
         command.stdout.on("data", (line) => {
             let parsed_data = "";
             try {
@@ -58,8 +106,13 @@ const useStartPython = () => {
             );
             console.error("stderr", line);
         });
-        const backend_subprocess = await command.spawn();
-        store.backend_subprocess = backend_subprocess;
+        try {
+            const backend_subprocess = await command.spawn();
+            store.backend_subprocess = backend_subprocess;
+        } catch (error) {
+            markBackendStartupError(error);
+            throw error;
+        }
     };
 
     return { asyncStartPython };

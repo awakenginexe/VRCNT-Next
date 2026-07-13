@@ -186,6 +186,11 @@ export const useReceiveRoutes = () => {
                 break;
 
             case 400:
+                hook_results.useMainFunction?.clearPendingMainFunctionError?.({
+                    endpoint,
+                    errorCode: result?.error_code,
+                    result,
+                });
                 errorHandling_Backend({
                     error_code: parsed_data.result.error_code,
                     message: parsed_data.result.message,
@@ -201,6 +206,11 @@ export const useReceiveRoutes = () => {
 
             case 500:
             case 503: {
+                hook_results.useMainFunction?.clearPendingMainFunctionError?.({
+                    endpoint,
+                    errorCode: result?.error_code,
+                    result,
+                });
                 const routeMeta = routeMetaByEndpoint.get(endpoint);
                 handleConfigRouteErrorOutcome({
                     routeMeta,
