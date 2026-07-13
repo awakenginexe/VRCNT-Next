@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "กำลังดำเนินการ"
+    startup_operation: "กำลังเริ่ม VRCNT-Next"
+    phase_label: "ขั้นตอนปัจจุบัน"
+    progress_label: "ความคืบหน้าในการเริ่มต้น"
+    progress_steps: "{{current}} จาก {{total}}"
+    progress_indeterminate: "กำลังดำเนินการ…"
+    elapsed: "ผ่านไป {{seconds}} วินาที"
+    startup_failed: "ไม่สามารถเริ่มต้นให้เสร็จสมบูรณ์"
+    startup_failed_detail: "โปรดเริ่ม VRCNT-Next ใหม่ หากยังเกิดปัญหา ให้ตรวจสอบบันทึกของแอป"
+    backend_startup_progress: "เริ่มระบบเบื้องหลัง {{current}} / {{total}}"
+    backend_unavailable: "ระบบเบื้องหลังไม่พร้อมใช้งาน การเปลี่ยนแปลงของคุณยังไม่ถูกนำไปใช้"
+    backend_disconnected: "ระบบเบื้องหลังหยุดทำงาน โปรดเริ่ม VRCNT-Next ใหม่เพื่อดำเนินการต่อ"
+
 common:
     go_back_button_label: "ย้อนกลับ"
 

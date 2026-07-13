@@ -95,6 +95,11 @@ test("main page visible copy is routed through localization", () => {
         "src-ui/views/app/main_page/sidebar_section/language_settings/transcription_engine_label/TranscriptionEngineLabel.jsx",
         "src-ui/views/app/main_page/sidebar_section/main_function_switch/MainFunctionSwitch.jsx",
         "src-ui/views/app/main_page/sidebar_section/main_function_switch/mainFunctionTooltipMeta.js",
+        "src-ui/views/app/App.jsx",
+        "src-ui/views/app/others/blocking_operation_overlay/BlockingOperationOverlay.jsx",
+        "src-ui/views/app/others/startup_status_banner/StartupStatusBanner.jsx",
+        "src-ui/views/app/_app_controllers/StartPythonController.jsx",
+        "src-ui/logics/main/useMainFunction.js",
     ];
     const source = files.map(readSource).join("\n");
     const forbiddenPhrases = [
@@ -113,6 +118,15 @@ test("main page visible copy is routed through localization", () => {
         "Turn chat translation on or off.",
         "Open app configuration.",
         "only enables languages supported by the selected model.",
+        "Operation in progress",
+        "Starting VRCNT-Next",
+        "Current step",
+        "Startup progress",
+        "Working…",
+        "Startup could not finish",
+        "Restart VRCNT-Next. If this continues, check the application log.",
+        "The backend is unavailable. Your change was not applied.",
+        "The backend stopped. Restart VRCNT-Next to continue.",
     ];
 
     for (const phrase of forbiddenPhrases) {

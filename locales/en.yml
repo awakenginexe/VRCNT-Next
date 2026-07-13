@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "Operation in progress"
+    startup_operation: "Starting VRCNT-Next"
+    phase_label: "Current step"
+    progress_label: "Startup progress"
+    progress_steps: "{{current}} of {{total}}"
+    progress_indeterminate: "Working…"
+    elapsed: "Elapsed {{seconds}}s"
+    startup_failed: "Startup could not finish"
+    startup_failed_detail: "Restart VRCNT-Next. If this continues, check the application log."
+    backend_startup_progress: "Backend startup {{current}} / {{total}}"
+    backend_unavailable: "The backend is unavailable. Your change was not applied."
+    backend_disconnected: "The backend stopped. Restart VRCNT-Next to continue."
+
 common:
     go_back_button_label: "Go Back"
 

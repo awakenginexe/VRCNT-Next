@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "処理中"
+    startup_operation: "VRCNT-Next を起動しています"
+    phase_label: "現在のステップ"
+    progress_label: "起動の進行状況"
+    progress_steps: "{{current}} / {{total}}"
+    progress_indeterminate: "処理しています…"
+    elapsed: "経過 {{seconds}} 秒"
+    startup_failed: "起動を完了できませんでした"
+    startup_failed_detail: "VRCNT-Next を再起動してください。続く場合はアプリのログを確認してください。"
+    backend_startup_progress: "バックエンド起動 {{current}} / {{total}}"
+    backend_unavailable: "バックエンドを利用できないため、変更は適用されませんでした。"
+    backend_disconnected: "バックエンドが停止しました。VRCNT-Next を再起動してください。"
+
 common:
     go_back_button_label: "戻る"
 

@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "操作进行中"
+    startup_operation: "正在启动 VRCNT-Next"
+    phase_label: "当前步骤"
+    progress_label: "启动进度"
+    progress_steps: "{{current}} / {{total}}"
+    progress_indeterminate: "正在处理…"
+    elapsed: "已用 {{seconds}} 秒"
+    startup_failed: "无法完成启动"
+    startup_failed_detail: "请重新启动 VRCNT-Next。如果问题持续，请检查应用日志。"
+    backend_startup_progress: "后端启动 {{current}} / {{total}}"
+    backend_unavailable: "后端不可用，您的更改尚未应用。"
+    backend_disconnected: "后端已停止。请重新启动 VRCNT-Next 后继续。"
+
 common:
     go_back_button_label: "返回"
 
