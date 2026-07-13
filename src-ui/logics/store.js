@@ -13,6 +13,7 @@ import {
 } from "@ui_configs";
 
 import { EMPTY_RESOURCE_USAGE } from "./common/resourceUsageUtils.js";
+import { createEmptyPipelineStatusState } from "./common/pipelineStatusUtils.js";
 import { isTauriRuntime } from "./common/tauriRuntime.js";
 
 const IS_TAURI_RUNTIME = isTauriRuntime();
@@ -277,6 +278,11 @@ export const { atomInstance: Atom_ResourceUsage, useHook: useStore_ResourceUsage
     "ResourceUsage",
     {is_state_ok: true}
 );
+export const { atomInstance: Atom_PipelineStatus, useHook: useStore_PipelineStatus } = createAtomWithHook(
+    createEmptyPipelineStatusState(),
+    "PipelineStatus",
+    {is_state_ok: true}
+);
 export const { atomInstance: Atom_IsOpenedConfigPage, useHook: useStore_IsOpenedConfigPage } = createAtomWithHook(false, "IsOpenedConfigPage");
 export const { atomInstance: Atom_MainFunctionsStateMemory, useHook: useStore_MainFunctionsStateMemory } = createAtomWithHook({
     transcription_send: false,
@@ -339,6 +345,11 @@ export const { atomInstance: Atom_TranslationEngines, useHook: useStore_Translat
 export const { atomInstance: Atom_SelectedTranslationEngines, useHook: useStore_SelectedTranslationEngines } = createAtomWithHook(
     IS_TAURI_RUNTIME ? {1:"", 2:"", 3:""} : {1:"DeepL_API", 2:"CTranslate2", 3:"Google"},
     "SelectedTranslationEngines"
+);
+export const { atomInstance: Atom_TranslationEngineSelectionTransition, useHook: useStore_TranslationEngineSelectionTransition } = createAtomWithHook(
+    null,
+    "TranslationEngineSelectionTransition",
+    {is_state_ok: true}
 );
 export const { atomInstance: Atom_IsOpenedTranslatorSelector, useHook: useStore_IsOpenedTranslatorSelector } = createAtomWithHook(false, "IsOpenedTranslatorSelector");
 export const { atomInstance: Atom_IsOpenedTranscriptionEngineSelector, useHook: useStore_IsOpenedTranscriptionEngineSelector } = createAtomWithHook(false, "IsOpenedTranscriptionEngineSelector");

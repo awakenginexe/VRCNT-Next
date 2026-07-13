@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "กำลังดำเนินการ"
+    startup_operation: "กำลังเริ่ม VRCNT-Next"
+    phase_label: "ขั้นตอนปัจจุบัน"
+    progress_label: "ความคืบหน้าในการเริ่มต้น"
+    progress_steps: "{{current}} จาก {{total}}"
+    progress_indeterminate: "กำลังดำเนินการ…"
+    elapsed: "ผ่านไป {{seconds}} วินาที"
+    startup_failed: "ไม่สามารถเริ่มต้นให้เสร็จสมบูรณ์"
+    startup_failed_detail: "โปรดเริ่ม VRCNT-Next ใหม่ หากยังเกิดปัญหา ให้ตรวจสอบบันทึกของแอป"
+    backend_startup_progress: "เริ่มระบบเบื้องหลัง {{current}} / {{total}}"
+    backend_unavailable: "ระบบเบื้องหลังไม่พร้อมใช้งาน การเปลี่ยนแปลงของคุณยังไม่ถูกนำไปใช้"
+    backend_disconnected: "ระบบเบื้องหลังหยุดทำงาน โปรดเริ่ม VRCNT-Next ใหม่เพื่อดำเนินการต่อ"
+
 common:
     go_back_button_label: "ย้อนกลับ"
 
@@ -89,6 +103,24 @@ main_page:
         auto: "อัตโนมัติ"
         auto_gpu: "อัตโนมัติ GPU {{index}}"
 
+    pipeline_status:
+        source: "แหล่งเสียง"
+        listening: "กำลังฟัง"
+        speaking: "กำลังพูด"
+        transcription: "ถอดเสียง"
+        cloud: "คลาวด์"
+        queue: "คิว"
+        total: "รวม"
+        healthy: "ปกติ"
+        slow: "ช้า"
+        error: "ข้อผิดพลาด"
+        waiting: "กำลังรอ"
+        unavailable: "ไม่พร้อมใช้งาน"
+        timeout_announcement: "การแปลด้วย {{engine}} หมดเวลา"
+        overload_announcement: "คิวการแปลทำงานหนักเกินไป"
+        error_announcement: "{{stage}} ล้มเหลว"
+        recovered_announcement: "{{stage}} กลับมาทำงานแล้ว"
+
     translator_selector:
         is_selected_same_language: "คุณกำลังเลือกภาษาเดียวกันสำหรับ '{{your_language}}' และ '{{target_language}}' จึงใช้ได้เฉพาะ '{{ctranslate2}}'"
         use_parallel_service: "ใช้บริการแบบขนาน"
@@ -103,6 +135,18 @@ main_page:
         system: "ระบบ"
 
         resend_button_on_hover_desc: "กดค้างเพื่อส่ง"
+
+        translation_status:
+            queued: "กำลังรอ {{engine}} · {{elapsed}}"
+            sending: "กำลังแปลด้วย {{engine}} · {{elapsed}}"
+            fallback: "{{previousEngine}} ช้า · กำลังลอง {{engine}}"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "ไม่มีคำแปล · {{engine}} หมดเวลา"
+            error: "ไม่มีคำแปล · {{engine}} ล้มเหลว"
+            skipped_overload: "ข้ามการแปล · คิวทำงานหนักเกินไป"
+            no_provider: "ไม่มีคำแปล · ยังไม่ได้เลือกผู้ให้บริการ"
+            unavailable: "ไม่มีคำแปล"
+            queue_position: "คิว {{position}}"
 
     state_text_enabled: "เปิดใช้งาน"
     state_text_disabled: "ปิดใช้งาน"
@@ -325,6 +369,12 @@ config_page:
             desc: "โมเดลขนาดใหญ่มีความแม่นยำสูงกว่า แต่ใช้ทรัพยากร CPU หรือ GPU มากกว่า\nโดยเฉพาะโมเดลที่ใหญ่กว่า medium อาจใช้งานได้ยากหรือใช้งานไม่ได้ ขึ้นอยู่กับประสิทธิภาพ CPU/GPU ของคุณ"
             model_template: "โมเดล {{model_name}} ({{capacity}})"
             recommended_model_template: "โมเดล {{model_name}} ({{capacity}}) (แนะนำ)"
+        whisper_decoding_profile:
+            label: "โปรไฟล์การถอดรหัส Whisper"
+            desc: "เลือกระหว่างความลื่นไหลใน VR และความแม่นยำของตัวถอดรหัส"
+            fast: "เร็ว · beam 1 · หน่วงต่ำสุด"
+            balanced: "สมดุล · beam 2 · แนะนำสำหรับ VRChat"
+            accurate: "แม่นยำ · beam 5 · ใช้การประมวลผลสูงสุด"
         transcription_compute_device:
             label: "อุปกรณ์ประมวลผลที่ใช้สำหรับการถอดเสียงด้วย AI"
 

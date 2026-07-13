@@ -211,6 +211,7 @@ const TranscriptionEngine_Container = () => {
             {engine === "Parakeet" && <ParakeetWeightType_Box />}
             {engine === "SenseVoice" && <SenseVoiceWeightType_Box />}
             <TranscriptionComputeDevice_Box />
+            {engine === "Whisper" && <WhisperDecodingProfile_Box />}
         </div>
     );
 };
@@ -397,6 +398,38 @@ const WhisperWeightType_Box = () => {
                 downloadStartFunction={downloadStartFunction}
             />
         </>
+    );
+};
+
+const WHISPER_DECODING_PROFILE_IDS = Object.freeze(["fast", "balanced", "accurate"]);
+
+const WhisperDecodingProfile_Box = () => {
+    const { t } = useI18n();
+    const {
+        currentWhisperDecodingProfile,
+        setWhisperDecodingProfile,
+    } = useTranscription();
+
+    const selectFunction = (selected_data) => {
+        if (WHISPER_DECODING_PROFILE_IDS.includes(selected_data.selected_id)) {
+            setWhisperDecodingProfile(selected_data.selected_id);
+        }
+    };
+
+    return (
+        <DropdownMenuContainer
+            dropdown_id="whisper_decoding_profile"
+            label={t("config_page.transcription.whisper_decoding_profile.label")}
+            desc={t("config_page.transcription.whisper_decoding_profile.desc")}
+            selected_id={currentWhisperDecodingProfile.data}
+            list={{
+                fast: t("config_page.transcription.whisper_decoding_profile.fast"),
+                balanced: t("config_page.transcription.whisper_decoding_profile.balanced"),
+                accurate: t("config_page.transcription.whisper_decoding_profile.accurate"),
+            }}
+            selectFunction={selectFunction}
+            state={currentWhisperDecodingProfile.state}
+        />
     );
 };
 

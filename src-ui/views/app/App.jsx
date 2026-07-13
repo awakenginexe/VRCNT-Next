@@ -28,9 +28,15 @@ import {
     ModalController,
     SnackbarController,
     AppErrorBoundary,
+    BlockingOperationOverlay,
 } from "./others";
 
-import { useIsBackendReady, useIsSoftwareUpdating, useWindow } from "@logics_common";
+import {
+    useBlockingOperation,
+    useIsSoftwareUpdating,
+    useWindow,
+} from "@logics_common";
+import { getMainFunctionPendingCopyKey } from "@logics_common/blockingOperationState.js";
 import { isTauriRuntime } from "@logics_common/tauriRuntime.js";
 
 const THEME_ACCENT_CLASSES = [
@@ -75,25 +81,80 @@ export const App = () => {
 };
 
 const Contents = () => {
+    const { t } = useI18n();
     const { WindowGeometryController } = useWindow();
     const { currentIsSoftwareUpdating } = useIsSoftwareUpdating();
+    const { isBlocking, operation } = useBlockingOperation();
+    const overlayProps = operation === null
+        ? null
+        : (() => {
+            const isStartup = operation.id === "startup";
+            const phase = isStartup
+                ? (operation.phaseKey
+                    ? t(operation.phaseKey)
+                    : operation.phase ?? "")
+                : t(getMainFunctionPendingCopyKey(
+                    operation.id,
+                    operation.elapsedMs,
+                ));
+            const detail = operation.detailKey
+                ? t(operation.detailKey)
+                : operation.detail ?? "";
+            const progressText = operation.progress.kind === "determinate"
+                ? t("blocking_operation.progress_steps", {
+                    current: operation.progress.value,
+                    total: operation.progress.max,
+                })
+                : t("blocking_operation.progress_indeterminate");
+
+            return {
+                operationId: operation.id,
+                title: t(operation.titleKey),
+                phase,
+                detail,
+                progress: operation.progress,
+                progressLabel: t("blocking_operation.progress_label"),
+                progressText,
+                elapsedText: t("blocking_operation.elapsed", {
+                    seconds: Math.floor(operation.elapsedMs / 1000),
+                }),
+            };
+        })();
+
     return (
         <>
             <WindowGeometryController />
 
             <WindowTitleBar />
-            <StartupStatusBanner />
-            <UpdateNotificationController />
-            {currentIsSoftwareUpdating.data === false
-            ?
-            <div className={styles.pages_wrapper}>
-                <ConfigPage />
-                <MainPage />
-                <ModalController />
+            <div className={styles.app_body}>
+                <StartupStatusBanner />
+                <UpdateNotificationController />
+                <div
+                    className={styles.pages_wrapper}
+                    inert={isBlocking ? "" : undefined}
+                >
+                    {currentIsSoftwareUpdating.data === false ? (
+                        <>
+                            <ConfigPage />
+                            <MainPage />
+                            <ModalController />
+                        </>
+                    ) : <UpdatingComponent />}
+                </div>
+                {overlayProps ? (
+                    <BlockingOperationOverlay
+                        open={isBlocking}
+                        operationId={overlayProps.operationId}
+                        title={overlayProps.title}
+                        phase={overlayProps.phase}
+                        detail={overlayProps.detail}
+                        progress={overlayProps.progress}
+                        progressLabel={overlayProps.progressLabel}
+                        progressText={overlayProps.progressText}
+                        elapsedText={overlayProps.elapsedText}
+                    />
+                ) : null}
             </div>
-            :
-            <UpdatingComponent />
-            }
         </>
     );
 };

@@ -20,6 +20,8 @@ run_mapping = {
 
     "transcription_mic":"/run/transcription_send_mic_message",
     "transcription_speaker":"/run/transcription_receive_speaker_message",
+    "transcription_translation_update":"/run/transcription_translation_update",
+    "pipeline_status":"/run/pipeline_status",
 
     "check_mic_volume":"/run/check_mic_volume",
     "check_speaker_volume":"/run/check_speaker_volume",
@@ -354,6 +356,8 @@ mapping = {
 
     "/get/data/selected_whisper_weight_type": {"status": True, "variable":controller.getWhisperWeightType},
     "/set/data/selected_whisper_weight_type": {"status": True, "variable":controller.setWhisperWeightType},
+    "/get/data/whisper_decoding_profile": {"status": True, "variable":controller.getWhisperDecodingProfile},
+    "/set/data/whisper_decoding_profile": {"status": True, "variable":controller.setWhisperDecodingProfile},
     "/get/data/selected_vosk_weight_type": {"status": True, "variable":controller.getVoskWeightType},
     "/set/data/selected_vosk_weight_type": {"status": True, "variable":controller.setVoskWeightType},
     "/get/data/selected_parakeet_weight_type": {"status": True, "variable":controller.getParakeetWeightType},
@@ -465,6 +469,7 @@ class Main:
         self.mapping = mapping_data
         self._threads: list[Thread] = []
         self._worker_count = worker_count
+        self._shutdown_lock = Lock()
 
         # エンドポイントごとの排他制御用 Lock を作成
         # enable/disable ペアは同じロックキーに正規化する
@@ -616,13 +621,18 @@ class Main:
         Args:
             wait: maximum seconds to wait for threads to join.
         """
-        # Controller 経由でシャットダウン（model.shutdown() → telemetry.shutdown() が呼ばれる）
-        try:
-            self.controller.shutdown()
-        except Exception:
-            errorLogging()
-        
-        self._stop_event.set()
+        with self._shutdown_lock:
+            if self._stop_event.is_set():
+                return
+            # Controller first drains transcription/translation/output workers
+            # and releases the shared runtime before process workers are told
+            # to exit.
+            try:
+                self.controller.shutdown()
+            except Exception:
+                errorLogging()
+            finally:
+                self._stop_event.set()
         # give threads a chance to exit
         start = time.time()
         for th in self._threads:
@@ -632,15 +642,35 @@ class Main:
 # 外部から参照可能なインスタンスを提供
 main_instance = Main(controller_instance=controller, mapping_data=mapping)
 
+
+def runControllerInitialization(main_instance: Main) -> bool:
+    """Run core startup and publish readiness only after it completes."""
+    try:
+        main_instance.controller.init()
+    except Exception:
+        try:
+            main_instance.controller.initializationStatus(
+                "",
+                "",
+                visible=True,
+                phase="error",
+                message_key="blocking_operation.startup_failed",
+                detail_key="blocking_operation.startup_failed_detail",
+            )
+        except Exception:
+            errorLogging()
+        errorLogging()
+        return False
+
+    for endpoint in main_instance.mapping.values():
+        endpoint["status"] = True
+    return True
+
 if __name__ == "__main__":
     main_instance.startReceiver()
     main_instance.startHandler()
 
     main_instance.controller.setWatchdogCallback(main_instance.stop)
-    main_instance.controller.init()
-
-    # mappingのすべてのstatusをTrueにする
-    for key in mapping.keys():
-        mapping[key]["status"] = True
+    runControllerInitialization(main_instance)
 
     main_instance.start()

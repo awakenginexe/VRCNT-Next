@@ -12,20 +12,24 @@ const normalizeSelectedIds = (selected_ids) => (
         : [selected_ids].filter(Boolean)
 );
 
+const canBeSecondary = (engine, primary_id) => (
+    engine?.is_available === true
+    && engine.id !== primary_id
+    && (primary_id === "CTranslate2" || engine.id !== "CTranslate2")
+);
+
 const findFallbackSecondaryId = (translation_engines, primary_id, current_secondary_id) => {
-    const isAvailableSecondary = (engine) => (
-        engine?.is_available === true &&
-        engine.id !== primary_id
-    );
     const current_secondary = translation_engines.find(engine => engine.id === current_secondary_id);
-    if (isAvailableSecondary(current_secondary)) return current_secondary.id;
+    if (canBeSecondary(current_secondary, primary_id)) return current_secondary.id;
 
     const cloud_secondary = translation_engines.find(
-        engine => isAvailableSecondary(engine) && engine.is_default !== true
+        engine => canBeSecondary(engine, primary_id) && engine.is_default !== true
     );
     if (cloud_secondary) return cloud_secondary.id;
 
-    return translation_engines.find(isAvailableSecondary)?.id;
+    return translation_engines.find(
+        engine => canBeSecondary(engine, primary_id)
+    )?.id;
 };
 
 export const TranslatorSelector = ({selected_ids, translation_engines, is_selected_same_language}) => {
@@ -89,7 +93,7 @@ const ParallelTranslationControls = ({primary_id, secondary_id, selected_ids, tr
     const can_use_parallel = Boolean(fallback_secondary_id);
     const selected_secondary_id = fallback_secondary_id ?? "";
     const secondary_options = translation_engines.filter(
-        engine => engine.is_available === true && engine.id !== primary_id
+        engine => canBeSecondary(engine, primary_id)
     );
 
     const toggleParallelService = (event) => {

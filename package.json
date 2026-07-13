@@ -1,7 +1,7 @@
 {
   "name": "vrcnt-next",
   "private": true,
-  "version": "2.0.0",
+  "version": "3.0.0",
   "type": "module",
   "scripts": {
     "setup-python": "bat\\install.bat",

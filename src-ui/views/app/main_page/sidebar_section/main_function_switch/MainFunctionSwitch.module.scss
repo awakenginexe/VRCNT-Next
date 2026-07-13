@@ -9,6 +9,10 @@
 }
 
 .switch_container {
+    appearance: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
     position: relative;
     width: 100%;
     display: flex;
@@ -33,6 +37,10 @@
         background: rgba(var(--accent_color_rgb), 0.03);
         transform: translateY(0.05rem) scale(0.995);
     }
+    &:focus-visible {
+        outline: 0.2rem solid var(--accent_color);
+        outline-offset: 0.2rem;
+    }
     &.is_compact_mode {
         width: 4.8rem;
         height: 4.8rem;
@@ -43,7 +51,11 @@
         border-radius: 1rem;
     }
     &.is_pending {
-        pointer-events: none;
+        cursor: progress;
+    }
+    &.is_pending:hover,
+    &.is_pending:active {
+        transform: none;
     }
     &.is_disabled {
         opacity: 0.72;

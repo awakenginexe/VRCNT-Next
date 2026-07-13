@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "操作进行中"
+    startup_operation: "正在启动 VRCNT-Next"
+    phase_label: "当前步骤"
+    progress_label: "启动进度"
+    progress_steps: "{{current}} / {{total}}"
+    progress_indeterminate: "正在处理…"
+    elapsed: "已用 {{seconds}} 秒"
+    startup_failed: "无法完成启动"
+    startup_failed_detail: "请重新启动 VRCNT-Next。如果问题持续，请检查应用日志。"
+    backend_startup_progress: "后端启动 {{current}} / {{total}}"
+    backend_unavailable: "后端不可用，您的更改尚未应用。"
+    backend_disconnected: "后端已停止。请重新启动 VRCNT-Next 后继续。"
+
 common:
     go_back_button_label: "返回"
 
@@ -89,6 +103,24 @@ main_page:
         auto: "Auto"
         auto_gpu: "Auto GPU {{index}}"
 
+    pipeline_status:
+        source: "来源"
+        listening: "正在聆听"
+        speaking: "正在说话"
+        transcription: "转写"
+        cloud: "云端"
+        queue: "队列"
+        total: "总计"
+        healthy: "正常"
+        slow: "缓慢"
+        error: "错误"
+        waiting: "等待中"
+        unavailable: "不可用"
+        timeout_announcement: "{{engine}} 翻译超时"
+        overload_announcement: "翻译队列过载"
+        error_announcement: "{{stage}} 失败"
+        recovered_announcement: "{{stage}} 已恢复"
+
     translator_selector:
         is_selected_same_language: "「{{your_language}}」和「{{target_language}}」选择了相同的语言，因此只能使用「{{ctranslate2}}」。"
         use_parallel_service: "使用并行服务"
@@ -103,6 +135,18 @@ main_page:
         system: "系统"
 
         resend_button_on_hover_desc: "长按发送"
+
+        translation_status:
+            queued: "正在等待 {{engine}} · {{elapsed}}"
+            sending: "正在使用 {{engine}} 翻译 · {{elapsed}}"
+            fallback: "{{previousEngine}} 响应缓慢 · 正在尝试 {{engine}}"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "翻译不可用 · {{engine}} 请求超时"
+            error: "翻译不可用 · {{engine}} 失败"
+            skipped_overload: "已跳过翻译 · 队列过载"
+            no_provider: "翻译不可用 · 未选择服务商"
+            unavailable: "翻译不可用"
+            queue_position: "队列 {{position}}"
 
     state_text_enabled: "启用"
     state_text_disabled: "停用"
@@ -325,6 +369,12 @@ config_page:
             desc: "容量越大的模型精度越高，但会占用更多 CPU/GPU 资源。\n※特别是比 medium 更大的模型，根据 CPU/GPU 性能可能难以使用。"
             model_template: "{{model_name}} 模型 ({{capacity}})"
             recommended_model_template: "{{model_name}} 模型 ({{capacity}}) (推荐)"
+        whisper_decoding_profile:
+            label: "Whisper 解码配置"
+            desc: "选择 VR 响应速度与解码准确度之间的平衡。"
+            fast: "快速 · beam 1 · 最低延迟"
+            balanced: "均衡 · beam 2 · 推荐用于 VRChat"
+            accurate: "准确 · beam 5 · 解码开销最高"
         transcription_compute_device:
             label: "AI 语音识别使用的处理设备"
 

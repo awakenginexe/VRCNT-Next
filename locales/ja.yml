@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "処理中"
+    startup_operation: "VRCNT-Next を起動しています"
+    phase_label: "現在のステップ"
+    progress_label: "起動の進行状況"
+    progress_steps: "{{current}} / {{total}}"
+    progress_indeterminate: "処理しています…"
+    elapsed: "経過 {{seconds}} 秒"
+    startup_failed: "起動を完了できませんでした"
+    startup_failed_detail: "VRCNT-Next を再起動してください。続く場合はアプリのログを確認してください。"
+    backend_startup_progress: "バックエンド起動 {{current}} / {{total}}"
+    backend_unavailable: "バックエンドを利用できないため、変更は適用されませんでした。"
+    backend_disconnected: "バックエンドが停止しました。VRCNT-Next を再起動してください。"
+
 common:
     go_back_button_label: "戻る"
 
@@ -89,6 +103,24 @@ main_page:
         auto: "Auto"
         auto_gpu: "Auto GPU {{index}}"
 
+    pipeline_status:
+        source: "入力"
+        listening: "リスニング"
+        speaking: "スピーキング"
+        transcription: "文字起こし"
+        cloud: "クラウド"
+        queue: "キュー"
+        total: "合計"
+        healthy: "正常"
+        slow: "低速"
+        error: "エラー"
+        waiting: "待機中"
+        unavailable: "利用不可"
+        timeout_announcement: "{{engine}} の翻訳がタイムアウトしました"
+        overload_announcement: "翻訳キューが過負荷です"
+        error_announcement: "{{stage}} が失敗しました"
+        recovered_announcement: "{{stage}} が復旧しました"
+
     translator_selector:
         is_selected_same_language: "「{{your_language}}」と「{{target_language}}」に同じ言語が選択がされているため、「{{ctranslate2}}」のみが使用できます。"
         use_parallel_service: "並列サービスを使用"
@@ -103,6 +135,18 @@ main_page:
         system: "システム"
 
         resend_button_on_hover_desc: "長押しで送信"
+
+        translation_status:
+            queued: "{{engine}} を待機中 · {{elapsed}}"
+            sending: "{{engine}} で翻訳中 · {{elapsed}}"
+            fallback: "{{previousEngine}} が遅延 · {{engine}} を試行中"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "翻訳を利用できません · {{engine}} がタイムアウトしました"
+            error: "翻訳を利用できません · {{engine}} が失敗しました"
+            skipped_overload: "翻訳をスキップしました · キューが過負荷です"
+            no_provider: "翻訳を利用できません · プロバイダーが未選択です"
+            unavailable: "翻訳を利用できません"
+            queue_position: "キュー {{position}}"
 
     state_text_enabled: "有効"
     state_text_disabled: "無効"
@@ -325,6 +369,12 @@ config_page:
             desc: "容量が大きいモデルほど精度は高いですが、その分CPUやGPUを占有します。\n※特にmediumより容量の大きいモデルは、CPU/GPUの性能によっては使用すらも困難です。"
             model_template: "{{model_name}} モデル （{{capacity}}）"
             recommended_model_template: "{{model_name}} モデル （{{capacity}}） [推奨]"
+        whisper_decoding_profile:
+            label: "Whisper デコードプロファイル"
+            desc: "VR の応答性とデコード精度のバランスを選びます。"
+            fast: "高速 · beam 1 · 最小遅延"
+            balanced: "バランス · beam 2 · VRChat 推奨"
+            accurate: "高精度 · beam 5 · デコード負荷最大"
         transcription_compute_device:
             label: "AI音声認識で使用する処理デバイス"
 

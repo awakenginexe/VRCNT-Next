@@ -1,6 +1,6 @@
 [package]
 name = "VRCNT-Next"
-version = "2.0.0"
+version = "3.0.0"
 description = "VRCNT-Next Application"
 authors = ["awakenginexe"]
 edition = "2021"

@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "Operation in progress"
+    startup_operation: "Starting VRCNT-Next"
+    phase_label: "Current step"
+    progress_label: "Startup progress"
+    progress_steps: "{{current}} of {{total}}"
+    progress_indeterminate: "Working…"
+    elapsed: "Elapsed {{seconds}}s"
+    startup_failed: "Startup could not finish"
+    startup_failed_detail: "Restart VRCNT-Next. If this continues, check the application log."
+    backend_startup_progress: "Backend startup {{current}} / {{total}}"
+    backend_unavailable: "The backend is unavailable. Your change was not applied."
+    backend_disconnected: "The backend stopped. Restart VRCNT-Next to continue."
+
 common:
     go_back_button_label: "Go Back"
 
@@ -89,6 +103,24 @@ main_page:
         auto: "Auto"
         auto_gpu: "Auto GPU {{index}}"
 
+    pipeline_status:
+        source: "Source"
+        listening: "Listening"
+        speaking: "Speaking"
+        transcription: "Transcription"
+        cloud: "Cloud"
+        queue: "Queue"
+        total: "Total"
+        healthy: "Healthy"
+        slow: "Slow"
+        error: "Error"
+        waiting: "Waiting"
+        unavailable: "Unavailable"
+        timeout_announcement: "{{engine}} translation timed out"
+        overload_announcement: "Translation queue overloaded"
+        error_announcement: "{{stage}} failed"
+        recovered_announcement: "{{stage}} recovered"
+
     translator_selector:
         is_selected_same_language: "You are selecting the same language for '{{your_language}}' and '{{target_language}}' so only '{{ctranslate2}}' is available."
         use_parallel_service: "Use parallel service"
@@ -103,6 +135,18 @@ main_page:
         system: "System"
 
         resend_button_on_hover_desc: "Press And Hold To Send"
+
+        translation_status:
+            queued: "Waiting for {{engine}} · {{elapsed}}"
+            sending: "Translating with {{engine}} · {{elapsed}}"
+            fallback: "{{previousEngine}} is slow · trying {{engine}}"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "Translation unavailable · {{engine}} timed out"
+            error: "Translation unavailable · {{engine}} failed"
+            skipped_overload: "Translation skipped · queue overloaded"
+            no_provider: "Translation unavailable · no provider selected"
+            unavailable: "Translation unavailable"
+            queue_position: "Queue {{position}}"
 
     state_text_enabled: "Enabled"
     state_text_disabled: "Disabled"
@@ -325,6 +369,12 @@ config_page:
             desc: "Larger models have higher accuracy, but they also consume more CPU or GPU resources.\nEspecially for models larger than medium, it may be difficult or even impossible to use them depending on the performance of your CPU/GPU."
             model_template: "{{model_name}} model ({{capacity}})"
             recommended_model_template: "{{model_name}} model ({{capacity}}) (Recommended)"
+        whisper_decoding_profile:
+            label: "Whisper decoding profile"
+            desc: "Choose the balance between VR responsiveness and decoder accuracy."
+            fast: "Fast · beam 1 · lowest latency"
+            balanced: "Balanced · beam 2 · recommended for VRChat"
+            accurate: "Accurate · beam 5 · highest decoder cost"
         transcription_compute_device:
             label: "Processing Device Used For AI transcription"
 

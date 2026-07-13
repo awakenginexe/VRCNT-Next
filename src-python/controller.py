@@ -1,19 +1,62 @@
 from typing import Callable, Any, List, Optional
-from time import sleep
+from copy import deepcopy
+from time import monotonic, sleep
+from queue import Empty
 from subprocess import Popen
-from threading import Thread
+from threading import Condition, Event, RLock, Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+import uuid
 from device_manager import device_manager
 from config import config
-from model import collapseTranslationEngineSelection, model, normalizeTranslationEngineSelection
+from model import (
+    collapseTranslationEngineSelection,
+    model,
+    normalizeTranslationEngineSelection,
+)
+try:
+    from model import boundedTranslationProviderSnapshot
+except ImportError:
+    # Focused import tests replace ``model`` with a minimal compatibility stub.
+    # Runtime imports always use Model's canonical bounded snapshot helper.
+    def boundedTranslationProviderSnapshot(selection) -> tuple[str, ...]:
+        values = (
+            [selection]
+            if isinstance(selection, str)
+            else selection
+            if isinstance(selection, (list, tuple))
+            else []
+        )
+        providers = []
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            provider = value.strip()
+            if provider and provider not in providers:
+                providers.append(provider)
+            if len(providers) == 2:
+                break
+        return tuple(providers)
 from utils import removeLog, printLog, errorLogging, isConnectedNetwork, isValidIpAddress, isAvailableWebSocketServer
-from errors import ErrorCode, VRCTError
+from errors import DeviceUnavailableError, ErrorCode, VRCTError
 from models.transcription.transcription_languages import transcription_lang
 from models.transcription.transcription_whisper import DEFAULT_WHISPER_WEIGHT_TYPE
 from models.transcription.transcription_vosk import getVoskModelMeta
 from models.transcription.transcription_parakeet import getParakeetModelMeta
 from models.transcription.transcription_sensevoice import getSenseVoiceModelMeta
+from models.pipeline.pipeline_types import (
+    FinalOutputTask,
+    LanguageSlotSnapshot,
+    MessageFormatSnapshot,
+    OutputConfigSnapshot,
+    PipelineSource,
+    PipelineStatusEvent,
+    TranscriptionTrace,
+    TranslationStatus,
+    TranslationTarget,
+    TranslationUpdate,
+)
+from models.pipeline.latest_queue import LatestQueue, QueueClosed
 from resource_usage import collect_resource_usage
 
 class Controller:
@@ -26,6 +69,979 @@ class Controller:
             return None
         self.run: Callable[[int, str, Any], None] = _noop_run
         self.device_access_status: bool = True
+        self._transcription_restart_lock = RLock()
+        self._translation_activation_lock = RLock()
+        self._transcription_shutdown_condition = Condition(
+            self._transcription_restart_lock
+        )
+        self._transcription_shutdown_requested = Event()
+        self._transcription_shutdown_state = "running"
+        self._transcription_shutdown_response: Optional[dict] = None
+        self._transcription_recovery_queue = LatestQueue(4)
+        self._transcription_recovery_stop_event = Event()
+        self._transcription_recovery_thread = Thread(
+            target=self._coordinateTranscriptionRecovery,
+            name="transcription-recovery-coordinator",
+            daemon=True,
+        )
+        self._transcription_metric_callback_registered = False
+        register_recovery = getattr(
+            model,
+            "setTranscriptionRecoveryCallback",
+            None,
+        )
+        if callable(register_recovery):
+            register_recovery(self._offerTranscriptionRecoveryRequest)
+        register_metric = getattr(
+            model,
+            "setTranscriptionPipelineMetricCallback",
+            None,
+        )
+        if callable(register_metric):
+            try:
+                register_metric(self._emitPipelineStatus)
+                self._transcription_metric_callback_registered = True
+            except Exception:
+                errorLogging()
+        self._transcription_recovery_thread.start()
+
+    def _offerTranscriptionRecoveryRequest(
+        self,
+        source: PipelineSource,
+        generation: int,
+        error_code: str,
+        safe_to_restart: Event,
+    ) -> None:
+        # This is called from inference cleanup and must never block that worker.
+        self._transcription_recovery_queue.offer(
+            (source, generation, error_code, safe_to_restart)
+        )
+
+    def _coordinateTranscriptionRecovery(self) -> None:
+        while not self._transcription_recovery_stop_event.is_set():
+            try:
+                request = self._transcription_recovery_queue.get(timeout=0.1)
+            except Empty:
+                continue
+            except QueueClosed:
+                break
+
+            # Coalesce a burst, but never let a newer stale identity discard an
+            # older request that is still both current and active.
+            request = self._newestCurrentTranscriptionRecoveryRequest(
+                [request, *self._transcription_recovery_queue.drain()]
+            )
+            while request is not None:
+                source, generation, error_code, safe_to_restart = request
+                if not self._isTranscriptionRecoveryRequestCurrent(request):
+                    break
+                if safe_to_restart.wait(0.1):
+                    if (
+                        not self._transcription_recovery_stop_event.is_set()
+                        and self._isTranscriptionRecoveryRequestCurrent(request)
+                    ):
+                        try:
+                            recovery_outcome = self._requestCoordinatedTranscriptionRestart(
+                                error_code,
+                                expected_source=source,
+                                expected_generation=generation,
+                            )
+                        except Exception:
+                            errorLogging()
+                            recovery_outcome = False
+                        try:
+                            if recovery_outcome is True:
+                                model.recordTranscriptionRecovery(
+                                    source,
+                                    error_code,
+                                )
+                            elif recovery_outcome is False:
+                                model.recordTranscriptionRecoveryFailure(
+                                    source,
+                                    error_code,
+                                )
+                        except Exception:
+                            errorLogging()
+                    break
+                if self._transcription_recovery_stop_event.is_set():
+                    return
+                pending = self._transcription_recovery_queue.drain()
+                if pending:
+                    request = self._newestCurrentTranscriptionRecoveryRequest(
+                        [request, *pending]
+                    )
+
+    @staticmethod
+    def _isTranscriptionRecoveryRequestCurrent(request) -> bool:
+        source, generation, _error_code, _safe_to_restart = request
+        is_current = getattr(model, "isSourcePipelineGenerationCurrent", None)
+        is_active = getattr(model, "isTranscriptionSourceActive", None)
+        if not callable(is_current) or not callable(is_active):
+            return False
+        try:
+            return bool(is_current(source, generation)) and bool(is_active(source))
+        except Exception:
+            errorLogging()
+            return False
+
+    @classmethod
+    def _newestCurrentTranscriptionRecoveryRequest(cls, requests):
+        for request in reversed(requests):
+            if cls._isTranscriptionRecoveryRequestCurrent(request):
+                return request
+        return None
+
+    @staticmethod
+    def _translationResultViews(
+        translation,
+        success,
+    ) -> tuple[list[str], list[str], list[int]]:
+        """Build string response slots and a compact successful-output view."""
+        translation_values = translation if isinstance(translation, (list, tuple)) else []
+        success_values = success if isinstance(success, (list, tuple)) else []
+        slots = []
+        successful = []
+        successful_indices = []
+        for index, value in enumerate(translation_values):
+            is_success = (
+                index < len(success_values)
+                and success_values[index] is True
+                and isinstance(value, str)
+                and bool(value)
+            )
+            slot = value if is_success else ""
+            slots.append(slot)
+            if slot:
+                successful.append(slot)
+                successful_indices.append(index)
+        return slots, successful, successful_indices
+
+    @staticmethod
+    def _translationTargetItems(target_languages) -> list[tuple[Any, dict]]:
+        if not isinstance(target_languages, dict):
+            return []
+        return [
+            (key, value)
+            for key, value in target_languages.items()
+            if (
+                isinstance(value, dict)
+                and value.get("enable", True) is True
+                and (value.get("language") is not None or value.get("country") is not None)
+            )
+        ]
+
+    @classmethod
+    def _successfulTargetMetadata(cls, target_languages, successful_indices: list[int]) -> dict:
+        target_items = cls._translationTargetItems(target_languages)
+        return {
+            key: value
+            for index, (key, value) in enumerate(target_items)
+            if index in successful_indices
+        }
+
+    @staticmethod
+    def _successfulTransliterationView(
+        translation_slots: list[str],
+        transliteration_slots: list[Any],
+    ) -> list[Any]:
+        return [
+            transliteration
+            for translation, transliteration in zip(translation_slots, transliteration_slots)
+            if translation
+        ]
+
+    @staticmethod
+    def _snapshotLanguageSlots(languages) -> tuple[LanguageSlotSnapshot, ...]:
+        if not isinstance(languages, dict):
+            return ()
+        return tuple(
+            LanguageSlotSnapshot(
+                target_slot=str(slot),
+                language=value.get("language"),
+                country=value.get("country"),
+                enabled=value.get("enable") is True,
+            )
+            for slot, value in languages.items()
+            if isinstance(value, dict)
+        )
+
+    @staticmethod
+    def _snapshotMessageFormat(format_parts) -> MessageFormatSnapshot:
+        format_parts = format_parts if isinstance(format_parts, dict) else {}
+        message = format_parts.get("message", {})
+        translation = format_parts.get("translation", {})
+        return MessageFormatSnapshot(
+            message_prefix=message.get("prefix", ""),
+            message_suffix=message.get("suffix", ""),
+            translation_prefix=translation.get("prefix", ""),
+            translation_suffix=translation.get("suffix", ""),
+            translation_separator=translation.get("separator", ""),
+            message_translation_separator=format_parts.get("separator", ""),
+            translation_first=format_parts.get("translation_first") is True,
+        )
+
+    @staticmethod
+    def _formatSnapshotMessage(
+        format_snapshot: MessageFormatSnapshot,
+        translations: list[str],
+        message: str,
+    ) -> str:
+        message_part = (
+            format_snapshot.message_prefix
+            + message
+            + format_snapshot.message_suffix
+        )
+        translation_part = (
+            format_snapshot.translation_prefix
+            + format_snapshot.translation_separator.join(translations)
+            + format_snapshot.translation_suffix
+        )
+        if translations and message:
+            if format_snapshot.translation_first:
+                return (
+                    translation_part
+                    + format_snapshot.message_translation_separator
+                    + message_part
+                )
+            return (
+                message_part
+                + format_snapshot.message_translation_separator
+                + translation_part
+            )
+        if translations:
+            return translation_part
+        return message_part
+
+    @staticmethod
+    def _languageMap(
+        snapshots: tuple[LanguageSlotSnapshot, ...],
+        slots: Optional[set[str]] = None,
+    ) -> dict[str, dict[str, object]]:
+        return {
+            snapshot.target_slot: {
+                "language": snapshot.language,
+                "country": snapshot.country,
+                "enable": snapshot.enabled,
+            }
+            for snapshot in snapshots
+            if slots is None or snapshot.target_slot in slots
+        }
+
+    @staticmethod
+    def _primaryLanguage(
+        snapshots: tuple[LanguageSlotSnapshot, ...],
+    ) -> Optional[str]:
+        for snapshot in snapshots:
+            if snapshot.target_slot == "1":
+                return snapshot.language
+        for snapshot in snapshots:
+            if snapshot.enabled:
+                return snapshot.language
+        return snapshots[0].language if snapshots else None
+
+    def _outputConfigSnapshot(self) -> OutputConfigSnapshot:
+        selected_tab_no = str(config.SELECTED_TAB_NO)
+        your_languages = config.SELECTED_YOUR_LANGUAGES.get(selected_tab_no, {})
+        your_translation_languages = config.SELECTED_YOUR_TRANSLATION_LANGUAGES.get(
+            selected_tab_no,
+            {},
+        )
+        target_languages = config.SELECTED_TARGET_LANGUAGES.get(selected_tab_no, {})
+        return OutputConfigSnapshot(
+            selected_tab_no=selected_tab_no,
+            translation_enabled=config.ENABLE_TRANSLATION is True,
+            send_message_to_vrc=config.SEND_MESSAGE_TO_VRC is True,
+            send_received_message_to_vrc=config.SEND_RECEIVED_MESSAGE_TO_VRC is True,
+            send_only_translated_messages=config.SEND_ONLY_TRANSLATED_MESSAGES is True,
+            overlay_small_log=config.OVERLAY_SMALL_LOG is True,
+            overlay_large_log=config.OVERLAY_LARGE_LOG is True,
+            overlay_show_only_translated_messages=(
+                config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True
+            ),
+            enable_clipboard=config.ENABLE_CLIPBOARD is True,
+            logger_feature=config.LOGGER_FEATURE is True,
+            convert_message_to_hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA is True,
+            convert_message_to_romaji=config.CONVERT_MESSAGE_TO_ROMAJI is True,
+            websocket_requested=config.WEBSOCKET_SERVER is True,
+            your_languages=self._snapshotLanguageSlots(your_languages),
+            your_translation_languages=self._snapshotLanguageSlots(
+                your_translation_languages
+            ),
+            target_languages=self._snapshotLanguageSlots(target_languages),
+            send_format=self._snapshotMessageFormat(config.SEND_MESSAGE_FORMAT_PARTS),
+            received_format=self._snapshotMessageFormat(
+                config.RECEIVED_MESSAGE_FORMAT_PARTS
+            ),
+        )
+
+    def _emitInitialTranscriptionTrace(self, trace: TranscriptionTrace) -> None:
+        endpoint_key = (
+            "transcription_mic"
+            if trace.source is PipelineSource.MIC
+            else "transcription_speaker"
+        )
+        endpoint = self.run_mapping.get(
+            endpoint_key,
+            (
+                "/run/transcription_send_mic_message"
+                if trace.source is PipelineSource.MIC
+                else "/run/transcription_receive_speaker_message"
+            ),
+        )
+        engine = trace.providers[0] if trace.providers else None
+        payload = {
+            "trace_id": trace.trace_id,
+            "original": {
+                "message": trace.original_message,
+                "transliteration": list(trace.original_transliteration),
+            },
+            "translations": [
+                {
+                    "target_slot": target.target_slot,
+                    "language": target.language,
+                    "message": None,
+                    "transliteration": [],
+                    "status": TranslationStatus.QUEUED.value,
+                    "engine": engine,
+                    "duration_ms": None,
+                }
+                for target in trace.targets
+            ],
+        }
+        if not self._generationCurrent(trace):
+            return
+        self.run(200, endpoint, payload)
+
+    def _beginTranscriptionTrace(
+        self,
+        source: PipelineSource,
+        result: dict,
+    ) -> None:
+        message = result["text"]
+        language = result["language"]
+        if isinstance(message, bool) and message is False:
+            self.run(
+                400,
+                self.run_mapping.get("error_device", "/run/error_device"),
+                {"message": f"No {source.value} device detected", "data": None},
+            )
+            return
+        if not isinstance(message, str) or not message:
+            return
+        if model.checkKeywords(message):
+            self.run(
+                200,
+                self.run_mapping.get("word_filter", "/run/word_filter"),
+                {"message": f"Detected by word filter: {message}"},
+            )
+            return
+        repeat = (
+            model.detectRepeatSendMessage(message)
+            if source is PipelineSource.MIC
+            else model.detectRepeatReceiveMessage(message)
+        )
+        if repeat:
+            return
+
+        output_config = self._outputConfigSnapshot()
+        target_snapshots = (
+            output_config.target_languages
+            if source is PipelineSource.MIC
+            else output_config.your_translation_languages
+        )
+        targets = ()
+        if output_config.translation_enabled:
+            targets = tuple(
+                TranslationTarget(
+                    target_slot=snapshot.target_slot,
+                    language=snapshot.language,
+                    country=snapshot.country,
+                )
+                for snapshot in target_snapshots
+                if snapshot.enabled
+                and (snapshot.language is not None or snapshot.country is not None)
+            )
+        providers = boundedTranslationProviderSnapshot(
+            config.SELECTED_TRANSLATION_ENGINES.get(output_config.selected_tab_no)
+        )
+        original_transliteration = model.transliterateTranscriptionMessage(
+            message,
+            language,
+            output_config,
+        )
+        generation = model.getSourcePipelineGeneration(source)
+        pipeline = model.getSourcePipeline(source)
+        if pipeline is None or generation is None:
+            raise RuntimeError(
+                f"{source.value} source pipeline must be started before transcription"
+            )
+        trace = TranscriptionTrace(
+            trace_id=f"{source.value}-{uuid.uuid4()}",
+            generation=generation,
+            source=source,
+            original_message=message,
+            source_language=language,
+            original_transliteration=tuple(deepcopy(original_transliteration)),
+            targets=targets,
+            providers=providers,
+            ctranslate2_weight_type=config.CTRANSLATE2_WEIGHT_TYPE,
+            context_history=tuple(deepcopy(model.getTranslationHistory())),
+            started_at_monotonic=result.get("started_at_monotonic", monotonic()),
+            output_config=output_config,
+        )
+        pipeline.submit_trace(trace)
+
+    def _emitTranslationUpdate(self, update: TranslationUpdate) -> None:
+        self.run(
+            200,
+            self.run_mapping.get(
+                "transcription_translation_update",
+                "/run/transcription_translation_update",
+            ),
+            update.to_payload(),
+        )
+
+    def _emitPipelineStatus(self, event: PipelineStatusEvent) -> None:
+        self.run(
+            200,
+            self.run_mapping.get("pipeline_status", "/run/pipeline_status"),
+            event.to_payload(),
+        )
+
+    @staticmethod
+    def _sourcePipelineGeneration(source: PipelineSource) -> int:
+        return model.nextSourcePipelineGeneration(source)
+
+    def _sourcePipelineCallbacks(self, source: PipelineSource) -> dict[str, Callable]:
+        return {
+            "emit_initial": self._emitInitialTranscriptionTrace,
+            "emit_update": self._emitTranslationUpdate,
+            "emit_metric": self._emitPipelineStatus,
+            "emit_final": (
+                self._finalizeMicOutput
+                if source is PipelineSource.MIC
+                else self._finalizeSpeakerOutput
+            ),
+        }
+
+    @staticmethod
+    def _successfulOutputViews(
+        task: FinalOutputTask,
+        language_snapshots: tuple[LanguageSlotSnapshot, ...],
+    ) -> tuple[
+        list[str],
+        dict[str, dict[str, object]],
+        list[list[dict[str, str]]],
+        list[str],
+    ]:
+        target_by_slot = {target.target_slot: target for target in task.targets}
+        successful_pairs = [
+            (target_by_slot[update.target_slot], update)
+            for update in task.translations
+            if update.status is TranslationStatus.SUCCESS
+            and update.target_slot in target_by_slot
+            and isinstance(update.message, str)
+            and bool(update.message)
+        ]
+        successful_translations = [
+            update.message for _, update in successful_pairs
+        ]
+        destination_languages = Controller._languageMap(language_snapshots)
+        successful_transliterations = [
+            list(update.transliteration) for _, update in successful_pairs
+        ]
+        successful_target_slots = [
+            target.target_slot for target, _ in successful_pairs
+        ]
+        return (
+            successful_translations,
+            destination_languages,
+            successful_transliterations,
+            successful_target_slots,
+        )
+
+    @staticmethod
+    def _translationFailed(task: FinalOutputTask) -> bool:
+        if not task.output_config.translation_enabled or not task.targets:
+            return False
+        terminal_by_slot = {
+            update.target_slot: update for update in task.translations
+        }
+        return any(
+            target.target_slot not in terminal_by_slot
+            or terminal_by_slot[target.target_slot].status
+            is not TranslationStatus.SUCCESS
+            for target in task.targets
+        )
+
+    @staticmethod
+    def _generationCurrent(task: FinalOutputTask) -> bool:
+        try:
+            return bool(
+                model.isSourcePipelineGenerationCurrent(task.source, task.generation)
+            )
+        except Exception:
+            try:
+                errorLogging()
+            except Exception:
+                pass
+            return False
+
+    def _attemptFinalOutputSink(
+        self,
+        task: FinalOutputTask,
+        sink_name: str,
+        failures: list[str],
+        callback: Callable[[], None],
+    ) -> bool:
+        if not self._generationCurrent(task):
+            return False
+        try:
+            callback()
+        except Exception:
+            try:
+                errorLogging()
+            except Exception:
+                pass
+            if sink_name not in failures:
+                failures.append(sink_name)
+        return self._generationCurrent(task)
+
+    @staticmethod
+    def _raiseFinalOutputFailures(failures: list[str]) -> None:
+        if failures:
+            raise RuntimeError(
+                "final output sinks failed: " + ", ".join(failures)
+            ) from None
+
+    def _emitTranslationFailure(self, task: FinalOutputTask) -> None:
+        if task.source is PipelineSource.MIC:
+            if not self._generationCurrent(task):
+                return
+            self.run(
+                400,
+                self.run_mapping.get(
+                    "error_translation_engine",
+                    "/run/error_translation_engine",
+                ),
+                {"message": "Translation engine limit error", "data": None},
+            )
+            return
+        error_response = VRCTError.create_error_response(
+            ErrorCode.TRANSLATION_ENGINE_LIMIT,
+            data=None,
+        )
+        if not self._generationCurrent(task):
+            return
+        self.run(
+            error_response["status"],
+            self.run_mapping.get(
+                "error_translation_engine",
+                "/run/error_translation_engine",
+            ),
+            error_response["result"],
+        )
+
+    def _finalizeMicOutput(self, task: FinalOutputTask) -> None:
+        output_config = task.output_config
+        (
+            successful_translations,
+            destination_languages,
+            successful_transliterations,
+            successful_target_slots,
+        ) = self._successfulOutputViews(task, output_config.target_languages)
+        original_transliteration = list(task.original_transliteration)
+        failures: list[str] = []
+
+        if not self._attemptFinalOutputSink(
+            task,
+            "telemetry",
+            failures,
+            lambda: model.telemetryTrackCoreFeature("mic_speech_to_text"),
+        ):
+            return
+        if output_config.translation_enabled:
+            if not self._attemptFinalOutputSink(
+                task,
+                "telemetry",
+                failures,
+                lambda: model.telemetryTrackCoreFeature("translation"),
+            ):
+                return
+        if self._translationFailed(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "translation_error",
+                failures,
+                lambda: self._emitTranslationFailure(task),
+            ):
+                return
+
+        if output_config.send_message_to_vrc:
+            osc_eligible = (
+                not output_config.send_only_translated_messages
+                or not output_config.translation_enabled
+                or bool(successful_translations)
+            )
+            if osc_eligible:
+                def send_osc() -> None:
+                    if output_config.send_only_translated_messages:
+                        if not output_config.translation_enabled:
+                            osc_message = self._formatSnapshotMessage(
+                                output_config.send_format,
+                                [],
+                                task.original_message,
+                            )
+                        else:
+                            osc_message = self._formatSnapshotMessage(
+                                output_config.send_format,
+                                successful_translations,
+                                "",
+                            )
+                    else:
+                        osc_message = self._formatSnapshotMessage(
+                            output_config.send_format,
+                            successful_translations,
+                            task.original_message,
+                        )
+                    if self._generationCurrent(task):
+                        model.oscSendMessage(osc_message)
+
+                if not self._attemptFinalOutputSink(
+                    task,
+                    "osc",
+                    failures,
+                    send_osc,
+                ):
+                    return
+
+        if output_config.overlay_large_log:
+            def update_large_overlay() -> None:
+                if not self._is_overlay_available():
+                    return
+                if (
+                    output_config.overlay_show_only_translated_messages
+                    and not successful_translations
+                ):
+                    return
+                if not self._generationCurrent(task):
+                    return
+                if output_config.overlay_show_only_translated_messages:
+                    overlay_image = model.createOverlayImageLargeLog(
+                        "send",
+                        None,
+                        None,
+                        successful_translations,
+                        destination_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                        successful_target_slots,
+                    )
+                else:
+                    overlay_image = model.createOverlayImageLargeLog(
+                        "send",
+                        task.original_message,
+                        self._primaryLanguage(output_config.your_languages),
+                        successful_translations,
+                        destination_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                        successful_target_slots,
+                    )
+                if self._generationCurrent(task):
+                    model.updateOverlayLargeLog(overlay_image)
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "overlay_large",
+                failures,
+                update_large_overlay,
+            ):
+                return
+
+        if output_config.enable_clipboard:
+            def update_clipboard() -> None:
+                clipboard_message = self._formatSnapshotMessage(
+                    output_config.send_format,
+                    successful_translations,
+                    task.original_message,
+                )
+                if self._generationCurrent(task):
+                    model.setCopyToClipboardAndPasteFromClipboard(clipboard_message)
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "clipboard",
+                failures,
+                update_clipboard,
+            ):
+                return
+
+        if output_config.websocket_requested:
+            def send_websocket() -> None:
+                if not model.checkWebSocketServerAlive():
+                    return
+                if self._generationCurrent(task):
+                    model.websocketSendMessage(
+                        {
+                            "type": "SENT",
+                            "src_languages": self._languageMap(
+                                output_config.your_languages
+                            ),
+                            "dst_languages": destination_languages,
+                            "message": task.original_message,
+                            "translation": successful_translations,
+                            "translation_target_slots": successful_target_slots,
+                            "transliteration": successful_transliterations,
+                        }
+                    )
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "websocket",
+                failures,
+                send_websocket,
+            ):
+                return
+
+        if output_config.logger_feature:
+            translation_text = (
+                f" ({'/'.join(successful_translations)})"
+                if successful_translations
+                else ""
+            )
+            if not self._attemptFinalOutputSink(
+                task,
+                "logger",
+                failures,
+                lambda: model.logger.info(
+                    f"[SENT] {task.original_message}{translation_text}"
+                ),
+            ):
+                return
+
+        if not self._attemptFinalOutputSink(
+            task,
+            "history",
+            failures,
+            lambda: model.addTranslationHistory("mic", task.original_message),
+        ):
+            return
+        self._raiseFinalOutputFailures(failures)
+
+    def _finalizeSpeakerOutput(self, task: FinalOutputTask) -> None:
+        output_config = task.output_config
+        (
+            successful_translations,
+            destination_languages,
+            successful_transliterations,
+            successful_target_slots,
+        ) = self._successfulOutputViews(
+            task,
+            output_config.your_translation_languages,
+        )
+        original_transliteration = list(task.original_transliteration)
+        failures: list[str] = []
+
+        if not self._attemptFinalOutputSink(
+            task,
+            "telemetry",
+            failures,
+            lambda: model.telemetryTrackCoreFeature("speaker_speech_to_text"),
+        ):
+            return
+        if output_config.translation_enabled:
+            if not self._attemptFinalOutputSink(
+                task,
+                "telemetry",
+                failures,
+                lambda: model.telemetryTrackCoreFeature("translation"),
+            ):
+                return
+        if self._translationFailed(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "translation_error",
+                failures,
+                lambda: self._emitTranslationFailure(task),
+            ):
+                return
+
+        if output_config.overlay_small_log:
+            def update_small_overlay() -> None:
+                if not self._is_overlay_available():
+                    return
+                if (
+                    output_config.overlay_show_only_translated_messages
+                    and not successful_translations
+                ):
+                    return
+                if not self._generationCurrent(task):
+                    return
+                if output_config.overlay_show_only_translated_messages:
+                    overlay_image = model.createOverlayImageSmallLog(
+                        None,
+                        None,
+                        successful_translations,
+                        destination_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                        successful_target_slots,
+                    )
+                else:
+                    overlay_image = model.createOverlayImageSmallLog(
+                        task.original_message,
+                        task.source_language,
+                        successful_translations,
+                        destination_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                        successful_target_slots,
+                    )
+                if self._generationCurrent(task):
+                    model.updateOverlaySmallLog(overlay_image)
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "overlay_small",
+                failures,
+                update_small_overlay,
+            ):
+                return
+
+        if output_config.overlay_large_log:
+            def update_large_overlay() -> None:
+                if not self._is_overlay_available():
+                    return
+                if (
+                    output_config.overlay_show_only_translated_messages
+                    and not successful_translations
+                ):
+                    return
+                if not self._generationCurrent(task):
+                    return
+                if output_config.overlay_show_only_translated_messages:
+                    overlay_image = model.createOverlayImageLargeLog(
+                        "receive",
+                        None,
+                        None,
+                        successful_translations,
+                        destination_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                        successful_target_slots,
+                    )
+                else:
+                    overlay_image = model.createOverlayImageLargeLog(
+                        "receive",
+                        task.original_message,
+                        task.source_language,
+                        successful_translations,
+                        destination_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                        successful_target_slots,
+                    )
+                if self._generationCurrent(task):
+                    model.updateOverlayLargeLog(overlay_image)
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "overlay_large",
+                failures,
+                update_large_overlay,
+            ):
+                return
+
+        if output_config.send_received_message_to_vrc:
+            osc_eligible = (
+                not output_config.send_only_translated_messages
+                or not output_config.translation_enabled
+                or bool(successful_translations)
+            )
+            if osc_eligible:
+                def send_osc() -> None:
+                    if output_config.send_only_translated_messages:
+                        if not output_config.translation_enabled:
+                            osc_message = self._formatSnapshotMessage(
+                                output_config.received_format,
+                                [],
+                                task.original_message,
+                            )
+                        else:
+                            osc_message = self._formatSnapshotMessage(
+                                output_config.received_format,
+                                successful_translations,
+                                "",
+                            )
+                    else:
+                        osc_message = self._formatSnapshotMessage(
+                            output_config.received_format,
+                            successful_translations,
+                            task.original_message,
+                        )
+                    if self._generationCurrent(task):
+                        model.oscSendMessage(osc_message)
+
+                if not self._attemptFinalOutputSink(
+                    task,
+                    "osc",
+                    failures,
+                    send_osc,
+                ):
+                    return
+
+        if output_config.websocket_requested:
+            def send_websocket() -> None:
+                if not model.checkWebSocketServerAlive():
+                    return
+                if self._generationCurrent(task):
+                    model.websocketSendMessage(
+                        {
+                            "type": "RECEIVED",
+                            "src_languages": self._languageMap(
+                                output_config.target_languages
+                            ),
+                            "dst_languages": destination_languages,
+                            "message": task.original_message,
+                            "translation": successful_translations,
+                            "translation_target_slots": successful_target_slots,
+                            "transliteration": successful_transliterations,
+                        }
+                    )
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "websocket",
+                failures,
+                send_websocket,
+            ):
+                return
+
+        if output_config.logger_feature:
+            translation_text = (
+                f" ({'/'.join(successful_translations)})"
+                if successful_translations
+                else ""
+            )
+            if not self._attemptFinalOutputSink(
+                task,
+                "logger",
+                failures,
+                lambda: model.logger.info(
+                    f"[RECEIVED] {task.original_message}{translation_text}"
+                ),
+            ):
+                return
+
+        if not self._attemptFinalOutputSink(
+            task,
+            "history",
+            failures,
+            lambda: model.addTranslationHistory("speaker", task.original_message),
+        ):
+            return
+        self._raiseFinalOutputFailures(failures)
 
     def _startupWhisperWeightType(self) -> str:
         selectable_weights = config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT
@@ -236,12 +1252,89 @@ class Controller:
         Returns:
             dict with status 200 and result True on success.
         """
+        # Publish terminal intent before waiting for an in-flight start/restart.
+        # The lifecycle state itself is changed only while holding the restart
+        # lock, which makes it atomic with every user start and config restart.
+        self._transcription_shutdown_requested.set()
+        with self._transcription_shutdown_condition:
+            if self._transcription_shutdown_state == "shutdown":
+                return dict(
+                    self._transcription_shutdown_response
+                    or {"status": 200, "result": True}
+                )
+            if self._transcription_shutdown_state == "shutting_down":
+                while self._transcription_shutdown_state != "shutdown":
+                    self._transcription_shutdown_condition.wait()
+                return dict(
+                    self._transcription_shutdown_response
+                    or {"status": 200, "result": True}
+                )
+            self._transcription_shutdown_state = "shutting_down"
+
+        response = {"status": 200, "result": True}
         try:
-            model.telemetryShutdown()
-            return {"status": 200, "result": True}
+            # The coordinator may already be waiting for the restart lock. Do
+            # not hold that lock while closing its queue or joining its thread.
+            self._transcription_recovery_stop_event.set()
+            self._transcription_recovery_queue.close()
+            recovery_thread = self._transcription_recovery_thread
+            if recovery_thread.is_alive():
+                recovery_thread.join()
+            register_recovery = getattr(
+                model,
+                "setTranscriptionRecoveryCallback",
+                None,
+            )
+            if callable(register_recovery):
+                register_recovery(None)
         except Exception:
             errorLogging()
-            return {"status": 500, "result": False}
+            response = {"status": 500, "result": False}
+
+        if self._transcription_metric_callback_registered:
+            try:
+                clear_metric = getattr(
+                    model,
+                    "clearTranscriptionPipelineMetricCallback",
+                    None,
+                )
+                if callable(clear_metric):
+                    clear_metric(self._emitPipelineStatus)
+                else:
+                    register_metric = getattr(
+                        model,
+                        "setTranscriptionPipelineMetricCallback",
+                        None,
+                    )
+                    if callable(register_metric):
+                        register_metric(None)
+            except Exception:
+                errorLogging()
+                response = {"status": 500, "result": False}
+            finally:
+                self._transcription_metric_callback_registered = False
+
+        try:
+            with self._transcription_restart_lock:
+                shutdown_pipelines = getattr(
+                    model,
+                    "shutdownTranscriptionPipelines",
+                    None,
+                )
+                if callable(shutdown_pipelines):
+                    shutdown_pipelines()
+                telemetry_shutdown = getattr(model, "telemetryShutdown", None)
+                if callable(telemetry_shutdown):
+                    telemetry_shutdown()
+        except Exception:
+            errorLogging()
+            response = {"status": 500, "result": False}
+        finally:
+            with self._transcription_shutdown_condition:
+                self._transcription_shutdown_response = dict(response)
+                self._transcription_shutdown_state = "shutdown"
+                self._transcription_shutdown_condition.notify_all()
+        return response
 
     # response functions
     def connectedNetwork(self) -> None:
@@ -562,368 +1655,10 @@ class Controller:
                 )
 
     def micMessage(self, result: dict) -> None:
-        message = result["text"]
-        language = result["language"]
-        if isinstance(message, bool) and message is False:
-            self.run(
-                400,
-                self.run_mapping["error_device"],
-                {
-                    "message":"No mic device detected",
-                    "data": None
-                },
-            )
-
-        elif isinstance(message, str) and len(message) > 0:
-            model.telemetryTrackCoreFeature("mic_speech_to_text")
-            translation = []
-            transliteration_message = []
-            transliteration_translation = []
-            if model.checkKeywords(message):
-                self.run(
-                    200,
-                    self.run_mapping["word_filter"],
-                    {"message":f"Detected by word filter: {message}"},
-                )
-                return
-            elif model.detectRepeatSendMessage(message):
-                return
-            elif config.ENABLE_TRANSLATION is False:
-                pass
-            else:
-                try:
-                    model.telemetryTrackCoreFeature("translation")
-                    translation, success = model.getInputTranslate(message, source_language=language)
-                    if all(success) is not True:
-                        self.changeToCTranslate2Process()
-                        self.run(
-                            400,
-                            self.run_mapping["error_translation_engine"],
-                            {
-                                "message":"Translation engine limit error",
-                                "data": None
-                            },
-                        )
-                    else:
-                        pass
-                except Exception as e:
-                    # VRAM不足エラーの検出
-                    is_vram_error, error_message = model.detectVRAMError(e)
-                    if is_vram_error:
-                        error_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_VRAM_MIC,
-                            data=error_message
-                        )
-                        self.run(
-                            error_response["status"],
-                            self.run_mapping["error_translation_mic_vram_overflow"],
-                            error_response["result"],
-                        )
-                        # 翻訳機能をOFFにする
-                        self.setDisableTranslation()
-                        disable_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_DISABLED_VRAM,
-                            data=False
-                        )
-                        self.run(
-                            disable_response["status"],
-                            self.run_mapping["enable_translation"],
-                            disable_response["result"],
-                        )
-                        return
-                    else:
-                        # その他のエラーは通常通り処理
-                        raise
-
-            if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
-                if config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese":
-                    transliteration_message = model.convertMessageToTransliteration(
-                        message,
-                        hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
-                        romaji=config.CONVERT_MESSAGE_TO_ROMAJI
-                    )
-
-                for i, no in enumerate(config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST):
-                    if (config.ENABLE_TRANSLATION is True and
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["language"] == "Japanese" and
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["enable"] is True
-                        ):
-                        transliteration_translation.append(
-                            model.convertMessageToTransliteration(
-                                translation[i],
-                                hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
-                                romaji=config.CONVERT_MESSAGE_TO_ROMAJI
-                            )
-                        )
-                    else:
-                        transliteration_translation.append([])
-            else:
-                transliteration_translation = [[] for _ in config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST]
-
-            if config.ENABLE_TRANSCRIPTION_SEND is True:
-                if config.SEND_MESSAGE_TO_VRC is True:
-                    if config.SEND_ONLY_TRANSLATED_MESSAGES is True:
-                        if config.ENABLE_TRANSLATION is False:
-                            osc_message = self.messageFormatter("SEND", [], message)
-                        else:
-                            osc_message = self.messageFormatter("SEND", translation, "")
-                    else:
-                        osc_message = self.messageFormatter("SEND", translation, message)
-                    model.oscSendMessage(osc_message)
-
-                self.run(
-                    200,
-                    self.run_mapping["transcription_mic"],
-                    {
-                        "original": {
-                            "message": message,
-                            "transliteration": transliteration_message
-                        },
-                        "translations": [
-                            {
-                                "message": translation_message,
-                                "transliteration": transliteration
-                            } for translation_message, transliteration in zip(translation, transliteration_translation)
-                        ]
-                    })
-
-                if config.OVERLAY_LARGE_LOG is True and self._is_overlay_available():
-                    if config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True:
-                        if len(translation) > 0:
-                            overlay_image = model.createOverlayImageLargeLog(
-                                "send",
-                                None,
-                                None,
-                                translation,
-                                config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
-                                transliteration_message,
-                                transliteration_translation
-                            )
-                            model.updateOverlayLargeLog(overlay_image)
-                    else:
-                        overlay_image = model.createOverlayImageLargeLog(
-                            "send",
-                            message,
-                            config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"],
-                            translation,
-                            config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
-                            transliteration_message,
-                            transliteration_translation
-                        )
-                        model.updateOverlayLargeLog(overlay_image)
-
-                if config.ENABLE_CLIPBOARD is True:
-                    clipboard_message = self.messageFormatter("SEND", translation, message)
-                    model.setCopyToClipboardAndPasteFromClipboard(clipboard_message)
-
-                if model.checkWebSocketServerAlive() is True:
-                    model.websocketSendMessage(
-                        {
-                            "type":"SENT",
-                            "src_languages":config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
-                            "dst_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
-                            "message":message,
-                            "translation":translation,
-                            "transliteration":transliteration_translation
-                        }
-                    )
-
-                if config.LOGGER_FEATURE is True:
-                    translation_text = f" ({'/'.join(translation)})" if translation else ""
-                    model.logger.info(f"[SENT] {message}{translation_text}")
-
-            model.addTranslationHistory("mic", message)
+        self._beginTranscriptionTrace(PipelineSource.MIC, result)
 
     def speakerMessage(self, result:dict) -> None:
-        message = result["text"]
-        language = result["language"]
-        if isinstance(message, bool) and message is False:
-            self.run(
-                400,
-                self.run_mapping["error_device"],
-                {
-                    "message":"No speaker device detected",
-                    "data": None
-                },
-            )
-        elif isinstance(message, str) and len(message) > 0:
-            model.telemetryTrackCoreFeature("speaker_speech_to_text")
-            translation = []
-            transliteration_message = []
-            transliteration_translation = []
-            if model.checkKeywords(message):
-                self.run(
-                    200,
-                    self.run_mapping["word_filter"],
-                    {"message":f"Detected by word filter: {message}"},
-                )
-                return
-            elif model.detectRepeatReceiveMessage(message):
-                return
-            elif config.ENABLE_TRANSLATION is False:
-                pass
-            else:
-                try:
-                    model.telemetryTrackCoreFeature("translation")
-                    translation, success = model.getOutputTranslate(message, source_language=language)
-                    if all(success) is not True:
-                        self.changeToCTranslate2Process()
-                        error_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_ENGINE_LIMIT,
-                            data=None
-                        )
-                        self.run(
-                            error_response["status"],
-                            self.run_mapping["error_translation_engine"],
-                            error_response["result"],
-                        )
-                    else:
-                        pass
-                except Exception as e:
-                    # VRAM不足エラーの検出
-                    is_vram_error, error_message = model.detectVRAMError(e)
-                    if is_vram_error:
-                        error_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_VRAM_SPEAKER,
-                            data=error_message
-                        )
-                        self.run(
-                            error_response["status"],
-                            self.run_mapping["error_translation_speaker_vram_overflow"],
-                            error_response["result"],
-                        )
-                        # 翻訳機能をOFFにする
-                        self.setDisableTranslation()
-                        disable_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_DISABLED_VRAM,
-                            data=False
-                        )
-                        self.run(
-                            disable_response["status"],
-                            self.run_mapping["enable_translation"],
-                            disable_response["result"],
-                        )
-                        return
-                    else:
-                        # その他のエラーは通常通り処理
-                        raise
-
-            if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
-                if language == "Japanese":
-                    transliteration_message = model.convertMessageToTransliteration(
-                        message,
-                        hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
-                        romaji=config.CONVERT_MESSAGE_TO_ROMAJI
-                    )
-
-                if (config.ENABLE_TRANSLATION is True and
-                    config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese"
-                    ):
-                    transliteration_translation.append(
-                        model.convertMessageToTransliteration(
-                            translation[0],
-                            hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
-                            romaji=config.CONVERT_MESSAGE_TO_ROMAJI
-                        )
-                    )
-                else:
-                    transliteration_translation.append([])
-            else:
-                transliteration_translation = [[]]
-
-            if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
-                if config.OVERLAY_SMALL_LOG is True and self._is_overlay_available():
-                    if config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True:
-                        if len(translation) > 0:
-                            overlay_image = model.createOverlayImageSmallLog(
-                                None,
-                                None,
-                                translation,
-                                config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
-                                transliteration_message,
-                                transliteration_translation
-                            )
-                            model.updateOverlaySmallLog(overlay_image)
-                    else:
-                        overlay_image = model.createOverlayImageSmallLog(
-                            message,
-                            language,
-                            translation,
-                            config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
-                            transliteration_message,
-                            transliteration_translation
-                        )
-                        model.updateOverlaySmallLog(overlay_image)
-
-                if config.OVERLAY_LARGE_LOG is True and self._is_overlay_available():
-                    if config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True:
-                        if len(translation) > 0:
-                            overlay_image = model.createOverlayImageLargeLog(
-                                "receive",
-                                None,
-                                None,
-                                translation,
-                                config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
-                                transliteration_message,
-                                transliteration_translation
-                            )
-                            model.updateOverlayLargeLog(overlay_image)
-                    else:
-                        overlay_image = model.createOverlayImageLargeLog(
-                            "receive",
-                            message,
-                            language,
-                            translation,
-                            config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
-                            transliteration_message,
-                            transliteration_translation
-                        )
-                        model.updateOverlayLargeLog(overlay_image)
-
-                if config.SEND_RECEIVED_MESSAGE_TO_VRC is True:
-                    if config.SEND_ONLY_TRANSLATED_MESSAGES is True:
-                        if config.ENABLE_TRANSLATION is False:
-                            osc_message = self.messageFormatter("RECEIVED", [], message)
-                        else:
-                            osc_message = self.messageFormatter("RECEIVED", translation, "")
-                    else:
-                        osc_message = self.messageFormatter("RECEIVED", translation, message)
-                    model.oscSendMessage(osc_message)
-
-                # update textbox message log (Received)
-                self.run(
-                    200,
-                    self.run_mapping["transcription_speaker"],
-                    {
-                        "original": {
-                            "message": message,
-                            "transliteration": transliteration_message
-                        },
-                        "translations": [
-                            {
-                                "message": translation_message,
-                                "transliteration": transliteration
-                            } for translation_message, transliteration in zip(translation, transliteration_translation)
-                        ]
-                    })
-
-                if model.checkWebSocketServerAlive() is True:
-                    model.websocketSendMessage(
-                        {
-                            "type":"RECEIVED",
-                            "src_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
-                            "dst_languages":config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
-                            "message":message,
-                            "translation":translation,
-                            "transliteration":transliteration_translation
-                        }
-                    )
-
-                if config.LOGGER_FEATURE is True:
-                    translation_text = f" ({'/'.join(translation)})" if translation else ""
-                    model.logger.info(f"[RECEIVED] {message}{translation_text}")
-
-            model.addTranslationHistory("speaker", message)
+        self._beginTranscriptionTrace(PipelineSource.SPEAKER, result)
 
     def chatMessage(self, data) -> dict:
         id = data["id"]
@@ -931,6 +1666,9 @@ class Controller:
         if len(message) > 0:
             model.telemetryTrackCoreFeature("text_input")
             translation = []
+            success = []
+            translation_slots = []
+            successful_translations = []
             transliteration_message: List[Any] = []
             transliteration_translation = []
             if config.ENABLE_TRANSLATION is False:
@@ -944,12 +1682,16 @@ class Controller:
 
                         message = self.removeExclamations(message)
                         for i in range(len(translation)):
-                            translation[i] = self.restoreText(translation[i], replacement_dict)
+                            if (
+                                i < len(success)
+                                and success[i] is True
+                                and isinstance(translation[i], str)
+                            ):
+                                translation[i] = self.restoreText(translation[i], replacement_dict)
                     else:
                         translation, success = model.getInputTranslate(message)
 
                     if all(success) is not True:
-                        self.changeToCTranslate2Process()
                         error_response = VRCTError.create_error_response(
                             ErrorCode.TRANSLATION_ENGINE_LIMIT,
                             data=None
@@ -1006,6 +1748,16 @@ class Controller:
                         # その他のエラーは通常通り処理
                         raise
 
+            translation_slots, successful_translations, successful_indices = self._translationResultViews(
+                translation,
+                success,
+            )
+            target_languages = config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO]
+            target_items = self._translationTargetItems(target_languages)
+            successful_target_languages = self._successfulTargetMetadata(
+                target_languages,
+                successful_indices,
+            )
             if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
                 if config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese":
                     transliteration_message = model.convertMessageToTransliteration(
@@ -1013,45 +1765,51 @@ class Controller:
                         hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
                         romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                     )
-                for i, no in enumerate(config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST):
-                    if (config.ENABLE_TRANSLATION is True and
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["language"] == "Japanese" and
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["enable"] is True
+                transliteration_translation = [[] for _ in translation_slots]
+                for i, translation_message in enumerate(translation_slots):
+                    if i >= len(target_items):
+                        continue
+                    target_language = target_items[i][1]
+                    if (translation_message and
+                        config.ENABLE_TRANSLATION is True and
+                        target_language["language"] == "Japanese"
                         ):
-                        transliteration_translation.append(
-                            model.convertMessageToTransliteration(
-                                translation[i],
-                                hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
-                                romaji=config.CONVERT_MESSAGE_TO_ROMAJI
-                            )
+                        transliteration_translation[i] = model.convertMessageToTransliteration(
+                            translation_message,
+                            hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
+                            romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                         )
-                    else:
-                        transliteration_translation.append([])
             else:
-                transliteration_translation = [[] for _ in config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST]
+                transliteration_translation = [[] for _ in translation_slots]
+            successful_transliterations = self._successfulTransliterationView(
+                translation_slots,
+                transliteration_translation,
+            )
 
             # send OSC message
             if config.SEND_MESSAGE_TO_VRC is True:
+                osc_message = None
                 if config.SEND_ONLY_TRANSLATED_MESSAGES is True:
                     if config.ENABLE_TRANSLATION is False:
                         osc_message = self.messageFormatter("SEND", [], message)
-                    else:
-                        osc_message = self.messageFormatter("SEND", translation, "")
+                    elif successful_translations:
+                        osc_message = self.messageFormatter("SEND", successful_translations, "")
                 else:
-                    osc_message = self.messageFormatter("SEND", translation, message)
-                model.oscSendMessage(osc_message)
+                    osc_message = self.messageFormatter("SEND", successful_translations, message)
+                if osc_message is not None:
+                    model.oscSendMessage(osc_message)
 
             if config.OVERLAY_LARGE_LOG is True:
                 if config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True:
-                    if len(translation) > 0:
+                    if successful_translations:
                         overlay_image = model.createOverlayImageLargeLog(
                             "send",
                             None,
                             None,
-                            translation,
-                            config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                            successful_translations,
+                            successful_target_languages,
                             transliteration_message,
-                            transliteration_translation
+                            successful_transliterations
                         )
                         model.updateOverlayLargeLog(overlay_image)
                 else:
@@ -1059,10 +1817,10 @@ class Controller:
                         "send",
                         message,
                         config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"],
-                        translation,
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                        successful_translations,
+                        successful_target_languages,
                         transliteration_message,
-                        transliteration_translation
+                        successful_transliterations
                     )
                     model.updateOverlayLargeLog(overlay_image)
 
@@ -1071,15 +1829,15 @@ class Controller:
                     {
                         "type":"CHAT",
                         "src_languages":config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
-                        "dst_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                        "dst_languages":successful_target_languages,
                         "message":message,
-                        "translation":translation,
-                        "transliteration":transliteration_translation
+                        "translation":successful_translations,
+                        "transliteration":successful_transliterations
                     }
                 )
 
             if config.LOGGER_FEATURE is True:
-                translation_text = f" ({'/'.join(translation)})" if translation else ""
+                translation_text = f" ({'/'.join(successful_translations)})" if successful_translations else ""
                 model.logger.info(f"[CHAT] {message}{translation_text}")
 
         model.addTranslationHistory("chat", message)
@@ -1096,7 +1854,7 @@ class Controller:
                         {
                             "message": translation_message,
                             "transliteration": transliteration
-                        } for translation_message, transliteration in zip(translation, transliteration_translation)
+                        } for translation_message, transliteration in zip(translation_slots, transliteration_translation)
                     ]
                 }}
 
@@ -1165,13 +1923,68 @@ class Controller:
     def getSelectedTranscriptionComputeDevice(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE}
 
+    def _transcriptionRuntimeSettingAllowedLocked(self) -> bool:
+        return (
+            self._transcription_shutdown_state == "running"
+            and not self._transcription_shutdown_requested.is_set()
+        )
+
+    def _requestTranscriptionRuntimeSettingRestartLocked(self) -> Optional[bool]:
+        try:
+            return self._requestCoordinatedTranscriptionRestart()
+        except Exception:
+            errorLogging()
+            return False
+
+    @staticmethod
+    def _transcriptionRuntimeSettingResponse(
+        applied_value,
+        restart_outcome: Optional[bool],
+    ) -> dict:
+        # Runtime selection is retained even if re-establishing an active
+        # source fails. The response reports that failure without exposing an
+        # exception or backend detail.
+        if restart_outcome is False:
+            return {
+                "status": 500,
+                "result": applied_value,
+                "error_code": "transcription_restart_failed",
+            }
+        if restart_outcome is None:
+            return {
+                "status": 503,
+                "result": applied_value,
+                "error_code": "transcription_shutdown",
+            }
+        return {"status": 200, "result": applied_value}
+
+    @staticmethod
+    def _transcriptionRuntimeSettingShutdownResponse(current_value) -> dict:
+        return {
+            "status": 503,
+            "result": deepcopy(current_value),
+            "error_code": "transcription_shutdown",
+        }
+
     def setSelectedTranscriptionComputeDevice(self, device:str, *args, **kwargs) -> dict:
-        printLog("setSelectedTranscriptionComputeDevice", device)
-        config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE = device
-        config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "auto"
-        self.run(200, self.run_mapping["selected_transcription_compute_type"], config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        return {"status":200,"result":config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE
+                )
+            printLog("setSelectedTranscriptionComputeDevice", device)
+            config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE = device
+            config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "auto"
+            self.run(200, self.run_mapping["selected_transcription_compute_type"], config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            applied_value = deepcopy(
+                config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE
+            )
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getSelectableWhisperWeightTypeDict(*args, **kwargs) -> dict:
@@ -1213,58 +2026,140 @@ class Controller:
     # def getMaxSpeakerThreshold(*args, **kwargs) -> dict:
     #     return {"status":200, "result":config.MAX_SPEAKER_THRESHOLD}
 
-    def setEnableTranslation(self, *args, **kwargs) -> dict:
-        if config.ENABLE_TRANSLATION is False:
-            selected_engine = config.SELECTED_TRANSLATION_ENGINES.get(config.SELECTED_TAB_NO, "CTranslate2")
-            selected_engines = normalizeTranslationEngineSelection(selected_engine)
-            if "CTranslate2" not in selected_engines:
-                config.ENABLE_TRANSLATION = True
-            elif model.isLoadedCTranslate2Model() is False or model.isChangedTranslatorParameters() is True:
-                try:
-                    printLog("Loading CTranslate2 translation model")
-                    model.changeTranslatorCTranslate2Model()
-                    model.setChangedTranslatorParameters(False)
-                    config.ENABLE_TRANSLATION = True
-                except Exception as e:
-                    # VRAM不足エラーの検出（デバイス切り替え時）
-                    is_vram_error, error_message = model.detectVRAMError(e)
-                    if is_vram_error:
-                        # Defaultのデバイス設定に戻す
-                        printLog("VRAM error detected, reverting device setting")
-                        error_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_VRAM_ENABLE,
-                            data=error_message
-                        )
-                        self.run(
-                            error_response["status"],
-                            self.run_mapping["error_translation_enable_vram_overflow"],
-                            error_response["result"],
-                        )
-                        self.setDisableTranslation()
-                        disable_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_DISABLED_VRAM,
-                            data=False
-                        )
-                        self.run(
-                            disable_response["status"],
-                            self.run_mapping["enable_translation"],
-                            disable_response["result"],
-                        )
-                        model.changeTranslatorCTranslate2Model()
-                        model.setChangedTranslatorParameters(False)
-                    else:
-                        # その他のエラーは通常通り処理
-                        errorLogging()
-                        return {"status":500, "result":config.ENABLE_TRANSLATION}
-            else:
-                config.ENABLE_TRANSLATION = True
-        return {"status":200, "result":config.ENABLE_TRANSLATION}
+    @staticmethod
+    def _activationErrorResponse(
+        error_code: ErrorCode,
+        *,
+        status: int = 400,
+        message: str = "",
+    ) -> dict:
+        if not message:
+            message = VRCTError.create_error_response(
+                error_code,
+                data=False,
+            )["result"]["message"]
+        return {
+            "status": status,
+            "result": {
+                "error_code": error_code.value,
+                "message": message,
+                "data": False,
+            },
+        }
+
+    def _safeActivationEvent(
+        self,
+        endpoint_key: str,
+        response: dict,
+    ) -> None:
+        endpoint = self.run_mapping.get(endpoint_key)
+        if endpoint is None:
+            return
+        try:
+            self.run(response["status"], endpoint, response["result"])
+        except Exception:
+            errorLogging()
 
     @staticmethod
-    def setDisableTranslation(*args, **kwargs) -> dict:
-        if config.ENABLE_TRANSLATION is True:
+    def _collapseTranslationProviderSelection(selection):
+        providers = boundedTranslationProviderSnapshot(selection)
+        if not providers:
+            return ""
+        if len(providers) == 1:
+            return providers[0]
+        return list(providers)
+
+    @classmethod
+    def _normalizeTranslationEngineMap(cls, selections) -> dict:
+        if not isinstance(selections, dict):
+            return {}
+        return {
+            tab_no: cls._collapseTranslationProviderSelection(selection)
+            for tab_no, selection in selections.items()
+        }
+
+    @staticmethod
+    def _isCTranslate2Primary(selection) -> bool:
+        providers = boundedTranslationProviderSnapshot(selection)
+        return bool(providers and providers[0] == "CTranslate2")
+
+    def _ensureCTranslate2Ready(self, selection) -> None:
+        if not self._isCTranslate2Primary(selection):
+            return
+        if (
+            model.isLoadedCTranslate2Model() is False
+            or model.isChangedTranslatorParameters() is True
+        ):
+            printLog("Loading CTranslate2 translation model")
+            model.changeTranslatorCTranslate2Model()
+            model.setChangedTranslatorParameters(False)
+
+    @staticmethod
+    def _releaseCTranslate2() -> None:
+        try:
+            if model.isLoadedCTranslate2Model() is True:
+                model.unloadTranslatorCTranslate2Model()
+        except Exception:
+            errorLogging()
+
+    def _translationActivationError(
+        self,
+        error: Exception,
+        *,
+        preserve_enabled: bool = False,
+    ) -> dict:
+        try:
+            is_vram_error, _error_message = model.detectVRAMError(error)
+        except Exception:
+            errorLogging()
+            is_vram_error = False
+        if is_vram_error:
+            response = self._activationErrorResponse(
+                ErrorCode.TRANSLATION_VRAM_ENABLE
+            )
+            self._safeActivationEvent(
+                "error_translation_enable_vram_overflow",
+                response,
+            )
+            if preserve_enabled is False:
+                disabled_response = self._activationErrorResponse(
+                    ErrorCode.TRANSLATION_DISABLED_VRAM
+                )
+                self._safeActivationEvent("enable_translation", disabled_response)
+            return response
+        errorLogging()
+        return self._activationErrorResponse(
+            ErrorCode.TRANSLATION_ENABLE_FAILED,
+            status=500,
+        )
+
+    def setEnableTranslation(self, *args, **kwargs) -> dict:
+        with self._translation_activation_lock:
+            selected_engine = config.SELECTED_TRANSLATION_ENGINES.get(
+                config.SELECTED_TAB_NO,
+                "CTranslate2",
+            )
+            normalized_selection = self._collapseTranslationProviderSelection(
+                selected_engine
+            )
+            config.SELECTED_TRANSLATION_ENGINES[config.SELECTED_TAB_NO] = (
+                normalized_selection
+            )
+            try:
+                self._ensureCTranslate2Ready(normalized_selection)
+                if config.ENABLE_TRANSLATION is True:
+                    return {"status": 200, "result": True}
+                config.ENABLE_TRANSLATION = True
+                return {"status": 200, "result": True}
+            except Exception as error:
+                config.ENABLE_TRANSLATION = False
+                return self._translationActivationError(error)
+
+    def setDisableTranslation(self, *args, **kwargs) -> dict:
+        with self._translation_activation_lock:
             config.ENABLE_TRANSLATION = False
-        return {"status":200, "result":config.ENABLE_TRANSLATION}
+            self._releaseCTranslate2()
+            return {"status": 200, "result": config.ENABLE_TRANSLATION}
 
     @staticmethod
     def setEnableForeground(*args, **kwargs) -> dict:
@@ -1321,14 +2216,48 @@ class Controller:
     def getSpeakerDeviceList(*args, **kwargs) -> dict:
         return {"status":200, "result": model.getListSpeakerDevice()}
 
-    @staticmethod
-    def getSelectedTranslationEngines(*args, **kwargs) -> dict:
+    @classmethod
+    def getSelectedTranslationEngines(cls, *args, **kwargs) -> dict:
+        config.SELECTED_TRANSLATION_ENGINES = cls._normalizeTranslationEngineMap(
+            config.SELECTED_TRANSLATION_ENGINES
+        )
         return {"status":200, "result":config.SELECTED_TRANSLATION_ENGINES}
 
-    @staticmethod
-    def setSelectedTranslationEngines(data:dict, *args, **kwargs) -> dict:
-        config.SELECTED_TRANSLATION_ENGINES = data
-        return {"status":200,"result":config.SELECTED_TRANSLATION_ENGINES}
+    def setSelectedTranslationEngines(self, data:dict, *args, **kwargs) -> dict:
+        with self._translation_activation_lock:
+            normalized = self._normalizeTranslationEngineMap(data)
+            current_selection = config.SELECTED_TRANSLATION_ENGINES.get(
+                config.SELECTED_TAB_NO,
+                "",
+            )
+            proposed_selection = normalized.get(config.SELECTED_TAB_NO, "")
+
+            if config.ENABLE_TRANSLATION is False:
+                config.SELECTED_TRANSLATION_ENGINES = normalized
+                return {
+                    "status": 200,
+                    "result": config.SELECTED_TRANSLATION_ENGINES,
+                }
+
+            if self._isCTranslate2Primary(proposed_selection):
+                try:
+                    self._ensureCTranslate2Ready(proposed_selection)
+                except Exception as error:
+                    return self._translationActivationError(
+                        error,
+                        preserve_enabled=True,
+                    )
+                config.SELECTED_TRANSLATION_ENGINES = normalized
+            elif self._isCTranslate2Primary(current_selection):
+                config.SELECTED_TRANSLATION_ENGINES = normalized
+                self._releaseCTranslate2()
+            else:
+                config.SELECTED_TRANSLATION_ENGINES = normalized
+
+            return {
+                "status": 200,
+                "result": config.SELECTED_TRANSLATION_ENGINES,
+            }
 
     @staticmethod
     def getSelectedYourLanguages(*args, **kwargs) -> dict:
@@ -1372,10 +2301,20 @@ class Controller:
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_ENGINE}
 
     def setSelectedTranscriptionEngine(self, data, *args, **kwargs) -> dict:
-        config.SELECTED_TRANSCRIPTION_ENGINE = str(data)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        self._normalizeSelectedYourLanguageForTranscription()
-        return {"status":200, "result":config.SELECTED_TRANSCRIPTION_ENGINE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.SELECTED_TRANSCRIPTION_ENGINE
+                )
+            config.SELECTED_TRANSCRIPTION_ENGINE = str(data)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            self._normalizeSelectedYourLanguageForTranscription()
+            applied_value = str(config.SELECTED_TRANSCRIPTION_ENGINE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getConvertMessageToRomaji(*args, **kwargs) -> dict:
@@ -2649,48 +3588,115 @@ class Controller:
     def getWhisperWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.WHISPER_WEIGHT_TYPE}
 
+    def setWhisperWeightType(self, data, *args, **kwargs) -> dict:
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.WHISPER_WEIGHT_TYPE
+                )
+            config.WHISPER_WEIGHT_TYPE = str(data)
+            applied_value = str(config.WHISPER_WEIGHT_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
+
     @staticmethod
-    def setWhisperWeightType(data, *args, **kwargs) -> dict:
-        config.WHISPER_WEIGHT_TYPE = str(data)
-        return {"status":200, "result": config.WHISPER_WEIGHT_TYPE}
+    def getWhisperDecodingProfile(*args, **kwargs) -> dict:
+        return {"status": 200, "result": config.WHISPER_DECODING_PROFILE}
+
+    def setWhisperDecodingProfile(self, data, *args, **kwargs) -> dict:
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.WHISPER_DECODING_PROFILE
+                )
+            config.WHISPER_DECODING_PROFILE = str(data).lower()
+            applied_value = str(config.WHISPER_DECODING_PROFILE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getVoskWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.VOSK_WEIGHT_TYPE}
 
     def setVoskWeightType(self, data, *args, **kwargs) -> dict:
-        config.VOSK_WEIGHT_TYPE = str(data)
-        self._normalizeSelectedYourLanguageForTranscription()
-        return {"status":200, "result": config.VOSK_WEIGHT_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.VOSK_WEIGHT_TYPE
+                )
+            config.VOSK_WEIGHT_TYPE = str(data)
+            self._normalizeSelectedYourLanguageForTranscription()
+            applied_value = str(config.VOSK_WEIGHT_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getParakeetWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.PARAKEET_WEIGHT_TYPE}
 
     def setParakeetWeightType(self, data, *args, **kwargs) -> dict:
-        config.PARAKEET_WEIGHT_TYPE = str(data)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        self._normalizeSelectedYourLanguageForTranscription()
-        return {"status":200, "result": config.PARAKEET_WEIGHT_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.PARAKEET_WEIGHT_TYPE
+                )
+            config.PARAKEET_WEIGHT_TYPE = str(data)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            self._normalizeSelectedYourLanguageForTranscription()
+            applied_value = str(config.PARAKEET_WEIGHT_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getSenseVoiceWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SENSEVOICE_WEIGHT_TYPE}
 
     def setSenseVoiceWeightType(self, data, *args, **kwargs) -> dict:
-        config.SENSEVOICE_WEIGHT_TYPE = str(data)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        self._normalizeSelectedYourLanguageForTranscription()
-        return {"status":200, "result": config.SENSEVOICE_WEIGHT_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.SENSEVOICE_WEIGHT_TYPE
+                )
+            config.SENSEVOICE_WEIGHT_TYPE = str(data)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            self._normalizeSelectedYourLanguageForTranscription()
+            applied_value = str(config.SENSEVOICE_WEIGHT_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getSelectedTranscriptionComputeType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE}
 
     def setSelectedTranscriptionComputeType(self, data, *args, **kwargs) -> dict:
-        config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = str(data)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE
+                )
+            config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = str(data)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            applied_value = str(config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getSendMessageFormatParts(*args, **kwargs) -> dict:
@@ -2930,11 +3936,62 @@ class Controller:
         Popen(['explorer', config.PATH_DATA.replace('/', '\\')], shell=True)
         return {"status":200, "result":True}
 
+    def _transcriptionActivationError(
+        self,
+        source: PipelineSource,
+        error: Exception,
+    ) -> dict:
+        if isinstance(error, DeviceUnavailableError):
+            return self._activationErrorResponse(error.error_code)
+
+        try:
+            is_vram_error, _error_message = model.detectVRAMError(error)
+        except Exception:
+            errorLogging()
+            is_vram_error = False
+        if is_vram_error:
+            if source is PipelineSource.MIC:
+                error_code = ErrorCode.TRANSCRIPTION_VRAM_MIC
+                disabled_code = ErrorCode.TRANSCRIPTION_SEND_DISABLED_VRAM
+                error_endpoint = "error_transcription_mic_vram_overflow"
+                state_endpoint = "enable_transcription_send"
+            else:
+                error_code = ErrorCode.TRANSCRIPTION_VRAM_SPEAKER
+                disabled_code = ErrorCode.TRANSCRIPTION_RECEIVE_DISABLED_VRAM
+                error_endpoint = "error_transcription_speaker_vram_overflow"
+                state_endpoint = "enable_transcription_receive"
+            response = self._activationErrorResponse(error_code)
+            self._safeActivationEvent(error_endpoint, response)
+            self._safeActivationEvent(
+                state_endpoint,
+                self._activationErrorResponse(disabled_code),
+            )
+            return response
+
+        errorLogging()
+        return self._activationErrorResponse(
+            ErrorCode.TRANSCRIPTION_START_FAILED,
+            status=500,
+        )
+
     def setEnableTranscriptionSend(self, *args, **kwargs) -> dict:
-        if config.ENABLE_TRANSCRIPTION_SEND is False:
-            config.ENABLE_TRANSCRIPTION_SEND = True
-            self.startThreadingTranscriptionSendMessage()
-        return {"status":200, "result":config.ENABLE_TRANSCRIPTION_SEND}
+        if config.ENABLE_TRANSCRIPTION_SEND is True:
+            return {"status": 200, "result": True}
+        config.ENABLE_TRANSCRIPTION_SEND = True
+        try:
+            if self.startTranscriptionSendMessage() is not True:
+                raise RuntimeError("transcription activation was cancelled")
+            return {"status": 200, "result": True}
+        except Exception as error:
+            config.ENABLE_TRANSCRIPTION_SEND = False
+            try:
+                self.stopTranscriptionSendMessage()
+            except Exception:
+                errorLogging()
+            return self._transcriptionActivationError(
+                PipelineSource.MIC,
+                error,
+            )
 
     def setDisableTranscriptionSend(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSCRIPTION_SEND is True:
@@ -2943,10 +4000,23 @@ class Controller:
         return {"status":200, "result":config.ENABLE_TRANSCRIPTION_SEND}
 
     def setEnableTranscriptionReceive(self, *args, **kwargs) -> dict:
-        if config.ENABLE_TRANSCRIPTION_RECEIVE is False:
-            config.ENABLE_TRANSCRIPTION_RECEIVE = True
-            self.startThreadingTranscriptionReceiveMessage()
-        return {"status":200, "result":config.ENABLE_TRANSCRIPTION_RECEIVE}
+        if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
+            return {"status": 200, "result": True}
+        config.ENABLE_TRANSCRIPTION_RECEIVE = True
+        try:
+            if self.startTranscriptionReceiveMessage() is not True:
+                raise RuntimeError("transcription activation was cancelled")
+            return {"status": 200, "result": True}
+        except Exception as error:
+            config.ENABLE_TRANSCRIPTION_RECEIVE = False
+            try:
+                self.stopTranscriptionReceiveMessage()
+            except Exception:
+                errorLogging()
+            return self._transcriptionActivationError(
+                PipelineSource.SPEAKER,
+                error,
+            )
 
     def setDisableTranscriptionReceive(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
@@ -3006,17 +4076,107 @@ class Controller:
         the transcription models are re-initialized with the updated config, matching
         the dynamic behavior of Google/Whisper engines.
         """
-        needs_mic = config.ENABLE_TRANSCRIPTION_SEND
-        needs_speaker = config.ENABLE_TRANSCRIPTION_RECEIVE
+        self._requestCoordinatedTranscriptionRestart()
 
-        if needs_mic:
-            self.stopTranscriptionSendMessage()
-        if needs_speaker:
-            self.stopTranscriptionReceiveMessage()
-        if needs_mic:
-            self.startTranscriptionSendMessage()
-        if needs_speaker:
-            self.startTranscriptionReceiveMessage()
+    def _requestCoordinatedTranscriptionRestart(
+        self,
+        reason: str = "configuration_changed",
+        *,
+        expected_source: Optional[PipelineSource] = None,
+        expected_generation: Optional[int] = None,
+    ) -> Optional[bool]:
+        """Stop all active generations before any replacement runtime loads."""
+        del reason  # The reason is carried by recovery metrics at the caller.
+        with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return None
+            is_active = getattr(model, "isTranscriptionSourceActive", None)
+            is_generation_current = getattr(
+                model,
+                "isSourcePipelineGenerationCurrent",
+                None,
+            )
+
+            recovery_identity_supplied = (
+                expected_source is not None or expected_generation is not None
+            )
+            if recovery_identity_supplied:
+                if (
+                    expected_source is None
+                    or expected_generation is None
+                    or not callable(is_generation_current)
+                ):
+                    return None
+                try:
+                    still_current = bool(
+                        is_generation_current(
+                            expected_source,
+                            expected_generation,
+                        )
+                    )
+                    still_active = (
+                        bool(is_active(expected_source))
+                        if callable(is_active)
+                        else False
+                    )
+                except Exception:
+                    errorLogging()
+                    return None
+                if not still_current or not still_active:
+                    return None
+
+            if callable(is_active):
+                active_mic = is_active(PipelineSource.MIC)
+                active_speaker = is_active(PipelineSource.SPEAKER)
+            else:
+                active_mic = config.ENABLE_TRANSCRIPTION_SEND is True
+                active_speaker = config.ENABLE_TRANSCRIPTION_RECEIVE is True
+            selected = []
+            if active_mic:
+                selected.append(
+                    (
+                        PipelineSource.MIC,
+                        self.stopTranscriptionSendMessage,
+                        self.startTranscriptionSendMessage,
+                    )
+                )
+            if active_speaker:
+                selected.append(
+                    (
+                        PipelineSource.SPEAKER,
+                        self.stopTranscriptionReceiveMessage,
+                        self.startTranscriptionReceiveMessage,
+                    )
+                )
+
+            stopped_cleanly = True
+            for _source, stop, _start in selected:
+                try:
+                    stop()
+                except Exception:
+                    stopped_cleanly = False
+                    errorLogging()
+            if not stopped_cleanly:
+                return False
+
+            all_established = True
+            for source, _stop, start in selected:
+                try:
+                    established = start() is True
+                except Exception:
+                    errorLogging()
+                    established = False
+                if established and callable(is_active):
+                    try:
+                        established = bool(is_active(source))
+                    except Exception:
+                        errorLogging()
+                        established = False
+                all_established = all_established and established
+            return all_established
 
     def swapYourLanguageAndTargetLanguage(self, *args, **kwargs) -> dict:
         your_languages = config.SELECTED_YOUR_LANGUAGES
@@ -3147,57 +4307,63 @@ class Controller:
             osc_message = message_part
         return osc_message
 
-    def changeToCTranslate2Process(self) -> None:
-        selected_engines = config.SELECTED_TRANSLATION_ENGINES[config.SELECTED_TAB_NO]
-        for selected_engine in normalizeTranslationEngineSelection(selected_engines):
-            config.SELECTABLE_TRANSLATION_ENGINE_STATUS[selected_engine] = False
-        config.SELECTED_TRANSLATION_ENGINES[config.SELECTED_TAB_NO] = "CTranslate2"
-        selectable_engines = self.getTranslationEngines()["result"]
-        self.run(200, self.run_mapping["selected_translation_engines"], config.SELECTED_TRANSLATION_ENGINES)
-        self.run(200, self.run_mapping["translation_engines"], selectable_engines)
+    def startTranscriptionSendMessage(self) -> bool:
+        with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return False
+            return self._startTranscriptionSendMessageUnlocked()
 
-    def startTranscriptionSendMessage(self) -> None:
+    def _waitForDeviceAccessOrShutdown(self) -> bool:
         while self.device_access_status is False:
-            sleep(1)
+            # Shutdown publishes this Event before waiting for the restart
+            # lock, so a start already holding that lock can unwind promptly.
+            if self._transcription_shutdown_requested.wait(0.1):
+                return False
+        return not self._transcription_shutdown_requested.is_set()
+
+    def _startTranscriptionSendMessageUnlocked(self) -> bool:
+        if not self._waitForDeviceAccessOrShutdown():
+            return False
         self.device_access_status = False
         try:
-            model.startMicTranscript(self.micMessage)
-        except Exception as e:
-            # VRAM不足エラーの検出
-            is_vram_error, error_message = model.detectVRAMError(e)
-            if is_vram_error:
-                response = VRCTError.create_error_response(
-                    ErrorCode.TRANSCRIPTION_VRAM_MIC,
-                    data=error_message
-                )
-                self.run(
-                    response["status"],
-                    self.run_mapping["error_transcription_mic_vram_overflow"],
-                    response["result"],
-                )
-                # ここでマイクの音声認識を停止
-                self.stopTranscriptionSendMessage()
-                config.ENABLE_TRANSCRIPTION_SEND = False
-                disable_response = VRCTError.create_error_response(
-                    ErrorCode.TRANSCRIPTION_SEND_DISABLED_VRAM,
-                    data=False
-                )
-                self.run(
-                    disable_response["status"],
-                    self.run_mapping["enable_transcription_send"],
-                    disable_response["result"],
-                )
-            else:
-                # その他のエラーは通常通り処理
+            validate_device = getattr(
+                model,
+                "validateMicTranscriptDevice",
+                None,
+            )
+            if callable(validate_device):
+                validate_device()
+            model.ensureSourcePipeline(
+                PipelineSource.MIC,
+                self._sourcePipelineCallbacks(PipelineSource.MIC),
+                self._sourcePipelineGeneration(PipelineSource.MIC),
+            )
+            session_established = model.startMicTranscript(self.micMessage)
+            if session_established is not True:
+                model.stopSourcePipeline(PipelineSource.MIC)
+                return False
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                model.stopMicTranscript()
+                return False
+            return True
+        except Exception:
+            try:
+                model.stopSourcePipeline(PipelineSource.MIC)
+            except Exception:
                 errorLogging()
-                config.ENABLE_TRANSCRIPTION_SEND = False
-                self.run(200, self.run_mapping["enable_transcription_send"], False)
+            raise
         finally:
             self.device_access_status = True
 
-    @staticmethod
-    def stopTranscriptionSendMessage() -> None:
-        model.stopMicTranscript()
+    def stopTranscriptionSendMessage(self) -> None:
+        with self._transcription_restart_lock:
+            model.stopMicTranscript()
 
     def startThreadingTranscriptionSendMessage(self) -> None:
         th_startTranscriptionSendMessage = Thread(target=self.startTranscriptionSendMessage)
@@ -3210,48 +4376,55 @@ class Controller:
         th_stopTranscriptionSendMessage.start()
         th_stopTranscriptionSendMessage.join()
 
-    def startTranscriptionReceiveMessage(self) -> None:
-        while self.device_access_status is False:
-            sleep(1)
+    def startTranscriptionReceiveMessage(self) -> bool:
+        with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return False
+            return self._startTranscriptionReceiveMessageUnlocked()
+
+    def _startTranscriptionReceiveMessageUnlocked(self) -> bool:
+        if not self._waitForDeviceAccessOrShutdown():
+            return False
         self.device_access_status = False
         try:
-            model.startSpeakerTranscript(self.speakerMessage)
-        except Exception as e:
-            # VRAM不足エラーの検出
-            is_vram_error, error_message = model.detectVRAMError(e)
-            if is_vram_error:
-                response = VRCTError.create_error_response(
-                    ErrorCode.TRANSCRIPTION_VRAM_SPEAKER,
-                    data=error_message
-                )
-                self.run(
-                    response["status"],
-                    self.run_mapping["error_transcription_speaker_vram_overflow"],
-                    response["result"],
-                )
-                # ここでスピーカーの音声認識を停止
-                self.stopTranscriptionReceiveMessage()
-                config.ENABLE_TRANSCRIPTION_RECEIVE = False
-                disable_response = VRCTError.create_error_response(
-                    ErrorCode.TRANSCRIPTION_RECEIVE_DISABLED_VRAM,
-                    data=False
-                )
-                self.run(
-                    disable_response["status"],
-                    self.run_mapping["enable_transcription_receive"],
-                    disable_response["result"],
-                )
-            else:
-                # その他のエラーは通常通り処理
+            validate_device = getattr(
+                model,
+                "validateSpeakerTranscriptDevice",
+                None,
+            )
+            if callable(validate_device):
+                validate_device()
+            model.ensureSourcePipeline(
+                PipelineSource.SPEAKER,
+                self._sourcePipelineCallbacks(PipelineSource.SPEAKER),
+                self._sourcePipelineGeneration(PipelineSource.SPEAKER),
+            )
+            session_established = model.startSpeakerTranscript(self.speakerMessage)
+            if session_established is not True:
+                model.stopSourcePipeline(PipelineSource.SPEAKER)
+                return False
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                model.stopSpeakerTranscript()
+                return False
+            return True
+        except Exception:
+            try:
+                model.stopSourcePipeline(PipelineSource.SPEAKER)
+            except Exception:
                 errorLogging()
-                config.ENABLE_TRANSCRIPTION_RECEIVE = False
-                self.run(200, self.run_mapping["enable_transcription_receive"], False)
+            raise
         finally:
             self.device_access_status = True
 
-    @staticmethod
-    def stopTranscriptionReceiveMessage() -> None:
-        model.stopSpeakerTranscript()
+    def stopTranscriptionReceiveMessage(self) -> None:
+        with self._transcription_restart_lock:
+            model.stopSpeakerTranscript()
 
     def startThreadingTranscriptionReceiveMessage(self) -> None:
         th_startTranscriptionReceiveMessage = Thread(target=self.startTranscriptionReceiveMessage)
@@ -3322,12 +4495,14 @@ class Controller:
 
     def updateTranslationEngineAndEngineList(self):
         engines = config.SELECTED_TRANSLATION_ENGINES
-        selected_engines = normalizeTranslationEngineSelection(engines[config.SELECTED_TAB_NO])
+        selected_engines = list(
+            boundedTranslationProviderSnapshot(engines[config.SELECTED_TAB_NO])
+        )
         selectable_engines = self.getTranslationEngines()["result"]
         selected_engines = [engine for engine in selected_engines if engine in selectable_engines]
-        if len(selected_engines) == 0:
-            selected_engines = ["CTranslate2"]
-        engines[config.SELECTED_TAB_NO] = collapseTranslationEngineSelection(selected_engines)
+        engines[config.SELECTED_TAB_NO] = self._collapseTranslationProviderSelection(
+            selected_engines
+        )
         config.SELECTED_TRANSLATION_ENGINES = engines
 
         self.run(200, self.run_mapping["selected_translation_engines"], config.SELECTED_TRANSLATION_ENGINES)
@@ -3406,11 +4581,21 @@ class Controller:
         self._normalizeSelectedYourLanguageForTranscription()
 
     def startCheckMicEnergy(self) -> None:
-        while self.device_access_status is False:
-            sleep(1)
-        self.device_access_status = False
-        model.startCheckMicEnergy(self.progressBarMicEnergy)
-        self.device_access_status = True
+        if not self._waitForDeviceAccessOrShutdown():
+            return
+        with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return
+            self.device_access_status = False
+            try:
+                # Starting the recorder/thread is the energy-check lifecycle
+                # publication point. Keep it ordered with terminal shutdown.
+                model.startCheckMicEnergy(self.progressBarMicEnergy)
+            finally:
+                self.device_access_status = True
 
     def startThreadingCheckMicEnergy(self) -> None:
         th_startCheckMicEnergy = Thread(target=self.startCheckMicEnergy)
@@ -3427,11 +4612,21 @@ class Controller:
         th_stopCheckMicEnergy.join()
 
     def startCheckSpeakerEnergy(self) -> None:
-        while self.device_access_status is False:
-            sleep(1)
-        self.device_access_status = False
-        model.startCheckSpeakerEnergy(self.progressBarSpeakerEnergy)
-        self.device_access_status = True
+        if not self._waitForDeviceAccessOrShutdown():
+            return
+        with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return
+            self.device_access_status = False
+            try:
+                # Starting the recorder/thread is the energy-check lifecycle
+                # publication point. Keep it ordered with terminal shutdown.
+                model.startCheckSpeakerEnergy(self.progressBarSpeakerEnergy)
+            finally:
+                self.device_access_status = True
 
     def startThreadingCheckSpeakerEnergy(self) -> None:
         th_startCheckSpeakerEnergy = Thread(target=self.startCheckSpeakerEnergy)
@@ -3587,7 +4782,15 @@ class Controller:
     def initializationProgress(self, progress):
         self.run(200, self.run_mapping["initialization_progress"], progress)
 
-    def initializationStatus(self, message: str, detail: str = "", visible: bool = True, phase: str = "starting"):
+    def initializationStatus(
+        self,
+        message: str,
+        detail: str = "",
+        visible: bool = True,
+        phase: str = "starting",
+        message_key: str = "",
+        detail_key: str = "",
+    ):
         self.run(
             200,
             self.run_mapping["initialization_status"],
@@ -3596,6 +4799,8 @@ class Controller:
                 "detail": detail,
                 "visible": visible,
                 "phase": phase,
+                "message_key": message_key,
+                "detail_key": detail_key,
             },
         )
 

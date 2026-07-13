@@ -3,6 +3,20 @@
 # Please read 'readme_first.txt' before making any changes.
 # =================================
 
+blocking_operation:
+    dialog_label: "작업 진행 중"
+    startup_operation: "VRCNT-Next 시작 중"
+    phase_label: "현재 단계"
+    progress_label: "시작 진행률"
+    progress_steps: "{{current}} / {{total}}"
+    progress_indeterminate: "처리 중…"
+    elapsed: "경과 {{seconds}}초"
+    startup_failed: "시작을 완료하지 못했습니다"
+    startup_failed_detail: "VRCNT-Next를 다시 시작하세요. 문제가 계속되면 앱 로그를 확인하세요."
+    backend_startup_progress: "백엔드 시작 {{current}} / {{total}}"
+    backend_unavailable: "백엔드를 사용할 수 없어 변경 사항이 적용되지 않았습니다."
+    backend_disconnected: "백엔드가 중지되었습니다. 계속하려면 VRCNT-Next를 다시 시작하세요."
+
 common:
     go_back_button_label: "돌아가기"
 
@@ -89,6 +103,24 @@ main_page:
         auto: "Auto"
         auto_gpu: "Auto GPU {{index}}"
 
+    pipeline_status:
+        source: "소스"
+        listening: "듣기"
+        speaking: "말하기"
+        transcription: "음성 인식"
+        cloud: "클라우드"
+        queue: "대기열"
+        total: "전체"
+        healthy: "정상"
+        slow: "느림"
+        error: "오류"
+        waiting: "대기 중"
+        unavailable: "사용 불가"
+        timeout_announcement: "{{engine}} 번역 시간 초과"
+        overload_announcement: "번역 대기열 과부하"
+        error_announcement: "{{stage}} 실패"
+        recovered_announcement: "{{stage}} 복구됨"
+
     translator_selector:
         is_selected_same_language: "'{{your_language}}'와 '{{target_language}}'에 동일한 언어가 선택되어 있으므로, 「{{ctranslate2}}」만 사용할 수 있습니다."
         use_parallel_service: "병렬 서비스 사용"
@@ -103,6 +135,18 @@ main_page:
         system: "시스템"
 
         resend_button_on_hover_desc: "길게 눌러서 보내기"
+
+        translation_status:
+            queued: "{{engine}} 대기 중 · {{elapsed}}"
+            sending: "{{engine}}로 번역 중 · {{elapsed}}"
+            fallback: "{{previousEngine}} 지연 · {{engine}} 시도 중"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "번역을 사용할 수 없음 · {{engine}} 시간 초과"
+            error: "번역을 사용할 수 없음 · {{engine}} 실패"
+            skipped_overload: "번역 건너뜀 · 대기열 과부하"
+            no_provider: "번역을 사용할 수 없음 · 제공자 미선택"
+            unavailable: "번역을 사용할 수 없음"
+            queue_position: "대기열 {{position}}"
 
     state_text_enabled: "Enabled"
     state_text_disabled: "Disabled"
@@ -325,6 +369,12 @@ config_page:
             desc: "용량이 큰 모델일수록 정확도는 높지만, 그만큼 CPU나 GPU를 많이 차지합니다. * 특히 medium보다 용량이 큰 모델은 CPU/GPU 성능에 따라 사용 자체가 어려울 수 있습니다."
             model_template: "{{model_name}} 모델 ({{capacity}})"
             recommended_model_template: "{{model_name}} 모델 ({{capacity}}) (권장)"
+        whisper_decoding_profile:
+            label: "Whisper 디코딩 프로필"
+            desc: "VR 반응성과 디코더 정확도의 균형을 선택합니다."
+            fast: "빠름 · beam 1 · 최저 지연"
+            balanced: "균형 · beam 2 · VRChat 권장"
+            accurate: "정확 · beam 5 · 최고 디코더 부하"
         transcription_compute_device:
             label:
 
