@@ -2,6 +2,7 @@ import copy
 import gc
 import asyncio
 import json
+from collections import deque
 from subprocess import Popen
 from os import makedirs as os_makedirs
 from os import path as os_path
@@ -64,6 +65,7 @@ TRANSCRIPT_STALL_RESTART_SECONDS = 90.0
 TRANSCRIPT_STALL_CHECK_SECONDS = 5.0
 DEFAULT_TRANSLATION_ENGINE = "CTranslate2"
 TRANSCRIPTION_AUDIO_QUEUE_SIZE = 4
+TRANSCRIPTION_PIPELINE_METRIC_HISTORY_SIZE = 256
 
 
 class _MetricAudioQueue(LatestQueue):
@@ -185,6 +187,7 @@ class threadFnc(Thread):
 
 class Model:
     _instance = None
+    _transcription_metric_state_init_lock = RLock()
 
     def __new__(cls):
         if cls._instance is None:
@@ -208,6 +211,11 @@ class Model:
         recovery_callback = getattr(
             self,
             "_transcription_recovery_callback",
+            None,
+        )
+        metric_callback = getattr(
+            self,
+            "_transcription_pipeline_metric_callback",
             None,
         )
         self.logger = None
@@ -259,7 +267,11 @@ class Model:
         self.clipboard = Clipboard()
         self.telemetry = Telemetry()
         self.whisper_runtime_manager = WhisperRuntimeManager()
-        self.transcription_pipeline_metrics: list[PipelineStatusEvent] = []
+        self._transcription_pipeline_metric_lock = RLock()
+        self.transcription_pipeline_metrics = deque(
+            maxlen=TRANSCRIPTION_PIPELINE_METRIC_HISTORY_SIZE
+        )
+        self._transcription_pipeline_metric_callback = metric_callback
         self._transcription_recovery_callback = recovery_callback
         self.mic_source_pipeline: Optional[SourcePipeline] = None
         self.speaker_source_pipeline: Optional[SourcePipeline] = None
@@ -300,7 +312,52 @@ class Model:
         self,
         event: PipelineStatusEvent,
     ) -> None:
-        self.transcription_pipeline_metrics.append(event)
+        self._ensureTranscriptionMetricState()
+        with self._transcription_pipeline_metric_lock:
+            self.transcription_pipeline_metrics.append(event)
+            callback = self._transcription_pipeline_metric_callback
+        if callable(callback):
+            try:
+                callback(event)
+            except Exception:
+                # Status transport is diagnostic and must never terminate a
+                # capture, queue, or transcription worker.
+                errorLogging()
+
+    def _ensureTranscriptionMetricState(self) -> None:
+        """Backfill bounded metric state for focused/bare Model instances."""
+        with self._transcription_metric_state_init_lock:
+            if not hasattr(self, "_transcription_pipeline_metric_lock"):
+                self._transcription_pipeline_metric_lock = RLock()
+            if not hasattr(self, "transcription_pipeline_metrics"):
+                self.transcription_pipeline_metrics = deque(
+                    maxlen=TRANSCRIPTION_PIPELINE_METRIC_HISTORY_SIZE
+                )
+            if not hasattr(self, "_transcription_pipeline_metric_callback"):
+                self._transcription_pipeline_metric_callback = None
+
+    def setTranscriptionPipelineMetricCallback(
+        self,
+        callback: Optional[Callable[[PipelineStatusEvent], None]],
+    ) -> None:
+        """Register the optional non-owning Controller status callback."""
+        if callback is not None and not callable(callback):
+            raise TypeError("metric callback must be callable or None")
+        self._ensureTranscriptionMetricState()
+        with self._transcription_pipeline_metric_lock:
+            self._transcription_pipeline_metric_callback = callback
+
+    def clearTranscriptionPipelineMetricCallback(
+        self,
+        callback: Callable[[PipelineStatusEvent], None],
+    ) -> bool:
+        """Detach ``callback`` without clearing a newer Controller owner."""
+        self._ensureTranscriptionMetricState()
+        with self._transcription_pipeline_metric_lock:
+            if self._transcription_pipeline_metric_callback != callback:
+                return False
+            self._transcription_pipeline_metric_callback = None
+            return True
 
     def _ensureTranscriptionLifecycleState(self) -> None:
         """Backfill lifecycle-only state for focused/bare Model instances."""
@@ -324,8 +381,7 @@ class Model:
                 self._source_transcription_sessions = {}
             if not hasattr(self, "_source_heartbeat_timestamps"):
                 self._source_heartbeat_timestamps = {}
-            if not hasattr(self, "transcription_pipeline_metrics"):
-                self.transcription_pipeline_metrics = []
+        self._ensureTranscriptionMetricState()
 
     def _emitTranscriptionLifecycleMetric(
         self,

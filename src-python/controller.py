@@ -83,6 +83,7 @@ class Controller:
             name="transcription-recovery-coordinator",
             daemon=True,
         )
+        self._transcription_metric_callback_registered = False
         register_recovery = getattr(
             model,
             "setTranscriptionRecoveryCallback",
@@ -90,6 +91,17 @@ class Controller:
         )
         if callable(register_recovery):
             register_recovery(self._offerTranscriptionRecoveryRequest)
+        register_metric = getattr(
+            model,
+            "setTranscriptionPipelineMetricCallback",
+            None,
+        )
+        if callable(register_metric):
+            try:
+                register_metric(self._emitPipelineStatus)
+                self._transcription_metric_callback_registered = True
+            except Exception:
+                errorLogging()
         self._transcription_recovery_thread.start()
 
     def _offerTranscriptionRecoveryRequest(
@@ -1261,6 +1273,29 @@ class Controller:
         except Exception:
             errorLogging()
             response = {"status": 500, "result": False}
+
+        if self._transcription_metric_callback_registered:
+            try:
+                clear_metric = getattr(
+                    model,
+                    "clearTranscriptionPipelineMetricCallback",
+                    None,
+                )
+                if callable(clear_metric):
+                    clear_metric(self._emitPipelineStatus)
+                else:
+                    register_metric = getattr(
+                        model,
+                        "setTranscriptionPipelineMetricCallback",
+                        None,
+                    )
+                    if callable(register_metric):
+                        register_metric(None)
+            except Exception:
+                errorLogging()
+                response = {"status": 500, "result": False}
+            finally:
+                self._transcription_metric_callback_registered = False
 
         try:
             with self._transcription_restart_lock:

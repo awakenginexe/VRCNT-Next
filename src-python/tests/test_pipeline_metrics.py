@@ -3,6 +3,7 @@ import sys
 import unittest
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -20,6 +21,8 @@ from models.pipeline.pipeline_types import (
     TranslationTarget,
     TranslationUpdate,
 )
+import controller as controller_module
+import model as model_module
 from model import Model, _MetricAudioQueue
 
 
@@ -67,6 +70,193 @@ def make_output_config() -> OutputConfigSnapshot:
 
 
 class PipelineMetricsTests(unittest.TestCase):
+    @staticmethod
+    def _source_metric(
+        stage: str,
+        outcome: str,
+        *,
+        observed_at_ms: int = 1,
+    ) -> PipelineStatusEvent:
+        return PipelineStatusEvent(
+            schema_version=1,
+            trace_id=None,
+            source=PipelineSource.MIC,
+            stage=stage,
+            engine="Whisper" if stage == "transcription" else None,
+            target_slot=None,
+            outcome=outcome,
+            queue_age_ms=None,
+            duration_ms=None,
+            queue_depth=0,
+            dropped_count=0,
+            observed_at_ms=observed_at_ms,
+            error_code=None,
+        )
+
+    def test_controller_registration_forwards_source_metrics_to_status_route(self):
+        instance = object.__new__(Model)
+        events = []
+
+        with patch.object(controller_module, "model", instance):
+            controller = controller_module.Controller()
+            controller.setRunMapping({"pipeline_status": "/run/pipeline_status"})
+            controller.setRun(
+                lambda status, endpoint, payload: events.append(
+                    (status, endpoint, payload)
+                )
+            )
+            try:
+                instance._emitTranscriptionLifecycleMetric(
+                    PipelineSource.MIC,
+                    stage="capture",
+                    outcome="running",
+                )
+                queue = _MetricAudioQueue(
+                    PipelineSource.MIC,
+                    instance._emitTranscriptionLifecycleMetric,
+                )
+                queue.offer(
+                    AudioChunk(
+                        b"audio",
+                        datetime(2026, 7, 13, tzinfo=timezone.utc),
+                        1.0,
+                    )
+                )
+                context = instance._makeTranscriberPipelineContext(
+                    PipelineSource.MIC,
+                    None,
+                    generation=1,
+                )
+                context.emit_metric(
+                    self._source_metric("transcription", "running")
+                )
+            finally:
+                controller.shutdown()
+        instance._recordTranscriptionPipelineMetric(
+            self._source_metric("capture", "recovered", observed_at_ms=2)
+        )
+
+        self.assertEqual(
+            [(status, endpoint) for status, endpoint, _payload in events],
+            [
+                (200, "/run/pipeline_status"),
+                (200, "/run/pipeline_status"),
+                (200, "/run/pipeline_status"),
+            ],
+        )
+        self.assertEqual(
+            [payload["stage"] for _status, _endpoint, payload in events],
+            ["capture", "queue", "transcription"],
+        )
+        for _status, _endpoint, payload in events:
+            self.assertTrue(
+                {"message", "original", "translation", "text"}.isdisjoint(
+                    payload
+                )
+            )
+
+    def test_metric_callback_failure_cannot_break_capture_or_transcriber_paths(self):
+        instance = object.__new__(Model)
+        instance.setTranscriptionPipelineMetricCallback(
+            lambda _event: (_ for _ in ()).throw(
+                RuntimeError("controlled status transport failure")
+            )
+        )
+        queue = _MetricAudioQueue(
+            PipelineSource.SPEAKER,
+            instance._emitTranscriptionLifecycleMetric,
+        )
+
+        with patch.object(model_module, "errorLogging"):
+            offer = queue.offer(
+                AudioChunk(
+                    b"audio",
+                    datetime(2026, 7, 13, tzinfo=timezone.utc),
+                    1.0,
+                )
+            )
+            context = instance._makeTranscriberPipelineContext(
+                PipelineSource.SPEAKER,
+                None,
+                generation=1,
+            )
+            context.emit_metric(
+                self._source_metric("transcription", "success")
+            )
+
+        self.assertTrue(offer.accepted)
+        self.assertEqual(
+            [event.stage for event in instance.transcription_pipeline_metrics],
+            ["queue", "transcription"],
+        )
+
+    def test_controller_shutdown_unregisters_only_its_metric_callback(self):
+        instance = object.__new__(Model)
+        events = []
+        replacement_events = []
+
+        with patch.object(controller_module, "model", instance):
+            controller = controller_module.Controller()
+            controller.setRun(
+                lambda status, endpoint, payload: events.append(payload)
+            )
+            instance._recordTranscriptionPipelineMetric(
+                self._source_metric("capture", "running")
+            )
+            self.assertEqual(len(events), 1)
+            instance.setTranscriptionPipelineMetricCallback(
+                replacement_events.append
+            )
+
+            self.assertEqual(
+                controller.shutdown(),
+                {"status": 200, "result": True},
+            )
+            self.assertEqual(
+                controller.shutdown(),
+                {"status": 200, "result": True},
+            )
+            instance._recordTranscriptionPipelineMetric(
+                self._source_metric("capture", "recovered", observed_at_ms=2)
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(len(replacement_events), 1)
+
+    def test_production_metric_retention_is_bounded_and_keeps_newest_events(self):
+        instance = object.__new__(Model)
+        instance._recordTranscriptionPipelineMetric(
+            self._source_metric("capture", "running", observed_at_ms=0)
+        )
+        retention_limit = getattr(
+            instance.transcription_pipeline_metrics,
+            "maxlen",
+            None,
+        )
+        self.assertIsNotNone(retention_limit)
+
+        for observed_at_ms in range(1, retention_limit + 4):
+            instance._recordTranscriptionPipelineMetric(
+                self._source_metric(
+                    "capture",
+                    "running",
+                    observed_at_ms=observed_at_ms,
+                )
+            )
+
+        self.assertEqual(
+            len(instance.transcription_pipeline_metrics),
+            retention_limit,
+        )
+        self.assertEqual(
+            instance.transcription_pipeline_metrics[-1].observed_at_ms,
+            retention_limit + 3,
+        )
+        self.assertGreater(
+            instance.transcription_pipeline_metrics[0].observed_at_ms,
+            0,
+        )
+
     def test_lifecycle_metric_matrix_uses_null_traces_and_never_emits_text(self):
         instance = object.__new__(Model)
         instance.transcription_pipeline_metrics = []
