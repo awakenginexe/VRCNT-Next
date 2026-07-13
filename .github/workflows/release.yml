@@ -46,7 +46,7 @@ jobs:
           HF_XET_HIGH_PERFORMANCE: '1'
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check huggingface_hub==0.32.2 hf-xet==1.1.2
+          python -m pip install --disable-pip-version-check huggingface_hub==0.34.4 hf-xet==1.1.8
 
           $wheelName = "sherpa_onnx-1.13.0+cuda12.cudnn9-cp311-cp311-win_amd64.whl"
           $wheelDir = Join-Path $env:RUNNER_TEMP "vrcnt-cuda-wheel"
@@ -127,7 +127,7 @@ jobs:
           }
 
       - name: Install Python script dependencies
-        run: pip install tqdm huggingface_hub==0.34.4
+        run: pip install tqdm huggingface_hub==0.34.4 hf-xet==1.1.8
 
       - name: Read release configuration
         env:

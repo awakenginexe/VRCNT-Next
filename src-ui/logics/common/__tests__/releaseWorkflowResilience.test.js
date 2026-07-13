@@ -64,6 +64,17 @@ test("release workflow prefetches and verifies the pinned CUDA wheel through hf-
 });
 
 
+test("release tooling keeps huggingface_hub and hf-xet on a compatible pair", () => {
+    assert.match(workflow, /huggingface_hub==0\.34\.4 hf-xet==1\.1\.8/);
+    assert.equal(
+        workflow.match(/hf-xet==1\.1\.8/g)?.length,
+        2,
+        "prefetch and upload tooling must install the same tested hf-xet version",
+    );
+    assert.doesNotMatch(workflow, /hf-xet==1\.1\.2/);
+});
+
+
 test("Python setup deterministically installs an explicitly prefetched CUDA wheel", () => {
     assert.match(pythonInstaller, /if defined VRCNT_CUDA_WHEEL_PATH/);
     assert.match(
