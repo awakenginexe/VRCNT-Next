@@ -114,7 +114,7 @@ def normalizeTranslationEngineSelection(selection, fallback: str = DEFAULT_TRANS
 
 
 def boundedTranslationProviderSnapshot(selection) -> tuple[str, ...]:
-    """Return at most two explicitly selected, distinct provider names."""
+    """Return at most two providers without local fallback behind online."""
     if isinstance(selection, str):
         values = [selection]
     elif isinstance(selection, (list, tuple)):
@@ -129,10 +129,22 @@ def boundedTranslationProviderSnapshot(selection) -> tuple[str, ...]:
         provider = value.strip()
         if not provider or provider in providers:
             continue
+        if provider == "CTranslate2" and providers and providers[0] != "CTranslate2":
+            continue
         providers.append(provider)
         if len(providers) == 2:
             break
     return tuple(providers)
+
+
+def collapseTranslationProviderSnapshot(selection):
+    """Collapse a bounded provider snapshot without inventing a provider."""
+    providers = boundedTranslationProviderSnapshot(selection)
+    if not providers:
+        return ""
+    if len(providers) == 1:
+        return providers[0]
+    return list(providers)
 
 
 def collapseTranslationEngineSelection(engines: list[str], fallback: str = DEFAULT_TRANSLATION_ENGINE):

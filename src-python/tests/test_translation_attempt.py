@@ -370,6 +370,25 @@ class LegacyTranslationTests(unittest.TestCase):
         )
         self.assertEqual(model_module.boundedTranslationProviderSnapshot(["", "  ", None]), ())
         self.assertEqual(model_module.boundedTranslationProviderSnapshot("  Google  "), ("Google",))
+        self.assertEqual(
+            model_module.boundedTranslationProviderSnapshot(["Google", "CTranslate2"]),
+            ("Google",),
+        )
+        self.assertEqual(
+            model_module.boundedTranslationProviderSnapshot(
+                ["Google", "CTranslate2", "Bing"]
+            ),
+            ("Google", "Bing"),
+        )
+        self.assertEqual(
+            model_module.boundedTranslationProviderSnapshot(["CTranslate2", "Bing"]),
+            ("CTranslate2", "Bing"),
+        )
+        self.assertEqual(
+            model_module.collapseTranslationProviderSnapshot(["Google", "CTranslate2"]),
+            "Google",
+        )
+        self.assertEqual(model_module.collapseTranslationProviderSnapshot([]), "")
 
     def _make_model(self, selection, provider):
         instance = object.__new__(model_module.Model)
@@ -438,7 +457,7 @@ class LegacyTranslationTests(unittest.TestCase):
                 self.assertEqual(translations, [False])
                 self.assertEqual(success, [False])
 
-    def test_ctranslate2_is_only_used_when_present_in_original_snapshot(self):
+    def test_online_primary_never_falls_back_to_ctranslate2(self):
         provider = FakeProvider([False])
         instance, config_patch = self._make_model(["Google"], provider)
         with config_patch:
@@ -448,13 +467,26 @@ class LegacyTranslationTests(unittest.TestCase):
         self.assertEqual(translations, [False])
         self.assertEqual(success, [False])
 
-        provider = FakeProvider([False, "local translation"])
+        provider = FakeProvider([False])
         instance, config_patch = self._make_model(["Google", "CTranslate2"], provider)
         with config_patch:
             translations, success = instance.getInputTranslate("message", source_language="Japanese")
 
-        self.assertEqual(provider.providers, ["Google", "CTranslate2"])
-        self.assertEqual(translations, ["local translation"])
+        self.assertEqual(provider.providers, ["Google"])
+        self.assertEqual(translations, [False])
+        self.assertEqual(success, [False])
+
+    def test_ctranslate2_primary_may_fall_back_to_online_secondary(self):
+        provider = FakeProvider([False, "online translation"])
+        instance, config_patch = self._make_model(["CTranslate2", "Bing"], provider)
+        with config_patch:
+            translations, success = instance.getInputTranslate(
+                "message",
+                source_language="Japanese",
+            )
+
+        self.assertEqual(provider.providers, ["CTranslate2", "Bing"])
+        self.assertEqual(translations, ["online translation"])
         self.assertEqual(success, [True])
 
 
