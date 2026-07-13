@@ -949,7 +949,6 @@ class Controller:
                         translation, success = model.getInputTranslate(message)
 
                     if all(success) is not True:
-                        self.changeToCTranslate2Process()
                         error_response = VRCTError.create_error_response(
                             ErrorCode.TRANSLATION_ENGINE_LIMIT,
                             data=None

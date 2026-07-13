@@ -1,7 +1,10 @@
 from os import path as os_path
 import importlib
 import sys
+from time import perf_counter
+
 from deepl import DeepLClient
+import requests
 
 try:
     from .translation_languages import translation_lang
@@ -12,11 +15,16 @@ except Exception:
     from translation_utils import ctranslate2_weights, _prepareCtrTranslate2Runtime, loadCTranslate2Tokenizer
 
 from utils import errorLogging, getBestComputeType
+from models.pipeline.pipeline_types import TranslationAttempt, TranslationStatus
 
 import warnings
 from typing import Any, Optional, Tuple
 
 warnings.filterwarnings("ignore")
+
+
+PROVIDER_TIMEOUT_EXCEPTIONS = (TimeoutError, requests.exceptions.Timeout)
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = 5.0
 
 
 def _getCtrTranslate2():
@@ -432,162 +440,233 @@ class Translator:
                 target_language = translation_lang[translator_name]["target"][target_language]
         return source_language, target_language
 
-    def translate(self, translator_name: str, weight_type: str, source_language: str, target_language: str, target_country: str, message: str, context_history: Optional[list[dict]] = None) -> Any:
-        """Translate `message` using the named translator backend.
-
-        Args:
-            translator_name: Name of the translator backend to use
-            weight_type: Model weight type for CTranslate2
-            source_language: Source language name
-            target_language: Target language name
-            target_country: Target country for locale-specific translations
-            message: Text to translate
-            context_history: Optional conversation context (Chat/Mic/Speaker messages)
-
-        Returns translated string on success, or False on failure. When
-        source_language == target_language the original message is returned.
-        """
-        try:
-            if source_language == target_language:
-                return message
-
-            result: Any = False
+    def _translate_once(
+        self,
+        name: str,
+        weight: str,
+        source: str,
+        target: str,
+        country: str,
+        message: str,
+        context: Optional[list[dict]],
+        timeout_seconds: float,
+    ) -> Any:
+        """Dispatch one provider call, leaving classification to the caller."""
+        result: Any = False
+        if self._web_translator is None:
+            self._web_translator = _getWebTranslator()
             if self._web_translator is None:
-                self._web_translator = _getWebTranslator()
-                if self._web_translator is None:
-                    self.is_enable_translators = False
-            source_language, target_language = self.getLanguageCode(translator_name, weight_type, target_country, source_language, target_language)
-            match translator_name:
-                case "DeepL":
-                    if self.is_enable_translators is True and self._web_translator is not None:
-                        result = self._web_translator(
-                            query_text=message,
-                            translator="deepl",
-                            from_language=source_language,
-                            to_language=target_language,
-                        )
-                case "DeepL_API":
-                    if self.is_enable_translators is True:
-                        if self.deepl_client is None:
-                            result = False
-                        else:
-                            result = self.deepl_client.translate_text(
-                                message,
-                                source_lang=source_language,
-                                target_lang=target_language
-                                ).text
-                case "Plamo_API":
-                    if self.plamo_client is None:
+                self.is_enable_translators = False
+        source, target = self.getLanguageCode(name, weight, country, source, target)
+        match name:
+            case "DeepL":
+                if self.is_enable_translators is True and self._web_translator is not None:
+                    result = self._web_translator(
+                        query_text=message,
+                        translator="deepl",
+                        from_language=source,
+                        to_language=target,
+                    )
+            case "DeepL_API":
+                if self.is_enable_translators is True:
+                    if self.deepl_client is None:
                         result = False
                     else:
-                        if context_history:
-                            self.plamo_client.setContextHistory(context_history)
-                        result = self.plamo_client.translate(
+                        result = self.deepl_client.translate_text(
                             message,
-                            input_lang=source_language,
-                            output_lang=target_language,
-                            )
-                case "Gemini_API":
-                    if self.gemini_client is None:
-                        result = False
-                    else:
-                        if context_history:
-                            self.gemini_client.setContextHistory(context_history)
-                        result = self.gemini_client.translate(
-                            message,
-                            input_lang=source_language,
-                            output_lang=target_language,
-                            )
-                case "OpenAI_API":
-                    if self.openai_client is None:
-                        result = False
-                    else:
-                        if context_history:
-                            self.openai_client.setContextHistory(context_history)
-                        result = self.openai_client.translate(
-                            message,
-                            input_lang=source_language,
-                            output_lang=target_language,
-                        )
-                case "Groq_API":
-                    if self.groq_client is None:
-                        result = False
-                    else:
-                        if context_history:
-                            self.groq_client.setContextHistory(context_history)
-                        result = self.groq_client.translate(
-                            message,
-                            input_lang=source_language,
-                            output_lang=target_language,
-                        )
-                case "OpenRouter_API":
-                    if self.openrouter_client is None:
-                        result = False
-                    else:
-                        if context_history:
-                            self.openrouter_client.setContextHistory(context_history)
-                        result = self.openrouter_client.translate(
-                            message,
-                            input_lang=source_language,
-                            output_lang=target_language,
-                        )
-                case "LMStudio":
-                    if self.lmstudio_client is None:
-                        result = False
-                    else:
-                        if context_history:
-                            self.lmstudio_client.setContextHistory(context_history)
-                        result = self.lmstudio_client.translate(
-                            message,
-                            input_lang=source_language,
-                            output_lang=target_language,
-                        )
-                case "Ollama":
-                    if self.ollama_client is None:
-                        result = False
-                    else:
-                        if context_history:
-                            self.ollama_client.setContextHistory(context_history)
-                        result = self.ollama_client.translate(
-                            message,
-                            input_lang=source_language,
-                            output_lang=target_language,
-                        )
-                case "Google":
-                    if self.is_enable_translators is True and self._web_translator is not None:
-                        result = self._web_translator(
-                            query_text=message,
-                            translator="google",
-                            from_language=source_language,
-                            to_language=target_language,
-                        )
-                case "Bing":
-                    if self.is_enable_translators is True and self._web_translator is not None:
-                        result = self._web_translator(
-                            query_text=message,
-                            translator="bing",
-                            from_language=source_language,
-                            to_language=target_language,
-                        )
-                case "Papago":
-                    if self.is_enable_translators is True and self._web_translator is not None:
-                        result = self._web_translator(
-                            query_text=message,
-                            translator="papago",
-                            from_language=source_language,
-                            to_language=target_language,
-                        )
-                case "CTranslate2":
-                    result = self.translateCTranslate2(
-                        message=message,
-                        source_language=source_language,
-                        target_language=target_language,
-                        weight_type=weight_type,
-                        )
+                            source_lang=source,
+                            target_lang=target,
+                        ).text
+            case "Plamo_API":
+                if self.plamo_client is not None:
+                    if context:
+                        self.plamo_client.setContextHistory(context)
+                    result = self.plamo_client.translate(
+                        message,
+                        input_lang=source,
+                        output_lang=target,
+                    )
+            case "Gemini_API":
+                if self.gemini_client is not None:
+                    if context:
+                        self.gemini_client.setContextHistory(context)
+                    result = self.gemini_client.translate(
+                        message,
+                        input_lang=source,
+                        output_lang=target,
+                    )
+            case "OpenAI_API":
+                if self.openai_client is not None:
+                    if context:
+                        self.openai_client.setContextHistory(context)
+                    result = self.openai_client.translate(
+                        message,
+                        input_lang=source,
+                        output_lang=target,
+                    )
+            case "Groq_API":
+                if self.groq_client is not None:
+                    if context:
+                        self.groq_client.setContextHistory(context)
+                    result = self.groq_client.translate(
+                        message,
+                        input_lang=source,
+                        output_lang=target,
+                    )
+            case "OpenRouter_API":
+                if self.openrouter_client is not None:
+                    if context:
+                        self.openrouter_client.setContextHistory(context)
+                    result = self.openrouter_client.translate(
+                        message,
+                        input_lang=source,
+                        output_lang=target,
+                    )
+            case "LMStudio":
+                if self.lmstudio_client is not None:
+                    if context:
+                        self.lmstudio_client.setContextHistory(context)
+                    result = self.lmstudio_client.translate(
+                        message,
+                        input_lang=source,
+                        output_lang=target,
+                    )
+            case "Ollama":
+                if self.ollama_client is not None:
+                    if context:
+                        self.ollama_client.setContextHistory(context)
+                    result = self.ollama_client.translate(
+                        message,
+                        input_lang=source,
+                        output_lang=target,
+                    )
+            case "Google":
+                if self.is_enable_translators is True and self._web_translator is not None:
+                    result = self._web_translator(
+                        query_text=message,
+                        translator="google",
+                        from_language=source,
+                        to_language=target,
+                        timeout=timeout_seconds,
+                    )
+            case "Bing":
+                if self.is_enable_translators is True and self._web_translator is not None:
+                    result = self._web_translator(
+                        query_text=message,
+                        translator="bing",
+                        from_language=source,
+                        to_language=target,
+                        timeout=timeout_seconds,
+                    )
+            case "Papago":
+                if self.is_enable_translators is True and self._web_translator is not None:
+                    result = self._web_translator(
+                        query_text=message,
+                        translator="papago",
+                        from_language=source,
+                        to_language=target,
+                    )
+            case "CTranslate2":
+                result = self.translateCTranslate2(
+                    message=message,
+                    source_language=source,
+                    target_language=target,
+                    weight_type=weight,
+                )
+        return result
+
+    def translateAttempt(
+        self,
+        translator_name: str,
+        weight_type: str,
+        source_language: str,
+        target_language: str,
+        target_country: str,
+        message: str,
+        context_history: Optional[list[dict]] = None,
+        timeout_seconds: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+    ) -> TranslationAttempt:
+        """Attempt one provider once and return its structured outcome."""
+        started_at = perf_counter()
+        if source_language == target_language:
+            return TranslationAttempt(
+                status=TranslationStatus.SUCCESS,
+                engine=translator_name,
+                message=message,
+                duration_ms=0,
+                error_code=None,
+            )
+
+        try:
+            result = self._translate_once(
+                translator_name,
+                weight_type,
+                source_language,
+                target_language,
+                target_country,
+                message,
+                context_history,
+                timeout_seconds,
+            )
+        except PROVIDER_TIMEOUT_EXCEPTIONS:
+            return TranslationAttempt(
+                status=TranslationStatus.TIMEOUT,
+                engine=translator_name,
+                message=None,
+                duration_ms=max(0, int((perf_counter() - started_at) * 1000)),
+                error_code="provider_timeout",
+            )
         except Exception:
             errorLogging()
-            result = False
-        return result
+            return TranslationAttempt(
+                status=TranslationStatus.ERROR,
+                engine=translator_name,
+                message=None,
+                duration_ms=max(0, int((perf_counter() - started_at) * 1000)),
+                error_code="provider_error",
+            )
+
+        duration_ms = max(0, int((perf_counter() - started_at) * 1000))
+        if result:
+            return TranslationAttempt(
+                status=TranslationStatus.SUCCESS,
+                engine=translator_name,
+                message=str(result),
+                duration_ms=duration_ms,
+                error_code=None,
+            )
+        return TranslationAttempt(
+            status=TranslationStatus.ERROR,
+            engine=translator_name,
+            message=None,
+            duration_ms=duration_ms,
+            error_code="empty_provider_result",
+        )
+
+    def translate(
+        self,
+        translator_name: str,
+        weight_type: str,
+        source_language: str,
+        target_language: str,
+        target_country: str,
+        message: str,
+        context_history: Optional[list[dict]] = None,
+    ) -> Any:
+        """Adapt a single structured attempt to the legacy string/False API."""
+        attempt = self.translateAttempt(
+            translator_name=translator_name,
+            weight_type=weight_type,
+            source_language=source_language,
+            target_language=target_language,
+            target_country=target_country,
+            message=message,
+            context_history=context_history,
+            timeout_seconds=DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+        )
+        if attempt.status is TranslationStatus.SUCCESS:
+            return attempt.message
+        return False
 
 if __name__ == "__main__":
     translator = Translator()

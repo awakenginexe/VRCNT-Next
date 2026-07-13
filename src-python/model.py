@@ -71,6 +71,28 @@ def normalizeTranslationEngineSelection(selection, fallback: str = DEFAULT_TRANS
     return [fallback]
 
 
+def boundedTranslationProviderSnapshot(selection) -> list[str]:
+    """Return at most two explicitly selected, distinct provider names."""
+    if isinstance(selection, str):
+        values = [selection]
+    elif isinstance(selection, (list, tuple)):
+        values = selection
+    else:
+        values = []
+
+    providers = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        provider = value.strip()
+        if not provider or provider in providers:
+            continue
+        providers.append(provider)
+        if len(providers) == 2:
+            break
+    return providers
+
+
 def collapseTranslationEngineSelection(engines: list[str], fallback: str = DEFAULT_TRANSLATION_ENGINE):
     normalized = normalizeTranslationEngineSelection(engines, fallback=fallback)
     if len(normalized) == 1:
@@ -577,20 +599,8 @@ class Model:
         self.translation_history = []
 
     def _getSelectedTranslationEngineCandidates(self) -> list[str]:
-        selected = config.SELECTED_TRANSLATION_ENGINES.get(config.SELECTED_TAB_NO, DEFAULT_TRANSLATION_ENGINE)
-        engines = normalizeTranslationEngineSelection(selected)
-        if len(engines) <= 1:
-            return engines
-
-        indexes = getattr(self, "_translation_round_robin_indexes", None)
-        if not isinstance(indexes, dict):
-            self._translation_round_robin_indexes = {}
-            indexes = self._translation_round_robin_indexes
-
-        tab_no = config.SELECTED_TAB_NO
-        index = indexes.get(tab_no, 0) % len(engines)
-        indexes[tab_no] = (index + 1) % len(engines)
-        return engines[index:] + engines[:index]
+        selected = config.SELECTED_TRANSLATION_ENGINES.get(config.SELECTED_TAB_NO)
+        return boundedTranslationProviderSnapshot(selected)
 
     def getTranslate(self, translator_name, source_language, target_language, target_country, message, fallback_to_ctranslate2=True):
         self.ensure_initialized()
@@ -612,39 +622,15 @@ class Model:
                         context_history=history
                 )
 
-        # 翻訳失敗時のフェールセーフ処理
         if isinstance(translation, str):
             success_flag = True
-        elif fallback_to_ctranslate2 is True and translator_name != DEFAULT_TRANSLATION_ENGINE:
-            while True:
-                translation = self.translator.translate(
-                                    translator_name=DEFAULT_TRANSLATION_ENGINE,
-                                    weight_type=config.CTRANSLATE2_WEIGHT_TYPE,
-                                    source_language=source_language,
-                                    target_language=target_language,
-                                    target_country=target_country,
-                                    message=message
-                            )
-                if translation is not False:
-                    break
-                sleep(0.1)
         return translation, success_flag
 
     def getTranslateWithTranslatorCandidates(self, translator_names, source_language, target_language, target_country, message):
-        candidates = normalizeTranslationEngineSelection(translator_names)
-        if len(candidates) == 1:
-            return self.getTranslate(
-                candidates[0],
-                source_language,
-                target_language,
-                target_country,
-                message,
-            )
-
         last_translation = False
-        for translator_name in candidates:
+        for provider in boundedTranslationProviderSnapshot(translator_names):
             translation, success_flag = self.getTranslate(
-                translator_name,
+                provider,
                 source_language,
                 target_language,
                 target_country,
@@ -654,16 +640,6 @@ class Model:
             if success_flag is True:
                 return translation, True
             last_translation = translation
-
-        if DEFAULT_TRANSLATION_ENGINE not in candidates:
-            return self.getTranslate(
-                candidates[0],
-                source_language,
-                target_language,
-                target_country,
-                message,
-                fallback_to_ctranslate2=True,
-            )
         return last_translation, False
 
     def getInputTranslate(self, message, source_language=None):
