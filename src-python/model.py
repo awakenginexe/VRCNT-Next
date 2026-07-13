@@ -991,7 +991,7 @@ class Model:
             result = ["NoDevice"]
         return result
 
-    def startMicTranscript(self, fnc):
+    def startMicTranscript(self, fnc) -> bool:
         self.ensure_initialized()
         if (
             isinstance(self.mic_print_transcript, threadFnc)
@@ -1005,13 +1005,13 @@ class Model:
         try:
             return self._startMicTranscript(fnc)
         except Exception:
-            self.stopMicTranscript()
+            self.stopMicTranscript(stop_pipeline=False)
             raise
 
-    def _startMicTranscript(self, fnc):
+    def _startMicTranscript(self, fnc) -> bool:
         self.ensure_initialized()
         if config.ENABLE_TRANSCRIPTION_SEND is False:
-            return
+            return False
         mic_host_name = config.SELECTED_MIC_HOST
         mic_device_name = config.SELECTED_MIC_DEVICE
 
@@ -1020,6 +1020,7 @@ class Model:
 
         if len(selected_mic_device) == 0 or mic_device_name == "NoDevice":
             fnc({"text": False, "language": None})
+            return False
         else:
             self.mic_audio_queue = Queue()
             # self.mic_energy_queue = Queue()
@@ -1067,8 +1068,8 @@ class Model:
                 raise
 
             if config.ENABLE_TRANSCRIPTION_SEND is False:
-                self.stopMicTranscript()
-                return
+                self.stopMicTranscript(stop_pipeline=False)
+                return False
 
             audio_queue = self.mic_audio_queue
             transcriber = self.mic_transcriber
@@ -1187,6 +1188,7 @@ class Model:
             # self.mic_get_energy.start()
 
             self.changeMicTranscriptStatus()
+            return True
 
     def resumeMicTranscript(self):
         self.ensure_initialized()
@@ -1381,7 +1383,7 @@ class Model:
             self.mic_energy_recorder.stop()
             self.mic_energy_recorder = None
 
-    def startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> None:
+    def startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> bool:
         self.ensure_initialized()
         if (
             isinstance(self.speaker_print_transcript, threadFnc)
@@ -1395,13 +1397,13 @@ class Model:
         try:
             return self._startSpeakerTranscript(fnc)
         except Exception:
-            self.stopSpeakerTranscript()
+            self.stopSpeakerTranscript(stop_pipeline=False)
             raise
 
-    def _startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> None:
+    def _startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> bool:
         self.ensure_initialized()
         if config.ENABLE_TRANSCRIPTION_RECEIVE is False:
-            return
+            return False
         speaker_device_name = config.SELECTED_SPEAKER_DEVICE
 
         speaker_device_list = device_manager.getSpeakerDevices()
@@ -1411,6 +1413,7 @@ class Model:
             # fnc may be None; only call if callable
             if callable(fnc):
                 fnc({"text": False, "language": None})
+            return False
         else:
             speaker_audio_queue: Queue = Queue()
             self.speaker_audio_queue = speaker_audio_queue
@@ -1457,8 +1460,8 @@ class Model:
                 raise
 
             if config.ENABLE_TRANSCRIPTION_RECEIVE is False:
-                self.stopSpeakerTranscript()
-                return
+                self.stopSpeakerTranscript(stop_pipeline=False)
+                return False
 
             transcriber = self.speaker_transcriber
             stop_event = Event()
@@ -1575,6 +1578,7 @@ class Model:
             # self.speaker_get_energy = threadFnc(sendSpeakerEnergy)
             # self.speaker_get_energy.daemon = True
             # self.speaker_get_energy.start()
+            return True
 
     def stopSpeakerTranscript(self, stop_pipeline: bool = True):
         self.ensure_initialized()

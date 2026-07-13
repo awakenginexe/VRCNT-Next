@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from threading import Event
 from unittest.mock import Mock, patch
 
 
@@ -15,10 +16,12 @@ from models.pipeline.pipeline_types import (
     OutputConfigSnapshot,
     PipelineSource,
     PipelineStatusEvent,
+    TranscriptionTrace,
     TranslationStatus,
     TranslationTarget,
     TranslationUpdate,
 )
+from models.pipeline.source_pipeline import SourcePipeline
 
 
 class _ImmediatePipeline:
@@ -362,6 +365,239 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
         fake_model.logger = Mock()
         return fake_model
 
+    @staticmethod
+    def _trace_for_task(task):
+        return TranscriptionTrace(
+            trace_id=task.trace_id,
+            generation=task.generation,
+            source=task.source,
+            original_message=task.original_message,
+            source_language=task.source_language,
+            original_transliteration=task.original_transliteration,
+            targets=task.targets,
+            providers=("Google",),
+            ctranslate2_weight_type="unused",
+            context_history=(),
+            started_at_monotonic=task.started_at_monotonic,
+            output_config=task.output_config,
+        )
+
+    def test_mic_finalizer_isolates_first_telemetry_failure_and_raises_after_all_sinks(self):
+        events = []
+        controller = controller_module.Controller()
+        controller.run_mapping = {
+            "transcription_mic": "/transcription/mic",
+            "error_translation_engine": "/translation/error",
+        }
+
+        def run(status, endpoint, payload):
+            events.append(
+                "source"
+                if endpoint == "/transcription/mic"
+                else "translation_error"
+            )
+
+        controller.run = run
+        controller._is_overlay_available = lambda: events.append("overlay_available") or True
+        fake_model = self._effect_model()
+
+        def telemetry(feature):
+            events.append(f"telemetry:{feature}")
+            if feature == "mic_speech_to_text":
+                raise RuntimeError("sensitive telemetry detail")
+
+        fake_model.telemetryTrackCoreFeature.side_effect = telemetry
+        fake_model.oscSendMessage.side_effect = lambda message: events.append("osc")
+        fake_model.createOverlayImageLargeLog.side_effect = (
+            lambda *args: events.append("overlay_render") or "image"
+        )
+        fake_model.updateOverlayLargeLog.side_effect = lambda image: events.append("overlay_update")
+        fake_model.setCopyToClipboardAndPasteFromClipboard.side_effect = (
+            lambda message: events.append("clipboard")
+        )
+        fake_model.checkWebSocketServerAlive.side_effect = (
+            lambda: events.append("websocket_alive") or True
+        )
+        fake_model.websocketSendMessage.side_effect = lambda payload: events.append("websocket")
+        fake_model.logger.info.side_effect = lambda message: events.append("logger")
+        fake_model.addTranslationHistory.side_effect = lambda *args: events.append("history")
+        task = FinalOutputTask(
+            "mic-isolation",
+            0,
+            PipelineSource.MIC,
+            "spoken",
+            "English",
+            (),
+            (
+                TranslationTarget("1", "Japanese", "Japan"),
+                TranslationTarget("2", "French", "France"),
+            ),
+            (
+                TranslationUpdate(
+                    "mic-isolation", "1", TranslationStatus.ERROR, "Google", None, (), 1, 0, "failed"
+                ),
+                TranslationUpdate(
+                    "mic-isolation", "2", TranslationStatus.SUCCESS, "Google", "deux", (), 1, 0, None
+                ),
+            ),
+            _output_snapshot(),
+            1.0,
+        )
+
+        with patch.object(controller_module, "model", fake_model):
+            controller._emitInitialTranscriptionTrace(self._trace_for_task(task))
+            with self.assertRaisesRegex(RuntimeError, "final output sinks failed: telemetry") as raised:
+                controller._finalizeMicOutput(task)
+
+        self.assertNotIn("sensitive telemetry detail", str(raised.exception))
+        self.assertEqual(
+            events,
+            [
+                "source",
+                "telemetry:mic_speech_to_text",
+                "telemetry:translation",
+                "translation_error",
+                "osc",
+                "overlay_available",
+                "overlay_render",
+                "overlay_update",
+                "clipboard",
+                "websocket_alive",
+                "websocket",
+                "logger",
+                "history",
+            ],
+        )
+
+    def test_speaker_finalizer_isolates_mid_overlay_failure_and_continues(self):
+        events = []
+        controller = controller_module.Controller()
+        controller.run_mapping = {"transcription_speaker": "/transcription/speaker"}
+        controller.run = lambda status, endpoint, payload: events.append("source")
+        controller._is_overlay_available = lambda: events.append("overlay_available") or True
+        fake_model = self._effect_model()
+        fake_model.telemetryTrackCoreFeature.side_effect = (
+            lambda feature: events.append(f"telemetry:{feature}")
+        )
+        fake_model.createOverlayImageSmallLog.side_effect = (
+            lambda *args: events.append("small_render") or "small"
+        )
+
+        def fail_small_update(image):
+            events.append("small_update")
+            raise RuntimeError("overlay driver detail")
+
+        fake_model.updateOverlaySmallLog.side_effect = fail_small_update
+        fake_model.createOverlayImageLargeLog.side_effect = (
+            lambda *args: events.append("large_render") or "large"
+        )
+        fake_model.updateOverlayLargeLog.side_effect = lambda image: events.append("large_update")
+        fake_model.oscSendMessage.side_effect = lambda message: events.append("osc")
+        fake_model.checkWebSocketServerAlive.side_effect = (
+            lambda: events.append("websocket_alive") or True
+        )
+        fake_model.websocketSendMessage.side_effect = lambda payload: events.append("websocket")
+        fake_model.logger.info.side_effect = lambda message: events.append("logger")
+        fake_model.addTranslationHistory.side_effect = lambda *args: events.append("history")
+        task = FinalOutputTask(
+            "speaker-isolation",
+            0,
+            PipelineSource.SPEAKER,
+            "heard",
+            "English",
+            (),
+            (TranslationTarget("1", "Japanese", "Japan"),),
+            (
+                TranslationUpdate(
+                    "speaker-isolation", "1", TranslationStatus.SUCCESS, "Google", "ichi", (), 1, 0, None
+                ),
+            ),
+            _output_snapshot(enable_clipboard=False),
+            1.0,
+        )
+
+        with patch.object(controller_module, "model", fake_model):
+            controller._emitInitialTranscriptionTrace(self._trace_for_task(task))
+            with self.assertRaisesRegex(RuntimeError, "final output sinks failed: overlay_small"):
+                controller._finalizeSpeakerOutput(task)
+
+        self.assertEqual(
+            events,
+            [
+                "source",
+                "telemetry:speaker_speech_to_text",
+                "telemetry:translation",
+                "overlay_available",
+                "small_render",
+                "small_update",
+                "overlay_available",
+                "large_render",
+                "large_update",
+                "osc",
+                "websocket_alive",
+                "websocket",
+                "logger",
+                "history",
+            ],
+        )
+
+    def test_source_pipeline_reports_one_output_error_after_isolated_sink_failure(self):
+        output_error = Event()
+        metrics = []
+        controller = controller_module.Controller()
+        fake_model = self._effect_model()
+        fake_model.telemetryTrackCoreFeature.side_effect = RuntimeError("telemetry detail")
+
+        def metric(event):
+            metrics.append(event)
+            if event.stage == "output" and event.outcome == "error":
+                output_error.set()
+
+        pipeline = SourcePipeline(
+            source=PipelineSource.MIC,
+            translator=Mock(),
+            transliterate=lambda *args: (),
+            emit_initial=lambda trace: None,
+            emit_update=lambda update: None,
+            emit_metric=metric,
+            emit_final=controller._finalizeMicOutput,
+            is_generation_current=lambda generation: True,
+        )
+        trace = TranscriptionTrace(
+            "mic-output-error",
+            0,
+            PipelineSource.MIC,
+            "spoken",
+            "English",
+            (),
+            (),
+            (),
+            "unused",
+            (),
+            1.0,
+            _output_snapshot(
+                translation_enabled=False,
+                send_message_to_vrc=False,
+                overlay_large_log=False,
+                enable_clipboard=False,
+                logger_feature=False,
+                websocket_requested=False,
+            ),
+        )
+
+        with patch.object(controller_module, "model", fake_model):
+            pipeline.start(0)
+            try:
+                self.assertTrue(pipeline.submit_trace(trace))
+                self.assertTrue(output_error.wait(2.0))
+            finally:
+                pipeline.stop(0)
+
+        outcomes = [event.outcome for event in metrics if event.stage == "output"]
+        self.assertEqual(outcomes, ["running", "error"])
+        fake_model.addTranslationHistory.assert_called_once_with("mic", "spoken")
+        self.assertNotIn(trace.trace_id, pipeline._records)
+
     def test_mic_finalizer_preserves_partial_success_effects_and_slot_alignment(self):
         controller = controller_module.Controller()
         controller.run_mapping = {"error_translation_engine": "/run/error_translation_engine"}
@@ -553,11 +789,13 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
             self.assertEqual(events[0][0], "ensure")
             events.append(("callback", PipelineSource.MIC))
             callback({"text": "", "language": "English"})
+            return True
 
         def start_speaker(callback):
             self.assertEqual(events[-1][0], "ensure")
             events.append(("callback", PipelineSource.SPEAKER))
             callback({"text": "", "language": "English"})
+            return True
 
         fake_model.ensureSourcePipeline.side_effect = ensure
         fake_model.startMicTranscript.side_effect = start_mic
@@ -576,6 +814,103 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
                 ("callback", PipelineSource.SPEAKER),
             ],
         )
+
+    def test_controller_rolls_back_ensured_pipeline_on_nonstart_and_exception(self):
+        for source in (PipelineSource.MIC, PipelineSource.SPEAKER):
+            for outcome in (False, RuntimeError("start failed"), True):
+                with self.subTest(source=source.value, outcome=repr(outcome)):
+                    events = []
+                    controller = controller_module.Controller()
+                    controller.run_mapping = {
+                        "enable_transcription_send": "/enable/mic",
+                        "enable_transcription_receive": "/enable/speaker",
+                    }
+                    controller.run = Mock()
+                    fake_model = Mock()
+                    fake_model.ensureSourcePipeline.side_effect = (
+                        lambda candidate, callbacks, generation: events.append(
+                            ("ensure", candidate)
+                        )
+                    )
+
+                    def start(callback):
+                        events.append(("start", source))
+                        if isinstance(outcome, Exception):
+                            raise outcome
+                        return outcome
+
+                    if source is PipelineSource.MIC:
+                        fake_model.startMicTranscript.side_effect = start
+                    else:
+                        fake_model.startSpeakerTranscript.side_effect = start
+                    fake_model.stopSourcePipeline.side_effect = (
+                        lambda candidate: events.append(("stop", candidate))
+                    )
+                    fake_model.detectVRAMError.return_value = (False, None)
+
+                    with patch.object(controller_module, "model", fake_model), _config_patch():
+                        if source is PipelineSource.MIC:
+                            controller.startTranscriptionSendMessage()
+                        else:
+                            controller.startTranscriptionReceiveMessage()
+
+                    expected = [("ensure", source), ("start", source)]
+                    if outcome is not True:
+                        expected.append(("stop", source))
+                    self.assertEqual(events, expected)
+                    self.assertEqual(
+                        fake_model.stopSourcePipeline.call_count,
+                        0 if outcome is True else 1,
+                    )
+
+    def test_model_disabled_and_no_device_starts_return_false_without_workers(self):
+        instance = object.__new__(model_module.Model)
+        instance._inited = True
+        instance.mic_print_transcript = None
+        instance.mic_audio_recorder = None
+        instance.mic_whisper_runtime_lease = None
+        instance.speaker_print_transcript = None
+        instance.speaker_audio_recorder = None
+        instance.speaker_whisper_runtime_lease = None
+        instance.mic_source_pipeline = None
+        instance.speaker_source_pipeline = None
+        instance._source_pipeline_generations = {}
+
+        with patch.multiple(
+            model_module.config,
+            _ENABLE_TRANSCRIPTION_SEND=False,
+            _ENABLE_TRANSCRIPTION_RECEIVE=False,
+        ):
+            self.assertIs(instance.startMicTranscript(Mock()), False)
+            self.assertIs(instance.startSpeakerTranscript(Mock()), False)
+
+        mic_results = []
+        speaker_results = []
+        with patch.multiple(
+            model_module.config,
+            _ENABLE_TRANSCRIPTION_SEND=True,
+            _ENABLE_TRANSCRIPTION_RECEIVE=True,
+            _SELECTED_MIC_HOST="host",
+            _SELECTED_MIC_DEVICE="NoDevice",
+            _SELECTED_SPEAKER_DEVICE="NoDevice",
+        ), patch.object(
+            model_module.device_manager,
+            "getMicDevices",
+            return_value={"host": [{"name": "NoDevice"}]},
+        ), patch.object(
+            model_module.device_manager,
+            "getSpeakerDevices",
+            return_value=[{"name": "NoDevice"}],
+        ):
+            self.assertIs(instance.startMicTranscript(mic_results.append), False)
+            self.assertIs(instance.startSpeakerTranscript(speaker_results.append), False)
+
+        self.assertEqual(mic_results, [{"text": False, "language": None}])
+        self.assertEqual(speaker_results, [{"text": False, "language": None}])
+        self.assertIsNone(instance.mic_print_transcript)
+        self.assertIsNone(instance.speaker_print_transcript)
+        self.assertIsNone(instance.mic_source_pipeline)
+        self.assertIsNone(instance.speaker_source_pipeline)
 
     def test_model_owns_started_pipeline_and_stops_matching_source(self):
         instances = []
@@ -612,8 +947,15 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
             self.assertEqual(pipeline.started, [4])
             self.assertTrue(instance.isSourcePipelineGenerationCurrent(PipelineSource.MIC, 4))
             instance.stopSourcePipeline(PipelineSource.MIC)
+            instance.stopSourcePipeline(PipelineSource.MIC)
+            replacement = instance.ensureSourcePipeline(PipelineSource.MIC, callbacks, 4)
+            instance.stopSourcePipeline(PipelineSource.MIC)
+            instance.stopSourcePipeline(PipelineSource.MIC)
 
         self.assertEqual(pipeline.stopped, [(4, True)])
+        self.assertIsNot(replacement, pipeline)
+        self.assertEqual(replacement.started, [4])
+        self.assertEqual(replacement.stopped, [(4, True)])
         self.assertIsNone(instance.getSourcePipeline(PipelineSource.MIC))
         self.assertFalse(instance.isSourcePipelineGenerationCurrent(PipelineSource.MIC, 4))
 

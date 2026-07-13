@@ -266,28 +266,27 @@ class Controller:
             ),
         )
         engine = trace.providers[0] if trace.providers else None
-        self.run(
-            200,
-            endpoint,
-            {
-                "trace_id": trace.trace_id,
-                "original": {
-                    "message": trace.original_message,
-                    "transliteration": list(trace.original_transliteration),
-                },
-                "translations": [
-                    {
-                        "target_slot": target.target_slot,
-                        "message": None,
-                        "transliteration": [],
-                        "status": TranslationStatus.QUEUED.value,
-                        "engine": engine,
-                        "duration_ms": None,
-                    }
-                    for target in trace.targets
-                ],
+        payload = {
+            "trace_id": trace.trace_id,
+            "original": {
+                "message": trace.original_message,
+                "transliteration": list(trace.original_transliteration),
             },
-        )
+            "translations": [
+                {
+                    "target_slot": target.target_slot,
+                    "message": None,
+                    "transliteration": [],
+                    "status": TranslationStatus.QUEUED.value,
+                    "engine": engine,
+                    "duration_ms": None,
+                }
+                for target in trace.targets
+            ],
+        }
+        if not self._generationCurrent(trace):
+            return
+        self.run(200, endpoint, payload)
 
     def _beginTranscriptionTrace(
         self,
@@ -450,12 +449,48 @@ class Controller:
 
     @staticmethod
     def _generationCurrent(task: FinalOutputTask) -> bool:
-        return bool(
-            model.isSourcePipelineGenerationCurrent(task.source, task.generation)
-        )
+        try:
+            return bool(
+                model.isSourcePipelineGenerationCurrent(task.source, task.generation)
+            )
+        except Exception:
+            try:
+                errorLogging()
+            except Exception:
+                pass
+            return False
+
+    def _attemptFinalOutputSink(
+        self,
+        task: FinalOutputTask,
+        sink_name: str,
+        failures: list[str],
+        callback: Callable[[], None],
+    ) -> bool:
+        if not self._generationCurrent(task):
+            return False
+        try:
+            callback()
+        except Exception:
+            try:
+                errorLogging()
+            except Exception:
+                pass
+            if sink_name not in failures:
+                failures.append(sink_name)
+        return self._generationCurrent(task)
+
+    @staticmethod
+    def _raiseFinalOutputFailures(failures: list[str]) -> None:
+        if failures:
+            raise RuntimeError(
+                "final output sinks failed: " + ", ".join(failures)
+            ) from None
 
     def _emitTranslationFailure(self, task: FinalOutputTask) -> None:
         if task.source is PipelineSource.MIC:
+            if not self._generationCurrent(task):
+                return
             self.run(
                 400,
                 self.run_mapping.get(
@@ -469,6 +504,8 @@ class Controller:
             ErrorCode.TRANSLATION_ENGINE_LIMIT,
             data=None,
         )
+        if not self._generationCurrent(task):
+            return
         self.run(
             error_response["status"],
             self.run_mapping.get(
@@ -486,69 +523,92 @@ class Controller:
             successful_transliterations,
         ) = self._successfulOutputViews(task, output_config.target_languages)
         original_transliteration = list(task.original_transliteration)
+        failures: list[str] = []
 
-        if not self._generationCurrent(task):
+        if not self._attemptFinalOutputSink(
+            task,
+            "telemetry",
+            failures,
+            lambda: model.telemetryTrackCoreFeature("mic_speech_to_text"),
+        ):
             return
-        model.telemetryTrackCoreFeature("mic_speech_to_text")
         if output_config.translation_enabled:
-            if not self._generationCurrent(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "telemetry",
+                failures,
+                lambda: model.telemetryTrackCoreFeature("translation"),
+            ):
                 return
-            model.telemetryTrackCoreFeature("translation")
         if self._translationFailed(task):
-            if not self._generationCurrent(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "translation_error",
+                failures,
+                lambda: self._emitTranslationFailure(task),
+            ):
                 return
-            self._emitTranslationFailure(task)
 
         if output_config.send_message_to_vrc:
-            osc_message = None
-            if output_config.send_only_translated_messages:
-                if not output_config.translation_enabled:
-                    osc_message = self._formatSnapshotMessage(
-                        output_config.send_format,
-                        [],
-                        task.original_message,
-                    )
-                elif successful_translations:
-                    osc_message = self._formatSnapshotMessage(
-                        output_config.send_format,
-                        successful_translations,
-                        "",
-                    )
-            else:
-                osc_message = self._formatSnapshotMessage(
-                    output_config.send_format,
-                    successful_translations,
-                    task.original_message,
-                )
-            if osc_message is not None:
-                if not self._generationCurrent(task):
+            osc_eligible = (
+                not output_config.send_only_translated_messages
+                or not output_config.translation_enabled
+                or bool(successful_translations)
+            )
+            if osc_eligible:
+                def send_osc() -> None:
+                    if output_config.send_only_translated_messages:
+                        if not output_config.translation_enabled:
+                            osc_message = self._formatSnapshotMessage(
+                                output_config.send_format,
+                                [],
+                                task.original_message,
+                            )
+                        else:
+                            osc_message = self._formatSnapshotMessage(
+                                output_config.send_format,
+                                successful_translations,
+                                "",
+                            )
+                    else:
+                        osc_message = self._formatSnapshotMessage(
+                            output_config.send_format,
+                            successful_translations,
+                            task.original_message,
+                        )
+                    if self._generationCurrent(task):
+                        model.oscSendMessage(osc_message)
+
+                if not self._attemptFinalOutputSink(
+                    task,
+                    "osc",
+                    failures,
+                    send_osc,
+                ):
                     return
-                model.oscSendMessage(osc_message)
 
         if output_config.overlay_large_log:
-            if not self._generationCurrent(task):
-                return
-            overlay_available = self._is_overlay_available()
-            if overlay_available:
+            def update_large_overlay() -> None:
+                if not self._is_overlay_available():
+                    return
+                if (
+                    output_config.overlay_show_only_translated_messages
+                    and not successful_translations
+                ):
+                    return
+                if not self._generationCurrent(task):
+                    return
                 if output_config.overlay_show_only_translated_messages:
-                    if successful_translations:
-                        if not self._generationCurrent(task):
-                            return
-                        overlay_image = model.createOverlayImageLargeLog(
-                            "send",
-                            None,
-                            None,
-                            successful_translations,
-                            successful_target_languages,
-                            original_transliteration,
-                            successful_transliterations,
-                        )
-                        if not self._generationCurrent(task):
-                            return
-                        model.updateOverlayLargeLog(overlay_image)
+                    overlay_image = model.createOverlayImageLargeLog(
+                        "send",
+                        None,
+                        None,
+                        successful_translations,
+                        successful_target_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                    )
                 else:
-                    if not self._generationCurrent(task):
-                        return
                     overlay_image = model.createOverlayImageLargeLog(
                         "send",
                         task.original_message,
@@ -558,39 +618,60 @@ class Controller:
                         original_transliteration,
                         successful_transliterations,
                     )
-                    if not self._generationCurrent(task):
-                        return
+                if self._generationCurrent(task):
                     model.updateOverlayLargeLog(overlay_image)
 
-        if output_config.enable_clipboard:
-            clipboard_message = self._formatSnapshotMessage(
-                output_config.send_format,
-                successful_translations,
-                task.original_message,
-            )
-            if not self._generationCurrent(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "overlay_large",
+                failures,
+                update_large_overlay,
+            ):
                 return
-            model.setCopyToClipboardAndPasteFromClipboard(clipboard_message)
+
+        if output_config.enable_clipboard:
+            def update_clipboard() -> None:
+                clipboard_message = self._formatSnapshotMessage(
+                    output_config.send_format,
+                    successful_translations,
+                    task.original_message,
+                )
+                if self._generationCurrent(task):
+                    model.setCopyToClipboardAndPasteFromClipboard(clipboard_message)
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "clipboard",
+                failures,
+                update_clipboard,
+            ):
+                return
 
         if output_config.websocket_requested:
-            if not self._generationCurrent(task):
-                return
-            websocket_alive = model.checkWebSocketServerAlive()
-            if websocket_alive:
-                if not self._generationCurrent(task):
+            def send_websocket() -> None:
+                if not model.checkWebSocketServerAlive():
                     return
-                model.websocketSendMessage(
-                    {
-                        "type": "SENT",
-                        "src_languages": self._languageMap(
-                            output_config.your_languages
-                        ),
-                        "dst_languages": successful_target_languages,
-                        "message": task.original_message,
-                        "translation": successful_translations,
-                        "transliteration": successful_transliterations,
-                    }
-                )
+                if self._generationCurrent(task):
+                    model.websocketSendMessage(
+                        {
+                            "type": "SENT",
+                            "src_languages": self._languageMap(
+                                output_config.your_languages
+                            ),
+                            "dst_languages": successful_target_languages,
+                            "message": task.original_message,
+                            "translation": successful_translations,
+                            "transliteration": successful_transliterations,
+                        }
+                    )
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "websocket",
+                failures,
+                send_websocket,
+            ):
+                return
 
         if output_config.logger_feature:
             translation_text = (
@@ -598,15 +679,24 @@ class Controller:
                 if successful_translations
                 else ""
             )
-            if not self._generationCurrent(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "logger",
+                failures,
+                lambda: model.logger.info(
+                    f"[SENT] {task.original_message}{translation_text}"
+                ),
+            ):
                 return
-            model.logger.info(
-                f"[SENT] {task.original_message}{translation_text}"
-            )
 
-        if not self._generationCurrent(task):
+        if not self._attemptFinalOutputSink(
+            task,
+            "history",
+            failures,
+            lambda: model.addTranslationHistory("mic", task.original_message),
+        ):
             return
-        model.addTranslationHistory("mic", task.original_message)
+        self._raiseFinalOutputFailures(failures)
 
     def _finalizeSpeakerOutput(self, task: FinalOutputTask) -> None:
         output_config = task.output_config
@@ -619,42 +709,53 @@ class Controller:
             output_config.your_translation_languages,
         )
         original_transliteration = list(task.original_transliteration)
+        failures: list[str] = []
 
-        if not self._generationCurrent(task):
+        if not self._attemptFinalOutputSink(
+            task,
+            "telemetry",
+            failures,
+            lambda: model.telemetryTrackCoreFeature("speaker_speech_to_text"),
+        ):
             return
-        model.telemetryTrackCoreFeature("speaker_speech_to_text")
         if output_config.translation_enabled:
-            if not self._generationCurrent(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "telemetry",
+                failures,
+                lambda: model.telemetryTrackCoreFeature("translation"),
+            ):
                 return
-            model.telemetryTrackCoreFeature("translation")
         if self._translationFailed(task):
-            if not self._generationCurrent(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "translation_error",
+                failures,
+                lambda: self._emitTranslationFailure(task),
+            ):
                 return
-            self._emitTranslationFailure(task)
 
         if output_config.overlay_small_log:
-            if not self._generationCurrent(task):
-                return
-            overlay_available = self._is_overlay_available()
-            if overlay_available:
+            def update_small_overlay() -> None:
+                if not self._is_overlay_available():
+                    return
+                if (
+                    output_config.overlay_show_only_translated_messages
+                    and not successful_translations
+                ):
+                    return
+                if not self._generationCurrent(task):
+                    return
                 if output_config.overlay_show_only_translated_messages:
-                    if successful_translations:
-                        if not self._generationCurrent(task):
-                            return
-                        overlay_image = model.createOverlayImageSmallLog(
-                            None,
-                            None,
-                            successful_translations,
-                            successful_target_languages,
-                            original_transliteration,
-                            successful_transliterations,
-                        )
-                        if not self._generationCurrent(task):
-                            return
-                        model.updateOverlaySmallLog(overlay_image)
+                    overlay_image = model.createOverlayImageSmallLog(
+                        None,
+                        None,
+                        successful_translations,
+                        successful_target_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                    )
                 else:
-                    if not self._generationCurrent(task):
-                        return
                     overlay_image = model.createOverlayImageSmallLog(
                         task.original_message,
                         task.source_language,
@@ -663,34 +764,39 @@ class Controller:
                         original_transliteration,
                         successful_transliterations,
                     )
-                    if not self._generationCurrent(task):
-                        return
+                if self._generationCurrent(task):
                     model.updateOverlaySmallLog(overlay_image)
 
-        if output_config.overlay_large_log:
-            if not self._generationCurrent(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "overlay_small",
+                failures,
+                update_small_overlay,
+            ):
                 return
-            overlay_available = self._is_overlay_available()
-            if overlay_available:
+
+        if output_config.overlay_large_log:
+            def update_large_overlay() -> None:
+                if not self._is_overlay_available():
+                    return
+                if (
+                    output_config.overlay_show_only_translated_messages
+                    and not successful_translations
+                ):
+                    return
+                if not self._generationCurrent(task):
+                    return
                 if output_config.overlay_show_only_translated_messages:
-                    if successful_translations:
-                        if not self._generationCurrent(task):
-                            return
-                        overlay_image = model.createOverlayImageLargeLog(
-                            "receive",
-                            None,
-                            None,
-                            successful_translations,
-                            successful_target_languages,
-                            original_transliteration,
-                            successful_transliterations,
-                        )
-                        if not self._generationCurrent(task):
-                            return
-                        model.updateOverlayLargeLog(overlay_image)
+                    overlay_image = model.createOverlayImageLargeLog(
+                        "receive",
+                        None,
+                        None,
+                        successful_translations,
+                        successful_target_languages,
+                        original_transliteration,
+                        successful_transliterations,
+                    )
                 else:
-                    if not self._generationCurrent(task):
-                        return
                     overlay_image = model.createOverlayImageLargeLog(
                         "receive",
                         task.original_message,
@@ -700,55 +806,80 @@ class Controller:
                         original_transliteration,
                         successful_transliterations,
                     )
-                    if not self._generationCurrent(task):
-                        return
+                if self._generationCurrent(task):
                     model.updateOverlayLargeLog(overlay_image)
 
+            if not self._attemptFinalOutputSink(
+                task,
+                "overlay_large",
+                failures,
+                update_large_overlay,
+            ):
+                return
+
         if output_config.send_received_message_to_vrc:
-            osc_message = None
-            if output_config.send_only_translated_messages:
-                if not output_config.translation_enabled:
-                    osc_message = self._formatSnapshotMessage(
-                        output_config.received_format,
-                        [],
-                        task.original_message,
-                    )
-                elif successful_translations:
-                    osc_message = self._formatSnapshotMessage(
-                        output_config.received_format,
-                        successful_translations,
-                        "",
-                    )
-            else:
-                osc_message = self._formatSnapshotMessage(
-                    output_config.received_format,
-                    successful_translations,
-                    task.original_message,
-                )
-            if osc_message is not None:
-                if not self._generationCurrent(task):
+            osc_eligible = (
+                not output_config.send_only_translated_messages
+                or not output_config.translation_enabled
+                or bool(successful_translations)
+            )
+            if osc_eligible:
+                def send_osc() -> None:
+                    if output_config.send_only_translated_messages:
+                        if not output_config.translation_enabled:
+                            osc_message = self._formatSnapshotMessage(
+                                output_config.received_format,
+                                [],
+                                task.original_message,
+                            )
+                        else:
+                            osc_message = self._formatSnapshotMessage(
+                                output_config.received_format,
+                                successful_translations,
+                                "",
+                            )
+                    else:
+                        osc_message = self._formatSnapshotMessage(
+                            output_config.received_format,
+                            successful_translations,
+                            task.original_message,
+                        )
+                    if self._generationCurrent(task):
+                        model.oscSendMessage(osc_message)
+
+                if not self._attemptFinalOutputSink(
+                    task,
+                    "osc",
+                    failures,
+                    send_osc,
+                ):
                     return
-                model.oscSendMessage(osc_message)
 
         if output_config.websocket_requested:
-            if not self._generationCurrent(task):
-                return
-            websocket_alive = model.checkWebSocketServerAlive()
-            if websocket_alive:
-                if not self._generationCurrent(task):
+            def send_websocket() -> None:
+                if not model.checkWebSocketServerAlive():
                     return
-                model.websocketSendMessage(
-                    {
-                        "type": "RECEIVED",
-                        "src_languages": self._languageMap(
-                            output_config.target_languages
-                        ),
-                        "dst_languages": successful_target_languages,
-                        "message": task.original_message,
-                        "translation": successful_translations,
-                        "transliteration": successful_transliterations,
-                    }
-                )
+                if self._generationCurrent(task):
+                    model.websocketSendMessage(
+                        {
+                            "type": "RECEIVED",
+                            "src_languages": self._languageMap(
+                                output_config.target_languages
+                            ),
+                            "dst_languages": successful_target_languages,
+                            "message": task.original_message,
+                            "translation": successful_translations,
+                            "transliteration": successful_transliterations,
+                        }
+                    )
+
+            if not self._attemptFinalOutputSink(
+                task,
+                "websocket",
+                failures,
+                send_websocket,
+            ):
+                return
 
         if output_config.logger_feature:
             translation_text = (
@@ -756,15 +887,24 @@ class Controller:
                 if successful_translations
                 else ""
             )
-            if not self._generationCurrent(task):
+            if not self._attemptFinalOutputSink(
+                task,
+                "logger",
+                failures,
+                lambda: model.logger.info(
+                    f"[RECEIVED] {task.original_message}{translation_text}"
+                ),
+            ):
                 return
-            model.logger.info(
-                f"[RECEIVED] {task.original_message}{translation_text}"
-            )
 
-        if not self._generationCurrent(task):
+        if not self._attemptFinalOutputSink(
+            task,
+            "history",
+            failures,
+            lambda: model.addTranslationHistory("speaker", task.original_message),
+        ):
             return
-        model.addTranslationHistory("speaker", task.original_message)
+        self._raiseFinalOutputFailures(failures)
 
     def _startupWhisperWeightType(self) -> str:
         selectable_weights = config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT
@@ -3576,14 +3716,25 @@ class Controller:
         while self.device_access_status is False:
             sleep(1)
         self.device_access_status = False
+        pipeline_ensured = False
         try:
             model.ensureSourcePipeline(
                 PipelineSource.MIC,
                 self._sourcePipelineCallbacks(PipelineSource.MIC),
                 self._sourcePipelineGeneration(),
             )
-            model.startMicTranscript(self.micMessage)
+            pipeline_ensured = True
+            session_established = model.startMicTranscript(self.micMessage)
+            if session_established is not True:
+                pipeline_ensured = False
+                model.stopSourcePipeline(PipelineSource.MIC)
         except Exception as e:
+            if pipeline_ensured:
+                pipeline_ensured = False
+                try:
+                    model.stopSourcePipeline(PipelineSource.MIC)
+                except Exception:
+                    errorLogging()
             # VRAM不足エラーの検出
             is_vram_error, error_message = model.detectVRAMError(e)
             if is_vram_error:
@@ -3597,7 +3748,7 @@ class Controller:
                     response["result"],
                 )
                 # ここでマイクの音声認識を停止
-                self.stopTranscriptionSendMessage()
+                model.stopMicTranscript(stop_pipeline=False)
                 config.ENABLE_TRANSCRIPTION_SEND = False
                 disable_response = VRCTError.create_error_response(
                     ErrorCode.TRANSCRIPTION_SEND_DISABLED_VRAM,
@@ -3635,14 +3786,25 @@ class Controller:
         while self.device_access_status is False:
             sleep(1)
         self.device_access_status = False
+        pipeline_ensured = False
         try:
             model.ensureSourcePipeline(
                 PipelineSource.SPEAKER,
                 self._sourcePipelineCallbacks(PipelineSource.SPEAKER),
                 self._sourcePipelineGeneration(),
             )
-            model.startSpeakerTranscript(self.speakerMessage)
+            pipeline_ensured = True
+            session_established = model.startSpeakerTranscript(self.speakerMessage)
+            if session_established is not True:
+                pipeline_ensured = False
+                model.stopSourcePipeline(PipelineSource.SPEAKER)
         except Exception as e:
+            if pipeline_ensured:
+                pipeline_ensured = False
+                try:
+                    model.stopSourcePipeline(PipelineSource.SPEAKER)
+                except Exception:
+                    errorLogging()
             # VRAM不足エラーの検出
             is_vram_error, error_message = model.detectVRAMError(e)
             if is_vram_error:
@@ -3656,7 +3818,7 @@ class Controller:
                     response["result"],
                 )
                 # ここでスピーカーの音声認識を停止
-                self.stopTranscriptionReceiveMessage()
+                model.stopSpeakerTranscript(stop_pipeline=False)
                 config.ENABLE_TRANSCRIPTION_RECEIVE = False
                 disable_response = VRCTError.create_error_response(
                     ErrorCode.TRANSCRIPTION_RECEIVE_DISABLED_VRAM,
