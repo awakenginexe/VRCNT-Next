@@ -929,7 +929,13 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
                     fake_model.detectVRAMError.return_value = (False, None)
 
                     with patch.object(controller_module, "model", fake_model), _config_patch():
-                        if source is PipelineSource.MIC:
+                        if isinstance(outcome, Exception):
+                            with self.assertRaisesRegex(RuntimeError, "start failed"):
+                                if source is PipelineSource.MIC:
+                                    controller.startTranscriptionSendMessage()
+                                else:
+                                    controller.startTranscriptionReceiveMessage()
+                        elif source is PipelineSource.MIC:
                             controller.startTranscriptionSendMessage()
                         else:
                             controller.startTranscriptionReceiveMessage()
@@ -943,7 +949,7 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
                         0 if outcome is True else 1,
                     )
 
-    def test_model_disabled_and_no_device_starts_return_false_without_workers(self):
+    def test_model_disabled_starts_return_false_and_missing_devices_raise_without_workers(self):
         instance = object.__new__(model_module.Model)
         instance._inited = True
         instance.mic_print_transcript = None
@@ -982,11 +988,21 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
             "getSpeakerDevices",
             return_value=[{"name": "NoDevice"}],
         ):
-            self.assertIs(instance.startMicTranscript(mic_results.append), False)
-            self.assertIs(instance.startSpeakerTranscript(speaker_results.append), False)
+            with self.assertRaises(model_module.DeviceUnavailableError) as mic_error:
+                instance.startMicTranscript(mic_results.append)
+            with self.assertRaises(model_module.DeviceUnavailableError) as speaker_error:
+                instance.startSpeakerTranscript(speaker_results.append)
 
-        self.assertEqual(mic_results, [{"text": False, "language": None}])
-        self.assertEqual(speaker_results, [{"text": False, "language": None}])
+        self.assertEqual(
+            mic_error.exception.error_code,
+            model_module.ErrorCode.DEVICE_NO_MIC,
+        )
+        self.assertEqual(
+            speaker_error.exception.error_code,
+            model_module.ErrorCode.DEVICE_NO_SPEAKER,
+        )
+        self.assertEqual(mic_results, [])
+        self.assertEqual(speaker_results, [])
         self.assertIsNone(instance.mic_print_transcript)
         self.assertIsNone(instance.speaker_print_transcript)
         self.assertIsNone(instance.mic_source_pipeline)
