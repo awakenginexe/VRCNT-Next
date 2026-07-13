@@ -4237,6 +4237,13 @@ class Controller:
             return False
         self.device_access_status = False
         try:
+            validate_device = getattr(
+                model,
+                "validateMicTranscriptDevice",
+                None,
+            )
+            if callable(validate_device):
+                validate_device()
             model.ensureSourcePipeline(
                 PipelineSource.MIC,
                 self._sourcePipelineCallbacks(PipelineSource.MIC),
@@ -4245,7 +4252,14 @@ class Controller:
             session_established = model.startMicTranscript(self.micMessage)
             if session_established is not True:
                 model.stopSourcePipeline(PipelineSource.MIC)
-            return session_established is True
+                return False
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                model.stopMicTranscript()
+                return False
+            return True
         except Exception:
             try:
                 model.stopSourcePipeline(PipelineSource.MIC)
@@ -4284,6 +4298,13 @@ class Controller:
             return False
         self.device_access_status = False
         try:
+            validate_device = getattr(
+                model,
+                "validateSpeakerTranscriptDevice",
+                None,
+            )
+            if callable(validate_device):
+                validate_device()
             model.ensureSourcePipeline(
                 PipelineSource.SPEAKER,
                 self._sourcePipelineCallbacks(PipelineSource.SPEAKER),
@@ -4292,7 +4313,14 @@ class Controller:
             session_established = model.startSpeakerTranscript(self.speakerMessage)
             if session_established is not True:
                 model.stopSourcePipeline(PipelineSource.SPEAKER)
-            return session_established is True
+                return False
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                model.stopSpeakerTranscript()
+                return False
+            return True
         except Exception:
             try:
                 model.stopSourcePipeline(PipelineSource.SPEAKER)

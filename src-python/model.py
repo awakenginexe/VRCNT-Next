@@ -1481,6 +1481,24 @@ class Model:
                 errorLogging()
             raise
 
+    def validateMicTranscriptDevice(self) -> dict:
+        """Return the selected mic or fail before source workers are created."""
+        self.ensure_initialized()
+        mic_host_name = config.SELECTED_MIC_HOST
+        mic_device_name = config.SELECTED_MIC_DEVICE
+        mic_device_list = device_manager.getMicDevices().get(
+            mic_host_name,
+            [{"name": "NoDevice"}],
+        )
+        selected_mic_device = [
+            device
+            for device in mic_device_list
+            if device["name"] == mic_device_name
+        ]
+        if len(selected_mic_device) == 0 or mic_device_name == "NoDevice":
+            raise DeviceUnavailableError(ErrorCode.DEVICE_NO_MIC)
+        return selected_mic_device[0]
+
     def _startMicTranscript(self, fnc, generation: Optional[int] = None) -> bool:
         self.ensure_initialized()
         if config.ENABLE_TRANSCRIPTION_SEND is False:
@@ -1489,22 +1507,14 @@ class Model:
             generation = self.getSourcePipelineGeneration(PipelineSource.MIC)
         if generation is None:
             generation = self.nextSourcePipelineGeneration(PipelineSource.MIC)
-        mic_host_name = config.SELECTED_MIC_HOST
-        mic_device_name = config.SELECTED_MIC_DEVICE
-
-        mic_device_list = device_manager.getMicDevices().get(mic_host_name, [{"name": "NoDevice"}])
-        selected_mic_device = [device for device in mic_device_list if device["name"] == mic_device_name]
-
-        if len(selected_mic_device) == 0 or mic_device_name == "NoDevice":
-            raise DeviceUnavailableError(ErrorCode.DEVICE_NO_MIC)
-        else:
+        mic_device = self.validateMicTranscriptDevice()
+        if mic_device is not None:
             self.mic_audio_queue = _MetricAudioQueue(
                 PipelineSource.MIC,
                 self._emitTranscriptionLifecycleMetric,
             )
             # self.mic_energy_queue = Queue()
 
-            mic_device = selected_mic_device[0]
             record_timeout = config.MIC_RECORD_TIMEOUT
             phrase_timeout = config.MIC_PHRASE_TIMEOUT
             if record_timeout > phrase_timeout:
@@ -1955,6 +1965,23 @@ class Model:
                 errorLogging()
             raise
 
+    def validateSpeakerTranscriptDevice(self) -> dict:
+        """Return the selected speaker or fail before source workers start."""
+        self.ensure_initialized()
+        speaker_device_name = config.SELECTED_SPEAKER_DEVICE
+        speaker_device_list = device_manager.getSpeakerDevices()
+        selected_speaker_device = [
+            device
+            for device in speaker_device_list
+            if device["name"] == speaker_device_name
+        ]
+        if (
+            len(selected_speaker_device) == 0
+            or speaker_device_name == "NoDevice"
+        ):
+            raise DeviceUnavailableError(ErrorCode.DEVICE_NO_SPEAKER)
+        return selected_speaker_device[0]
+
     def _startSpeakerTranscript(
         self,
         fnc: Optional[Callable[[dict], None]] = None,
@@ -1967,20 +1994,13 @@ class Model:
             generation = self.getSourcePipelineGeneration(PipelineSource.SPEAKER)
         if generation is None:
             generation = self.nextSourcePipelineGeneration(PipelineSource.SPEAKER)
-        speaker_device_name = config.SELECTED_SPEAKER_DEVICE
-
-        speaker_device_list = device_manager.getSpeakerDevices()
-        selected_speaker_device = [device for device in speaker_device_list if device["name"] == speaker_device_name]
-
-        if len(selected_speaker_device) == 0 or speaker_device_name == "NoDevice":
-            raise DeviceUnavailableError(ErrorCode.DEVICE_NO_SPEAKER)
-        else:
+        speaker_device = self.validateSpeakerTranscriptDevice()
+        if speaker_device is not None:
             speaker_audio_queue = _MetricAudioQueue(
                 PipelineSource.SPEAKER,
                 self._emitTranscriptionLifecycleMetric,
             )
             self.speaker_audio_queue = speaker_audio_queue
-            speaker_device = selected_speaker_device[0]
             record_timeout = config.SPEAKER_RECORD_TIMEOUT
             phrase_timeout = config.SPEAKER_PHRASE_TIMEOUT
             if record_timeout > phrase_timeout:

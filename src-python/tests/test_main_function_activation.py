@@ -137,6 +137,137 @@ class MainFunctionActivationTests(unittest.TestCase):
                 controller.startTranscriptionReceiveMessage()
         self.assertIs(controller.device_access_status, True)
 
+    def test_shutdown_intent_during_source_load_cancels_readiness_and_unwinds_source(self):
+        for source in (PipelineSource.MIC, PipelineSource.SPEAKER):
+            with self.subTest(source=source):
+                start_entered = threading.Event()
+                release_start = threading.Event()
+                source_stopped = threading.Event()
+                shutdown_finished = threading.Event()
+                endpoint_results = []
+                shutdown_results = []
+                fake_model = Mock()
+                fake_model.nextSourcePipelineGeneration.return_value = 1
+                fake_model.detectVRAMError.return_value = (False, None)
+
+                def blocked_start(_callback):
+                    start_entered.set()
+                    self.assertTrue(release_start.wait(WAIT_SECONDS))
+                    return True
+
+                if source is PipelineSource.MIC:
+                    fake_model.startMicTranscript.side_effect = blocked_start
+                    fake_model.stopMicTranscript.side_effect = source_stopped.set
+                    setter_name = "setEnableTranscriptionSend"
+                    config_name = "_ENABLE_TRANSCRIPTION_SEND"
+                else:
+                    fake_model.startSpeakerTranscript.side_effect = blocked_start
+                    fake_model.stopSpeakerTranscript.side_effect = source_stopped.set
+                    setter_name = "setEnableTranscriptionReceive"
+                    config_name = "_ENABLE_TRANSCRIPTION_RECEIVE"
+
+                def run_shutdown(controller):
+                    shutdown_results.append(controller.shutdown())
+                    shutdown_finished.set()
+
+                with (
+                    patch.object(controller_module, "model", fake_model),
+                    patch.object(controller_module.config, config_name, False),
+                ):
+                    controller = Controller()
+                    enable_thread = threading.Thread(
+                        target=lambda: endpoint_results.append(
+                            getattr(controller, setter_name)()
+                        )
+                    )
+                    shutdown_thread = threading.Thread(
+                        target=run_shutdown,
+                        args=(controller,),
+                    )
+                    enable_thread.start()
+                    self.assertTrue(start_entered.wait(WAIT_SECONDS))
+                    shutdown_thread.start()
+                    self.assertTrue(
+                        controller._transcription_shutdown_requested.wait(
+                            WAIT_SECONDS
+                        )
+                    )
+                    release_start.set()
+                    enable_thread.join(WAIT_SECONDS)
+                    shutdown_thread.join(WAIT_SECONDS)
+
+                self.assertFalse(enable_thread.is_alive())
+                self.assertFalse(shutdown_thread.is_alive())
+                self.assertTrue(shutdown_finished.is_set())
+                self.assertTrue(source_stopped.is_set())
+                self.assertEqual(len(endpoint_results), 1)
+                self.assertNotEqual(endpoint_results[0]["status"], 200)
+                self.assertIs(endpoint_results[0]["result"]["data"], False)
+                self.assertIs(
+                    getattr(controller_module.config, config_name[1:]),
+                    False,
+                )
+                self.assertEqual(
+                    shutdown_results,
+                    [{"status": 200, "result": True}],
+                )
+
+    def test_missing_device_is_rejected_before_pipeline_allocation(self):
+        exception_type = getattr(errors_module, "DeviceUnavailableError", RuntimeError)
+        for source, error_code in (
+            (PipelineSource.MIC, errors_module.ErrorCode.DEVICE_NO_MIC),
+            (PipelineSource.SPEAKER, errors_module.ErrorCode.DEVICE_NO_SPEAKER),
+        ):
+            with self.subTest(source=source):
+                controller = _controller_for_activation()
+                config_name = (
+                    "_ENABLE_TRANSCRIPTION_SEND"
+                    if source is PipelineSource.MIC
+                    else "_ENABLE_TRANSCRIPTION_RECEIVE"
+                )
+                setter = (
+                    controller.setEnableTranscriptionSend
+                    if source is PipelineSource.MIC
+                    else controller.setEnableTranscriptionReceive
+                )
+                validation_name = (
+                    "validateMicTranscriptDevice"
+                    if source is PipelineSource.MIC
+                    else "validateSpeakerTranscriptDevice"
+                )
+                start_name = (
+                    "startMicTranscript"
+                    if source is PipelineSource.MIC
+                    else "startSpeakerTranscript"
+                )
+                with (
+                    patch.object(controller_module.config, config_name, False),
+                    patch.object(
+                        model_module.model,
+                        validation_name,
+                        create=True,
+                        side_effect=exception_type(error_code),
+                    ) as validate,
+                    patch.object(
+                        model_module.model,
+                        "ensureSourcePipeline",
+                    ) as ensure_pipeline,
+                    patch.object(
+                        model_module.model,
+                        start_name,
+                        side_effect=exception_type(error_code),
+                    ) as start,
+                    patch.object(model_module.model, "stopSourcePipeline"),
+                    patch.object(model_module.model, "stopMicTranscript"),
+                    patch.object(model_module.model, "stopSpeakerTranscript"),
+                ):
+                    response = setter()
+
+                self._assert_activation_error(response, error_code.value)
+                validate.assert_called_once_with()
+                ensure_pipeline.assert_not_called()
+                start.assert_not_called()
+
     def _assert_direct_transcription_error(self, source, error, expected_code):
         controller = _controller_for_activation()
         config_name = (
