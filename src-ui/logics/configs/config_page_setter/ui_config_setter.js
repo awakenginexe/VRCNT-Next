@@ -574,6 +574,14 @@ export const SETTINGS_ARRAY = [
     },
     {
         Category: "Transcription",
+        Base_Name: "WhisperDecodingProfile",
+        default_value: "balanced",
+        ui_template_id: "select",
+        logics_template_id: "get_set",
+        base_endpoint_name: "whisper_decoding_profile",
+    },
+    {
+        Category: "Transcription",
         Base_Name: "SelectableTranscriptionComputeDeviceList",
         default_value: [],
         ui_template_id: "list",

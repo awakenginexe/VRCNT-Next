@@ -355,6 +355,12 @@ config_page:
             desc: "Larger models have higher accuracy, but they also consume more CPU or GPU resources.\nEspecially for models larger than medium, it may be difficult or even impossible to use them depending on the performance of your CPU/GPU."
             model_template: "{{model_name}} model ({{capacity}})"
             recommended_model_template: "{{model_name}} model ({{capacity}}) (Recommended)"
+        whisper_decoding_profile:
+            label: "Whisper decoding profile"
+            desc: "Choose the balance between VR responsiveness and decoder accuracy."
+            fast: "Fast · beam 1 · lowest latency"
+            balanced: "Balanced · beam 2 · recommended for VRChat"
+            accurate: "Accurate · beam 5 · highest decoder cost"
         transcription_compute_device:
             label: "Processing Device Used For AI transcription"
 

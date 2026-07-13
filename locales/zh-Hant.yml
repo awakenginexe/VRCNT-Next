@@ -355,6 +355,12 @@ config_page:
             desc: "容量越大的模型精度越高，但會占用更多 CPU/GPU 資源。\n※特別是比 medium 更大的模型，根據 CPU/GPU 效能可能難以使用。"
             model_template: "{{model_name}}模型（{{capacity}}）"
             recommended_model_template: "{{model_name}}模型（{{capacity}}）（推薦）"
+        whisper_decoding_profile:
+            label: "Whisper 解碼設定"
+            desc: "選擇 VR 回應速度與解碼準確度之間的平衡。"
+            fast: "快速 · beam 1 · 最低延遲"
+            balanced: "均衡 · beam 2 · 建議用於 VRChat"
+            accurate: "精確 · beam 5 · 解碼負載最高"
         transcription_compute_device:
             label: "AI 語音辨識使用的處理裝置"
 

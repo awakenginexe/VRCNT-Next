@@ -355,6 +355,12 @@ config_page:
             desc: "용량이 큰 모델일수록 정확도는 높지만, 그만큼 CPU나 GPU를 많이 차지합니다. * 특히 medium보다 용량이 큰 모델은 CPU/GPU 성능에 따라 사용 자체가 어려울 수 있습니다."
             model_template: "{{model_name}} 모델 ({{capacity}})"
             recommended_model_template: "{{model_name}} 모델 ({{capacity}}) (권장)"
+        whisper_decoding_profile:
+            label: "Whisper 디코딩 프로필"
+            desc: "VR 반응성과 디코더 정확도의 균형을 선택합니다."
+            fast: "빠름 · beam 1 · 최저 지연"
+            balanced: "균형 · beam 2 · VRChat 권장"
+            accurate: "정확 · beam 5 · 최고 디코더 부하"
         transcription_compute_device:
             label:
 

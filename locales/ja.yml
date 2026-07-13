@@ -355,6 +355,12 @@ config_page:
             desc: "容量が大きいモデルほど精度は高いですが、その分CPUやGPUを占有します。\n※特にmediumより容量の大きいモデルは、CPU/GPUの性能によっては使用すらも困難です。"
             model_template: "{{model_name}} モデル （{{capacity}}）"
             recommended_model_template: "{{model_name}} モデル （{{capacity}}） [推奨]"
+        whisper_decoding_profile:
+            label: "Whisper デコードプロファイル"
+            desc: "VR の応答性とデコード精度のバランスを選びます。"
+            fast: "高速 · beam 1 · 最小遅延"
+            balanced: "バランス · beam 2 · VRChat 推奨"
+            accurate: "高精度 · beam 5 · デコード負荷最大"
         transcription_compute_device:
             label: "AI音声認識で使用する処理デバイス"
 
