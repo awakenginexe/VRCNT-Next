@@ -3,7 +3,7 @@ from copy import deepcopy
 from time import monotonic, sleep
 from queue import Empty
 from subprocess import Popen
-from threading import Event, RLock, Thread
+from threading import Condition, Event, RLock, Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import uuid
@@ -70,6 +70,12 @@ class Controller:
         self.run: Callable[[int, str, Any], None] = _noop_run
         self.device_access_status: bool = True
         self._transcription_restart_lock = RLock()
+        self._transcription_shutdown_condition = Condition(
+            self._transcription_restart_lock
+        )
+        self._transcription_shutdown_requested = Event()
+        self._transcription_shutdown_state = "running"
+        self._transcription_shutdown_response: Optional[dict] = None
         self._transcription_recovery_queue = LatestQueue(4)
         self._transcription_recovery_stop_event = Event()
         self._transcription_recovery_thread = Thread(
@@ -107,24 +113,19 @@ class Controller:
             except QueueClosed:
                 break
 
-            # Coalesce a burst and act on its newest request first.
-            pending = self._transcription_recovery_queue.drain()
-            if pending:
-                request = pending[-1]
-            while True:
+            # Coalesce a burst, but never let a newer stale identity discard an
+            # older request that is still both current and active.
+            request = self._newestCurrentTranscriptionRecoveryRequest(
+                [request, *self._transcription_recovery_queue.drain()]
+            )
+            while request is not None:
                 source, generation, error_code, safe_to_restart = request
-                if not model.isSourcePipelineGenerationCurrent(
-                    source,
-                    generation,
-                ):
+                if not self._isTranscriptionRecoveryRequestCurrent(request):
                     break
                 if safe_to_restart.wait(0.1):
                     if (
                         not self._transcription_recovery_stop_event.is_set()
-                        and model.isSourcePipelineGenerationCurrent(
-                            source,
-                            generation,
-                        )
+                        and self._isTranscriptionRecoveryRequestCurrent(request)
                     ):
                         try:
                             recovery_outcome = self._requestCoordinatedTranscriptionRestart(
@@ -153,7 +154,29 @@ class Controller:
                     return
                 pending = self._transcription_recovery_queue.drain()
                 if pending:
-                    request = pending[-1]
+                    request = self._newestCurrentTranscriptionRecoveryRequest(
+                        [request, *pending]
+                    )
+
+    @staticmethod
+    def _isTranscriptionRecoveryRequestCurrent(request) -> bool:
+        source, generation, _error_code, _safe_to_restart = request
+        is_current = getattr(model, "isSourcePipelineGenerationCurrent", None)
+        is_active = getattr(model, "isTranscriptionSourceActive", None)
+        if not callable(is_current) or not callable(is_active):
+            return False
+        try:
+            return bool(is_current(source, generation)) and bool(is_active(source))
+        except Exception:
+            errorLogging()
+            return False
+
+    @classmethod
+    def _newestCurrentTranscriptionRecoveryRequest(cls, requests):
+        for request in reversed(requests):
+            if cls._isTranscriptionRecoveryRequestCurrent(request):
+                return request
+        return None
 
     @staticmethod
     def _translationResultViews(
@@ -1200,7 +1223,29 @@ class Controller:
         Returns:
             dict with status 200 and result True on success.
         """
+        # Publish terminal intent before waiting for an in-flight start/restart.
+        # The lifecycle state itself is changed only while holding the restart
+        # lock, which makes it atomic with every user start and config restart.
+        self._transcription_shutdown_requested.set()
+        with self._transcription_shutdown_condition:
+            if self._transcription_shutdown_state == "shutdown":
+                return dict(
+                    self._transcription_shutdown_response
+                    or {"status": 200, "result": True}
+                )
+            if self._transcription_shutdown_state == "shutting_down":
+                while self._transcription_shutdown_state != "shutdown":
+                    self._transcription_shutdown_condition.wait()
+                return dict(
+                    self._transcription_shutdown_response
+                    or {"status": 200, "result": True}
+                )
+            self._transcription_shutdown_state = "shutting_down"
+
+        response = {"status": 200, "result": True}
         try:
+            # The coordinator may already be waiting for the restart lock. Do
+            # not hold that lock while closing its queue or joining its thread.
             self._transcription_recovery_stop_event.set()
             self._transcription_recovery_queue.close()
             recovery_thread = self._transcription_recovery_thread
@@ -1213,20 +1258,31 @@ class Controller:
             )
             if callable(register_recovery):
                 register_recovery(None)
-            shutdown_pipelines = getattr(
-                model,
-                "shutdownTranscriptionPipelines",
-                None,
-            )
-            if callable(shutdown_pipelines):
-                shutdown_pipelines()
-            telemetry_shutdown = getattr(model, "telemetryShutdown", None)
-            if callable(telemetry_shutdown):
-                telemetry_shutdown()
-            return {"status": 200, "result": True}
         except Exception:
             errorLogging()
-            return {"status": 500, "result": False}
+            response = {"status": 500, "result": False}
+
+        try:
+            with self._transcription_restart_lock:
+                shutdown_pipelines = getattr(
+                    model,
+                    "shutdownTranscriptionPipelines",
+                    None,
+                )
+                if callable(shutdown_pipelines):
+                    shutdown_pipelines()
+                telemetry_shutdown = getattr(model, "telemetryShutdown", None)
+                if callable(telemetry_shutdown):
+                    telemetry_shutdown()
+        except Exception:
+            errorLogging()
+            response = {"status": 500, "result": False}
+        finally:
+            with self._transcription_shutdown_condition:
+                self._transcription_shutdown_response = dict(response)
+                self._transcription_shutdown_state = "shutdown"
+                self._transcription_shutdown_condition.notify_all()
+        return response
 
     # response functions
     def connectedNetwork(self) -> None:
@@ -1815,14 +1871,68 @@ class Controller:
     def getSelectedTranscriptionComputeDevice(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE}
 
+    def _transcriptionRuntimeSettingAllowedLocked(self) -> bool:
+        return (
+            self._transcription_shutdown_state == "running"
+            and not self._transcription_shutdown_requested.is_set()
+        )
+
+    def _requestTranscriptionRuntimeSettingRestartLocked(self) -> Optional[bool]:
+        try:
+            return self._requestCoordinatedTranscriptionRestart()
+        except Exception:
+            errorLogging()
+            return False
+
+    @staticmethod
+    def _transcriptionRuntimeSettingResponse(
+        applied_value,
+        restart_outcome: Optional[bool],
+    ) -> dict:
+        # Runtime selection is retained even if re-establishing an active
+        # source fails. The response reports that failure without exposing an
+        # exception or backend detail.
+        if restart_outcome is False:
+            return {
+                "status": 500,
+                "result": applied_value,
+                "error_code": "transcription_restart_failed",
+            }
+        if restart_outcome is None:
+            return {
+                "status": 503,
+                "result": applied_value,
+                "error_code": "transcription_shutdown",
+            }
+        return {"status": 200, "result": applied_value}
+
+    @staticmethod
+    def _transcriptionRuntimeSettingShutdownResponse(current_value) -> dict:
+        return {
+            "status": 503,
+            "result": deepcopy(current_value),
+            "error_code": "transcription_shutdown",
+        }
+
     def setSelectedTranscriptionComputeDevice(self, device:str, *args, **kwargs) -> dict:
-        printLog("setSelectedTranscriptionComputeDevice", device)
-        config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE = device
-        config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "auto"
-        self.run(200, self.run_mapping["selected_transcription_compute_type"], config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        self._requestCoordinatedTranscriptionRestart()
-        return {"status":200,"result":config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE
+                )
+            printLog("setSelectedTranscriptionComputeDevice", device)
+            config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE = device
+            config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "auto"
+            self.run(200, self.run_mapping["selected_transcription_compute_type"], config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            applied_value = deepcopy(
+                config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE
+            )
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getSelectableWhisperWeightTypeDict(*args, **kwargs) -> dict:
@@ -2023,11 +2133,20 @@ class Controller:
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_ENGINE}
 
     def setSelectedTranscriptionEngine(self, data, *args, **kwargs) -> dict:
-        config.SELECTED_TRANSCRIPTION_ENGINE = str(data)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        self._normalizeSelectedYourLanguageForTranscription()
-        self._requestCoordinatedTranscriptionRestart()
-        return {"status":200, "result":config.SELECTED_TRANSCRIPTION_ENGINE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.SELECTED_TRANSCRIPTION_ENGINE
+                )
+            config.SELECTED_TRANSCRIPTION_ENGINE = str(data)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            self._normalizeSelectedYourLanguageForTranscription()
+            applied_value = str(config.SELECTED_TRANSCRIPTION_ENGINE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getConvertMessageToRomaji(*args, **kwargs) -> dict:
@@ -3302,60 +3421,114 @@ class Controller:
         return {"status":200, "result":config.WHISPER_WEIGHT_TYPE}
 
     def setWhisperWeightType(self, data, *args, **kwargs) -> dict:
-        config.WHISPER_WEIGHT_TYPE = str(data)
-        self._requestCoordinatedTranscriptionRestart()
-        return {"status":200, "result": config.WHISPER_WEIGHT_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.WHISPER_WEIGHT_TYPE
+                )
+            config.WHISPER_WEIGHT_TYPE = str(data)
+            applied_value = str(config.WHISPER_WEIGHT_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getWhisperDecodingProfile(*args, **kwargs) -> dict:
         return {"status": 200, "result": config.WHISPER_DECODING_PROFILE}
 
     def setWhisperDecodingProfile(self, data, *args, **kwargs) -> dict:
-        config.WHISPER_DECODING_PROFILE = str(data).lower()
-        self._requestCoordinatedTranscriptionRestart()
-        return {"status": 200, "result": config.WHISPER_DECODING_PROFILE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.WHISPER_DECODING_PROFILE
+                )
+            config.WHISPER_DECODING_PROFILE = str(data).lower()
+            applied_value = str(config.WHISPER_DECODING_PROFILE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getVoskWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.VOSK_WEIGHT_TYPE}
 
     def setVoskWeightType(self, data, *args, **kwargs) -> dict:
-        config.VOSK_WEIGHT_TYPE = str(data)
-        self._normalizeSelectedYourLanguageForTranscription()
-        self._requestCoordinatedTranscriptionRestart()
-        return {"status":200, "result": config.VOSK_WEIGHT_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.VOSK_WEIGHT_TYPE
+                )
+            config.VOSK_WEIGHT_TYPE = str(data)
+            self._normalizeSelectedYourLanguageForTranscription()
+            applied_value = str(config.VOSK_WEIGHT_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getParakeetWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.PARAKEET_WEIGHT_TYPE}
 
     def setParakeetWeightType(self, data, *args, **kwargs) -> dict:
-        config.PARAKEET_WEIGHT_TYPE = str(data)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        self._normalizeSelectedYourLanguageForTranscription()
-        self._requestCoordinatedTranscriptionRestart()
-        return {"status":200, "result": config.PARAKEET_WEIGHT_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.PARAKEET_WEIGHT_TYPE
+                )
+            config.PARAKEET_WEIGHT_TYPE = str(data)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            self._normalizeSelectedYourLanguageForTranscription()
+            applied_value = str(config.PARAKEET_WEIGHT_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getSenseVoiceWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SENSEVOICE_WEIGHT_TYPE}
 
     def setSenseVoiceWeightType(self, data, *args, **kwargs) -> dict:
-        config.SENSEVOICE_WEIGHT_TYPE = str(data)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        self._normalizeSelectedYourLanguageForTranscription()
-        self._requestCoordinatedTranscriptionRestart()
-        return {"status":200, "result": config.SENSEVOICE_WEIGHT_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.SENSEVOICE_WEIGHT_TYPE
+                )
+            config.SENSEVOICE_WEIGHT_TYPE = str(data)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            self._normalizeSelectedYourLanguageForTranscription()
+            applied_value = str(config.SENSEVOICE_WEIGHT_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getSelectedTranscriptionComputeType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE}
 
     def setSelectedTranscriptionComputeType(self, data, *args, **kwargs) -> dict:
-        config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = str(data)
-        self._normalizeTranscriptionRuntimeSelection(notify=True)
-        self._requestCoordinatedTranscriptionRestart()
-        return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE}
+        with self._transcription_restart_lock:
+            if not self._transcriptionRuntimeSettingAllowedLocked():
+                return self._transcriptionRuntimeSettingShutdownResponse(
+                    config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE
+                )
+            config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = str(data)
+            self._normalizeTranscriptionRuntimeSelection(notify=True)
+            applied_value = str(config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE)
+            restart_outcome = self._requestTranscriptionRuntimeSettingRestartLocked()
+            return self._transcriptionRuntimeSettingResponse(
+                applied_value,
+                restart_outcome,
+            )
 
     @staticmethod
     def getSendMessageFormatParts(*args, **kwargs) -> dict:
@@ -3683,6 +3856,11 @@ class Controller:
         """Stop all active generations before any replacement runtime loads."""
         del reason  # The reason is carried by recovery metrics at the caller.
         with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return None
             is_active = getattr(model, "isTranscriptionSourceActive", None)
             is_generation_current = getattr(
                 model,
@@ -3908,6 +4086,11 @@ class Controller:
 
     def startTranscriptionSendMessage(self) -> bool:
         with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return False
             return self._startTranscriptionSendMessageUnlocked()
 
     def _startTranscriptionSendMessageUnlocked(self) -> bool:
@@ -3984,6 +4167,11 @@ class Controller:
 
     def startTranscriptionReceiveMessage(self) -> bool:
         with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return False
             return self._startTranscriptionReceiveMessageUnlocked()
 
     def _startTranscriptionReceiveMessageUnlocked(self) -> bool:

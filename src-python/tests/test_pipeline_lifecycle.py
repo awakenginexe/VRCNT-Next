@@ -1093,7 +1093,78 @@ class PipelineLifecycleTests(unittest.TestCase):
             self.assertFalse(fake_model.active[PipelineSource.MIC])
             self.assertEqual(fake_model.shutdown_calls, 1)
             self.assertFalse(controller.startTranscriptionSendMessage())
+            self.assertFalse(controller.startTranscriptionReceiveMessage())
+            self.assertIsNone(controller._requestCoordinatedTranscriptionRestart())
             self.assertEqual(setup_calls, ["start"])
+
+            profile = controller_module.config.WHISPER_DECODING_PROFILE
+            rejected = controller.setWhisperDecodingProfile("post-shutdown-change")
+            self.assertEqual(rejected["status"], 503)
+            self.assertEqual(rejected["error_code"], "transcription_shutdown")
+            self.assertEqual(
+                controller_module.config.WHISPER_DECODING_PROFILE,
+                profile,
+            )
+
+    def test_concurrent_and_repeated_shutdown_callers_share_one_terminal_result(self):
+        fake_model = _RecoveryModel()
+        model_shutdown_entered = threading.Event()
+        release_model_shutdown = threading.Event()
+        first_done = threading.Event()
+        second_done = threading.Event()
+        responses = []
+
+        def shutdown_pipelines():
+            fake_model.shutdown_calls += 1
+            model_shutdown_entered.set()
+            release_model_shutdown.wait()
+
+        fake_model.shutdownTranscriptionPipelines = shutdown_pipelines
+        with patch.object(controller_module, "model", fake_model):
+            controller = Controller()
+            first = threading.Thread(
+                target=lambda: (
+                    responses.append(controller.shutdown()),
+                    first_done.set(),
+                )
+            )
+            first.start()
+            self.addCleanup(release_model_shutdown.set)
+            self.addCleanup(first.join, WAIT_SECONDS)
+            self.assertTrue(model_shutdown_entered.wait(WAIT_SECONDS))
+
+            second = threading.Thread(
+                target=lambda: (
+                    responses.append(controller.shutdown()),
+                    second_done.set(),
+                )
+            )
+            second.start()
+            self.addCleanup(second.join, WAIT_SECONDS)
+            self.assertFalse(first_done.is_set())
+            self.assertFalse(second_done.wait(0.1))
+
+            release_model_shutdown.set()
+            self.assertTrue(first_done.wait(WAIT_SECONDS))
+            self.assertTrue(second_done.wait(WAIT_SECONDS))
+            first.join()
+            second.join()
+
+            self.assertEqual(
+                responses,
+                [
+                    {"status": 200, "result": True},
+                    {"status": 200, "result": True},
+                ],
+            )
+            self.assertEqual(fake_model.shutdown_calls, 1)
+            self.assertEqual(fake_model.telemetry_calls, 1)
+            self.assertEqual(
+                controller.shutdown(),
+                {"status": 200, "result": True},
+            )
+            self.assertEqual(fake_model.shutdown_calls, 1)
+            self.assertEqual(fake_model.telemetry_calls, 1)
 
     def test_shutdown_releases_restart_lock_while_joining_blocked_coordinator(self):
         fake_model = _RecoveryModel()

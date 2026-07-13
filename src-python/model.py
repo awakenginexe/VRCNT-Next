@@ -8,7 +8,7 @@ from os import path as os_path
 from datetime import datetime
 from time import monotonic, sleep, time
 from queue import Queue
-from threading import Event, RLock, Thread, current_thread
+from threading import Condition, Event, RLock, Thread, current_thread
 from requests import get as requests_get
 from typing import Callable, Optional, cast
 from packaging.version import parse
@@ -271,6 +271,8 @@ class Model:
         self._source_transcription_sessions: dict[PipelineSource, dict] = {}
         self._source_heartbeat_timestamps: dict[PipelineSource, float] = {}
         self._source_session_lock = RLock()
+        self._source_session_condition = Condition(self._source_session_lock)
+        self._source_pipeline_transitions: set[PipelineSource] = set()
 
         self._inited = True
 
@@ -304,19 +306,26 @@ class Model:
         """Backfill lifecycle-only state for focused/bare Model instances."""
         if not hasattr(self, "_source_session_lock"):
             self._source_session_lock = RLock()
-        if not hasattr(self, "_source_pipeline_generations"):
-            self._source_pipeline_generations = {}
-        if not hasattr(self, "_source_pipeline_generation_counters"):
-            self._source_pipeline_generation_counters = {
-                PipelineSource.MIC: 0,
-                PipelineSource.SPEAKER: 0,
-            }
-        if not hasattr(self, "_source_transcription_sessions"):
-            self._source_transcription_sessions = {}
-        if not hasattr(self, "_source_heartbeat_timestamps"):
-            self._source_heartbeat_timestamps = {}
-        if not hasattr(self, "transcription_pipeline_metrics"):
-            self.transcription_pipeline_metrics = []
+        with self._source_session_lock:
+            if not hasattr(self, "_source_session_condition"):
+                self._source_session_condition = Condition(
+                    self._source_session_lock
+                )
+            if not hasattr(self, "_source_pipeline_transitions"):
+                self._source_pipeline_transitions = set()
+            if not hasattr(self, "_source_pipeline_generations"):
+                self._source_pipeline_generations = {}
+            if not hasattr(self, "_source_pipeline_generation_counters"):
+                self._source_pipeline_generation_counters = {
+                    PipelineSource.MIC: 0,
+                    PipelineSource.SPEAKER: 0,
+                }
+            if not hasattr(self, "_source_transcription_sessions"):
+                self._source_transcription_sessions = {}
+            if not hasattr(self, "_source_heartbeat_timestamps"):
+                self._source_heartbeat_timestamps = {}
+            if not hasattr(self, "transcription_pipeline_metrics"):
+                self.transcription_pipeline_metrics = []
 
     def _emitTranscriptionLifecycleMetric(
         self,
@@ -404,14 +413,18 @@ class Model:
 
     def getSourcePipeline(self, source: PipelineSource) -> Optional[SourcePipeline]:
         self.ensure_initialized()
-        return getattr(self, self._sourcePipelineAttribute(source), None)
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_lock:
+            return getattr(self, self._sourcePipelineAttribute(source), None)
 
     def getSourcePipelineGeneration(
         self,
         source: PipelineSource,
     ) -> Optional[int]:
         self.ensure_initialized()
-        return getattr(self, "_source_pipeline_generations", {}).get(source)
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_lock:
+            return self._source_pipeline_generations.get(source)
 
     def nextSourcePipelineGeneration(self, source: PipelineSource) -> int:
         self.ensure_initialized()
@@ -427,13 +440,17 @@ class Model:
         self._ensureTranscriptionLifecycleState()
         with self._source_session_lock:
             session = self._source_transcription_sessions.get(source)
+            current_generation = self._source_pipeline_generations.get(source)
+            pipeline = getattr(
+                self,
+                self._sourcePipelineAttribute(source),
+                None,
+            )
             return bool(
                 session is not None
                 and not session["stop_event"].is_set()
-                and self.isSourcePipelineGenerationCurrent(
-                    source,
-                    session["generation"],
-                )
+                and current_generation == session["generation"]
+                and pipeline is not None
             )
 
     def isSourcePipelineGenerationCurrent(
@@ -442,11 +459,29 @@ class Model:
         generation: int,
     ) -> bool:
         self.ensure_initialized()
-        return (
-            getattr(self, "_source_pipeline_generations", {}).get(source)
-            == generation
-            and getattr(self, self._sourcePipelineAttribute(source), None) is not None
-        )
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_lock:
+            return (
+                self._source_pipeline_generations.get(source) == generation
+                and getattr(
+                    self,
+                    self._sourcePipelineAttribute(source),
+                    None,
+                )
+                is not None
+            )
+
+    def _beginSourcePipelineTransition(self, source: PipelineSource) -> None:
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_condition:
+            while source in self._source_pipeline_transitions:
+                self._source_session_condition.wait()
+            self._source_pipeline_transitions.add(source)
+
+    def _endSourcePipelineTransition(self, source: PipelineSource) -> None:
+        with self._source_session_condition:
+            self._source_pipeline_transitions.discard(source)
+            self._source_session_condition.notify_all()
 
     def transliterateTranscriptionMessage(
         self,
@@ -479,25 +514,6 @@ class Model:
     ) -> SourcePipeline:
         self.ensure_initialized()
         self._ensureTranscriptionLifecycleState()
-        if not hasattr(self, "_source_pipeline_generations"):
-            self._source_pipeline_generations = {}
-        if not hasattr(self, "_source_pipeline_generation_counters"):
-            self._source_pipeline_generation_counters = {
-                PipelineSource.MIC: 0,
-                PipelineSource.SPEAKER: 0,
-            }
-        self._source_pipeline_generation_counters[source] = max(
-            generation,
-            self._source_pipeline_generation_counters.get(source, 0),
-        )
-        attribute = self._sourcePipelineAttribute(source)
-        current = getattr(self, attribute, None)
-        current_generation = self._source_pipeline_generations.get(source)
-        if current is not None and current_generation == generation:
-            return current
-        if current is not None and current_generation is not None:
-            self.stopSourcePipeline(source)
-
         required_callbacks = (
             "emit_initial",
             "emit_update",
@@ -510,46 +526,76 @@ class Model:
                 "missing source pipeline callbacks: " + ", ".join(missing)
             )
 
-        pipeline = SourcePipeline(
-            source=source,
-            translator=self.translator,
-            transliterate=self.transliterateTranscriptionMessage,
-            emit_initial=callbacks["emit_initial"],
-            emit_update=callbacks["emit_update"],
-            emit_metric=callbacks["emit_metric"],
-            emit_final=callbacks["emit_final"],
-            is_generation_current=lambda candidate: (
-                self.isSourcePipelineGenerationCurrent(source, candidate)
-            ),
-        )
-        setattr(self, attribute, pipeline)
-        self._source_pipeline_generations[source] = generation
+        self._beginSourcePipelineTransition(source)
+        pipeline = None
         try:
-            pipeline.start(generation)
-        except Exception:
-            if getattr(self, attribute, None) is pipeline:
+            attribute = self._sourcePipelineAttribute(source)
+            with self._source_session_lock:
+                self._source_pipeline_generation_counters[source] = max(
+                    generation,
+                    self._source_pipeline_generation_counters.get(source, 0),
+                )
+                current = getattr(self, attribute, None)
+                current_generation = self._source_pipeline_generations.get(source)
+                if current is not None and current_generation == generation:
+                    return current
+
+                # Publication and detachment are one identity transaction.
                 setattr(self, attribute, None)
-            if self._source_pipeline_generations.get(source) == generation:
                 self._source_pipeline_generations.pop(source, None)
+
+            # Destruction may join workers and invoke third-party cleanup, so it
+            # must happen after the atomic detach and outside the identity lock.
+            self._stopDetachedSourcePipeline(current, current_generation)
+
+            pipeline = SourcePipeline(
+                source=source,
+                translator=self.translator,
+                transliterate=self.transliterateTranscriptionMessage,
+                emit_initial=callbacks["emit_initial"],
+                emit_update=callbacks["emit_update"],
+                emit_metric=callbacks["emit_metric"],
+                emit_final=callbacks["emit_final"],
+                is_generation_current=lambda candidate: (
+                    self.isSourcePipelineGenerationCurrent(source, candidate)
+                ),
+            )
+            pipeline.start(generation)
+            with self._source_session_lock:
+                setattr(self, attribute, pipeline)
+                self._source_pipeline_generations[source] = generation
+            return pipeline
+        except Exception:
+            if pipeline is not None:
+                try:
+                    pipeline.stop(generation, discard_pending=True)
+                except Exception:
+                    errorLogging()
             raise
-        return pipeline
+        finally:
+            self._endSourcePipelineTransition(source)
 
     def stopSourcePipeline(self, source: PipelineSource) -> None:
         self.ensure_initialized()
-        pipeline, generation = self._detachSourcePipeline(source)
-        self._stopDetachedSourcePipeline(pipeline, generation)
+        self._beginSourcePipelineTransition(source)
+        try:
+            pipeline, generation = self._detachSourcePipeline(source)
+            self._stopDetachedSourcePipeline(pipeline, generation)
+        finally:
+            self._endSourcePipelineTransition(source)
 
     def _detachSourcePipeline(
         self,
         source: PipelineSource,
     ) -> tuple[Optional[SourcePipeline], Optional[int]]:
-        attribute = self._sourcePipelineAttribute(source)
-        pipeline = getattr(self, attribute, None)
-        generations = getattr(self, "_source_pipeline_generations", None)
-        generation = generations.pop(source, None) if generations is not None else None
-        if getattr(self, attribute, None) is pipeline:
-            setattr(self, attribute, None)
-        return pipeline, generation
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_lock:
+            attribute = self._sourcePipelineAttribute(source)
+            pipeline = getattr(self, attribute, None)
+            generation = self._source_pipeline_generations.pop(source, None)
+            if getattr(self, attribute, None) is pipeline:
+                setattr(self, attribute, None)
+            return pipeline, generation
 
     @staticmethod
     def _stopDetachedSourcePipeline(
@@ -1689,30 +1735,43 @@ class Model:
     def stopMicTranscript(self, stop_pipeline: bool = True):
         self.ensure_initialized()
         self._ensureTranscriptionLifecycleState()
+        detached_pipeline = (None, None)
+        transition_started = False
+        if stop_pipeline:
+            self._beginSourcePipelineTransition(PipelineSource.MIC)
+            transition_started = True
+            try:
+                # Invalidate output admission atomically; worker joins still
+                # follow recorder/queue order below.
+                detached_pipeline = self._detachSourcePipeline(
+                    PipelineSource.MIC
+                )
+            except Exception:
+                self._endSourcePipelineTransition(PipelineSource.MIC)
+                raise
+
         stop_event = self.mic_transcript_stop_event
         if hasattr(stop_event, "set"):
             stop_event.set()
-        detached_pipeline = (None, None)
-        if stop_pipeline:
-            # Invalidate output admission immediately; worker joins still follow
-            # recorder/queue order below.
-            detached_pipeline = self._detachSourcePipeline(PipelineSource.MIC)
+        try:
+            recorder = self.mic_audio_recorder
+            self.mic_audio_recorder = None
+            self._requestRecorderStop(recorder, resume_first=True)
 
-        recorder = self.mic_audio_recorder
-        self.mic_audio_recorder = None
-        self._requestRecorderStop(recorder, resume_first=True)
+            audio_queue = self.mic_audio_queue
+            if hasattr(audio_queue, "close"):
+                audio_queue.close()
 
-        audio_queue = self.mic_audio_queue
-        if hasattr(audio_queue, "close"):
-            audio_queue.close()
-
-        thread = self.mic_print_transcript
-        self._requestTranscriptThreadStop(thread)
-        if self.mic_print_transcript is thread:
-            self.mic_print_transcript = None
-
-        if stop_pipeline:
-            self._stopDetachedSourcePipeline(*detached_pipeline)
+            thread = self.mic_print_transcript
+            self._requestTranscriptThreadStop(thread)
+            if self.mic_print_transcript is thread:
+                self.mic_print_transcript = None
+        finally:
+            if transition_started:
+                try:
+                    self._stopDetachedSourcePipeline(*detached_pipeline)
+                finally:
+                    self._endSourcePipelineTransition(PipelineSource.MIC)
 
         whisper_runtime_lease = self.mic_whisper_runtime_lease
         close_error = None
@@ -2033,30 +2092,41 @@ class Model:
     def stopSpeakerTranscript(self, stop_pipeline: bool = True):
         self.ensure_initialized()
         self._ensureTranscriptionLifecycleState()
+        detached_pipeline = (None, None)
+        transition_started = False
+        if stop_pipeline:
+            self._beginSourcePipelineTransition(PipelineSource.SPEAKER)
+            transition_started = True
+            try:
+                detached_pipeline = self._detachSourcePipeline(
+                    PipelineSource.SPEAKER
+                )
+            except Exception:
+                self._endSourcePipelineTransition(PipelineSource.SPEAKER)
+                raise
+
         stop_event = self.speaker_transcript_stop_event
         if hasattr(stop_event, "set"):
             stop_event.set()
-        detached_pipeline = (None, None)
-        if stop_pipeline:
-            detached_pipeline = self._detachSourcePipeline(
-                PipelineSource.SPEAKER
-            )
+        try:
+            recorder = self.speaker_audio_recorder
+            self.speaker_audio_recorder = None
+            self._requestRecorderStop(recorder, resume_first=True)
 
-        recorder = self.speaker_audio_recorder
-        self.speaker_audio_recorder = None
-        self._requestRecorderStop(recorder, resume_first=True)
+            audio_queue = self.speaker_audio_queue
+            if hasattr(audio_queue, "close"):
+                audio_queue.close()
 
-        audio_queue = self.speaker_audio_queue
-        if hasattr(audio_queue, "close"):
-            audio_queue.close()
-
-        thread = self.speaker_print_transcript
-        self._requestTranscriptThreadStop(thread)
-        if self.speaker_print_transcript is thread:
-            self.speaker_print_transcript = None
-
-        if stop_pipeline:
-            self._stopDetachedSourcePipeline(*detached_pipeline)
+            thread = self.speaker_print_transcript
+            self._requestTranscriptThreadStop(thread)
+            if self.speaker_print_transcript is thread:
+                self.speaker_print_transcript = None
+        finally:
+            if transition_started:
+                try:
+                    self._stopDetachedSourcePipeline(*detached_pipeline)
+                finally:
+                    self._endSourcePipelineTransition(PipelineSource.SPEAKER)
 
         whisper_runtime_lease = self.speaker_whisper_runtime_lease
         close_error = None
