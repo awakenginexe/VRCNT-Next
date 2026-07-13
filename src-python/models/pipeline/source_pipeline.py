@@ -175,6 +175,11 @@ class SourcePipeline:
                 if self._lifecycle_state is _LifecycleState.STOPPING:
                     if self._stopping_generation != generation:
                         return
+                    if current_thread() in (
+                        self._translation_thread,
+                        self._output_thread,
+                    ):
+                        return
                     while self._lifecycle_state is not _LifecycleState.STOPPED:
                         self._lifecycle_condition.wait()
                     return

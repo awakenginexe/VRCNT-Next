@@ -980,6 +980,122 @@ class TranslationSchedulerTests(unittest.TestCase):
         self.assertEqual(recorder.finals, [])
         self.assertEqual(pipeline._lifecycle_state.value, "stopped")
 
+    def test_translation_and_output_worker_stop_followers_both_unwind(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        pipeline_holder = {}
+        translation_callback_entered = threading.Event()
+        output_callback_entered = threading.Event()
+        release_stop_calls = threading.Event()
+        translation_stop_returned = threading.Event()
+        output_stop_returned = threading.Event()
+
+        def stopping_update(update):
+            recorder.emit_update(update)
+            if update.status is TranslationStatus.SENDING:
+                translation_callback_entered.set()
+                if not release_stop_calls.wait(timeout=2.0):
+                    raise AssertionError("test did not release translation stop")
+                pipeline_holder["pipeline"].stop(7, discard_pending=True)
+                translation_stop_returned.set()
+
+        def stopping_metric(metric):
+            recorder.emit_metric(metric)
+            if metric.stage == "output" and metric.outcome == "running":
+                output_callback_entered.set()
+                if not release_stop_calls.wait(timeout=2.0):
+                    raise AssertionError("test did not release output stop")
+                pipeline_holder["pipeline"].stop(7, discard_pending=True)
+                output_stop_returned.set()
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            translator,
+            lambda *_: (),
+            recorder.emit_initial,
+            stopping_update,
+            stopping_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+        pipeline_holder["pipeline"] = pipeline
+        pipeline.start(7)
+        pipeline.submit_trace(make_trace("output-callback", targets=()))
+        self.assertTrue(output_callback_entered.wait(timeout=1.0))
+        pipeline.submit_trace(make_trace("translation-callback"))
+        self.assertTrue(translation_callback_entered.wait(timeout=1.0))
+
+        release_stop_calls.set()
+        self.assertTrue(translation_stop_returned.wait(timeout=1.0))
+        self.assertTrue(output_stop_returned.wait(timeout=1.0))
+        with pipeline._lifecycle_condition:
+            deadline = time.monotonic() + 1.0
+            while pipeline._lifecycle_state.value != "stopped":
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0)
+                pipeline._lifecycle_condition.wait(remaining)
+
+        self.assertFalse(pipeline._translation_thread.is_alive())
+        self.assertFalse(pipeline._output_thread.is_alive())
+        self.assertEqual(translator.calls, [])
+        self.assertEqual(recorder.finals, [])
+
+    def test_external_stopper_waits_while_worker_stop_follower_unwinds(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        pipeline_holder = {}
+        callback_entered = threading.Event()
+        release_callback = threading.Event()
+        worker_stop_returned = threading.Event()
+        external_stop_returned = threading.Event()
+        observed_states = []
+
+        def stopping_update(update):
+            recorder.emit_update(update)
+            if update.status is TranslationStatus.SENDING:
+                callback_entered.set()
+                if not release_callback.wait(timeout=2.0):
+                    raise AssertionError("test did not release worker follower")
+                pipeline = pipeline_holder["pipeline"]
+                pipeline.stop(7, discard_pending=True)
+                observed_states.append(pipeline._lifecycle_state.value)
+                worker_stop_returned.set()
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            translator,
+            lambda *_: (),
+            recorder.emit_initial,
+            stopping_update,
+            recorder.emit_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+        pipeline_holder["pipeline"] = pipeline
+        pipeline.start(7)
+        pipeline.submit_trace(make_trace("external-first"))
+        self.assertTrue(callback_entered.wait(timeout=1.0))
+
+        external_stopper = threading.Thread(
+            target=lambda: (
+                pipeline.stop(7, discard_pending=True),
+                external_stop_returned.set(),
+            ),
+            daemon=True,
+        )
+        external_stopper.start()
+        self.assertTrue(pipeline._stop_event.wait(timeout=1.0))
+        self.assertFalse(external_stop_returned.is_set())
+        release_callback.set()
+
+        self.assertTrue(worker_stop_returned.wait(timeout=1.0))
+        self.assertTrue(external_stop_returned.wait(timeout=1.0))
+        external_stopper.join(timeout=1.0)
+        self.assertEqual(observed_states, ["stopping"])
+        self.assertEqual(pipeline._lifecycle_state.value, "stopped")
+        self.assertEqual(translator.calls, [])
+        self.assertEqual(recorder.finals, [])
+
     def test_success_and_fallback_state_order_and_attempt_metrics(self):
         attempts = [
             TranslationAttempt(TranslationStatus.TIMEOUT, "primary", None, 9, "provider_timeout"),
