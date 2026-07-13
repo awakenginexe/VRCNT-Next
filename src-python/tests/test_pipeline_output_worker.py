@@ -298,6 +298,44 @@ class OutputWorkerTests(unittest.TestCase):
         with pipeline._records_lock:
             self.assertEqual(pipeline._records, {})
 
+    def test_output_running_callback_stop_skips_finalizer_until_worker_exits(self):
+        pipeline_holder = {}
+        stop_returned = threading.Event()
+        observed_states = []
+        final_calls = []
+
+        def stopping_metric(metric):
+            if metric.stage == "output" and metric.outcome == "running":
+                pipeline = pipeline_holder["pipeline"]
+                pipeline.stop(5, discard_pending=True)
+                observed_states.append(pipeline._lifecycle_state.value)
+                stop_returned.set()
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            object(),
+            lambda *_: (),
+            lambda _trace: None,
+            lambda _update: None,
+            stopping_metric,
+            lambda task: final_calls.append(task.trace_id),
+            lambda generation: generation == 5,
+        )
+        pipeline_holder["pipeline"] = pipeline
+        pipeline.start(5)
+        pipeline.submit_trace(make_trace("output-worker-stop", time.monotonic()))
+        self.assertTrue(stop_returned.wait(timeout=1.0))
+        with pipeline._lifecycle_condition:
+            deadline = time.monotonic() + 1.0
+            while pipeline._lifecycle_state.value != "stopped":
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0)
+                pipeline._lifecycle_condition.wait(remaining)
+
+        self.assertEqual(observed_states, ["stopping"])
+        self.assertEqual(final_calls, [])
+        self.assertFalse(pipeline._output_thread.is_alive())
+
     @staticmethod
     def _blocking_finalizer(
         task,

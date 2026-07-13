@@ -90,6 +90,9 @@ class SourcePipeline:
         self._lifecycle_condition = Condition(RLock())
         self._lifecycle_state = _LifecycleState.NEW
         self._stopping_generation: Optional[int] = None
+        self._translation_exited = False
+        self._output_exited = False
+        self._shutdown_cleanup_complete = False
         self._submit_lock = Lock()
         self._records_lock = Lock()
         self._records: dict[str, _TraceRecord] = {}
@@ -108,6 +111,9 @@ class SourcePipeline:
             self._lifecycle_state = _LifecycleState.STARTING
             self._generation = generation
             self._accepting = False
+            self._translation_exited = False
+            self._output_exited = False
+            self._shutdown_cleanup_complete = False
             self._translation_thread = Thread(
                 target=self._translation_worker,
                 name=f"{self.source.value}-translation-{generation}",
@@ -226,6 +232,24 @@ class SourcePipeline:
         with self._records_lock:
             self._records.clear()
         with self._lifecycle_condition:
+            self._shutdown_cleanup_complete = True
+            self._finish_stop_if_workers_exited_locked()
+
+    def _worker_exited(self, worker: str) -> None:
+        with self._lifecycle_condition:
+            if worker == "translation":
+                self._translation_exited = True
+            else:
+                self._output_exited = True
+            self._finish_stop_if_workers_exited_locked()
+
+    def _finish_stop_if_workers_exited_locked(self) -> None:
+        if (
+            self._lifecycle_state is _LifecycleState.STOPPING
+            and self._shutdown_cleanup_complete
+            and self._translation_exited
+            and self._output_exited
+        ):
             self._lifecycle_state = _LifecycleState.STOPPED
             self._lifecycle_condition.notify_all()
 
@@ -264,7 +288,7 @@ class SourcePipeline:
             self._reject_over_capacity(trace)
             return False
 
-        if record is None or not self._record_is_active(record):
+        if record is None or not self._record_is_current(record):
             return False
 
         if not trace.output_config.translation_enabled or not trace.targets:
@@ -314,10 +338,9 @@ class SourcePipeline:
 
         for update in queued_updates:
             self._safe_emit_update(update)
-
-        if not self._is_current(trace.generation) or not self._record_is_active(record):
-            self._remove_record(trace.trace_id, record)
-            return False
+            if not self._record_is_current(record):
+                self._remove_record(trace.trace_id, record)
+                return False
 
         if not providers:
             for job in jobs:
@@ -332,12 +355,14 @@ class SourcePipeline:
                     queue_position=0,
                     error_code="no_provider_configured",
                 )
-                self._publish_terminal(
+                if not self._publish_terminal(
                     record,
                     job,
                     update,
                     queue_depth=self._translation_queue.qsize(),
-                )
+                ):
+                    self._remove_record(trace.trace_id, record)
+                    return False
             return True
 
         dropped_jobs: list[tuple[TranslationJob, int]] = []
@@ -356,7 +381,8 @@ class SourcePipeline:
                 if result.dropped is not None:
                     dropped_jobs.append((result.dropped, result.depth))
         for dropped, depth in dropped_jobs:
-            self._drop_waiting_job(dropped, depth)
+            if not self._drop_waiting_job(dropped, depth):
+                return False
         self._ready_event.set()
         return True
 
@@ -384,9 +410,25 @@ class SourcePipeline:
             return False
 
     def _is_current(self, generation: int) -> bool:
-        return self._is_locally_current(
-            generation
-        ) and self._external_generation_current(generation)
+        if not self._is_locally_current(generation):
+            return False
+        if not self._external_generation_current(generation):
+            return False
+        return self._is_locally_current(generation)
+
+    def _record_is_current(self, record: _TraceRecord) -> bool:
+        return self._is_current(
+            record.trace.generation
+        ) and self._record_is_active(record)
+
+    def _job_is_current(self, record: _TraceRecord, job: TranslationJob) -> bool:
+        if not self._record_is_current(record):
+            return False
+        with record.lock:
+            return (
+                not record.final_submitted
+                and job.target.target_slot not in record.terminal_slots
+            )
 
     def _reject_over_capacity(self, trace: TranscriptionTrace) -> None:
         for target in trace.targets:
@@ -403,6 +445,10 @@ class SourcePipeline:
                     error_code="active_trace_limit",
                 )
             )
+            if not self._is_current(trace.generation):
+                return
+        if not self._is_current(trace.generation):
+            return
         self._safe_emit_metric(
             self._metric(
                 trace_id=trace.trace_id,
@@ -432,12 +478,15 @@ class SourcePipeline:
             )
         )
 
-    def _drop_waiting_job(self, job: TranslationJob, queue_depth: int) -> None:
+    def _drop_waiting_job(self, job: TranslationJob, queue_depth: int) -> bool:
         with self._lifecycle_condition:
             self._dropped_count += 1
         record = self._get_record(job.trace_id)
-        if record is None or not self._is_current(job.generation):
-            return
+        if record is None:
+            return True
+        if not self._job_is_current(record, job):
+            self._remove_record(job.trace_id, record)
+            return False
         update = TranslationUpdate(
             trace_id=job.trace_id,
             target_slot=job.target.target_slot,
@@ -449,7 +498,7 @@ class SourcePipeline:
             queue_position=0,
             error_code="translation_queue_overload",
         )
-        self._publish_terminal(record, job, update, queue_depth=queue_depth)
+        return self._publish_terminal(record, job, update, queue_depth=queue_depth)
 
     def _store_update(
         self,
@@ -477,11 +526,16 @@ class SourcePipeline:
         update: TranslationUpdate,
         *,
         queue_depth: int,
-    ) -> None:
+    ) -> bool:
         stored = self._store_update(record, update)
         self._safe_emit_update(stored)
+        if not self._job_is_current(record, job):
+            return False
         self._emit_translation_metric(job, stored, queue_depth=queue_depth)
+        if not self._job_is_current(record, job):
+            return False
         self._mark_terminal(record, stored.target_slot)
+        return True
 
     def _mark_terminal(self, record: _TraceRecord, target_slot: str) -> None:
         became_ready = False
@@ -494,6 +548,12 @@ class SourcePipeline:
             self._ready_event.set()
 
     def _translation_worker(self) -> None:
+        try:
+            self._translation_worker_loop()
+        finally:
+            self._worker_exited("translation")
+
+    def _translation_worker_loop(self) -> None:
         while True:
             self._ready_event.clear()
             self._flush_ready_records()
@@ -514,9 +574,8 @@ class SourcePipeline:
             record = self._get_record(job.trace_id)
             if record is None:
                 continue
-            with record.lock:
-                if job.target.target_slot in record.terminal_slots:
-                    continue
+            if not self._job_is_current(record, job):
+                continue
 
             self._run_translation_job(record, job)
             self._flush_ready_records()
@@ -528,7 +587,7 @@ class SourcePipeline:
     def _run_translation_job(self, record: _TraceRecord, job: TranslationJob) -> None:
         providers = tuple(job.providers[:2])
         for provider_index, provider in enumerate(providers):
-            if not self._is_current(job.generation):
+            if not self._job_is_current(record, job):
                 self._remove_record(job.trace_id, record)
                 return
 
@@ -544,6 +603,9 @@ class SourcePipeline:
                 error_code=None,
             )
             self._publish_update(record, sending)
+            if not self._job_is_current(record, job):
+                self._remove_record(job.trace_id, record)
+                return
             try:
                 attempt = self._translator.translateAttempt(
                     translator_name=provider,
@@ -564,7 +626,7 @@ class SourcePipeline:
                     error_code="provider_error",
                 )
 
-            if not self._is_current(job.generation):
+            if not self._job_is_current(record, job):
                 self._remove_record(job.trace_id, record)
                 return
 
@@ -574,6 +636,9 @@ class SourcePipeline:
                     job.target.language,
                     record.trace.output_config,
                 )
+                if not self._job_is_current(record, job):
+                    self._remove_record(job.trace_id, record)
+                    return
                 success = TranslationUpdate(
                     trace_id=job.trace_id,
                     target_slot=job.target.target_slot,
@@ -585,12 +650,13 @@ class SourcePipeline:
                     queue_position=0,
                     error_code=None,
                 )
-                self._publish_terminal(
+                if not self._publish_terminal(
                     record,
                     job,
                     success,
                     queue_depth=self._translation_queue.qsize(),
-                )
+                ):
+                    self._remove_record(job.trace_id, record)
                 return
 
             failure_status = (
@@ -611,19 +677,26 @@ class SourcePipeline:
             )
             last_provider = provider_index == len(providers) - 1
             if last_provider:
-                self._publish_terminal(
+                if not self._publish_terminal(
                     record,
                     job,
                     failure,
                     queue_depth=self._translation_queue.qsize(),
-                )
+                ):
+                    self._remove_record(job.trace_id, record)
                 return
             self._publish_update(record, failure)
+            if not self._job_is_current(record, job):
+                self._remove_record(job.trace_id, record)
+                return
             self._emit_translation_metric(
                 job,
                 failure,
                 queue_depth=self._translation_queue.qsize(),
             )
+            if not self._job_is_current(record, job):
+                self._remove_record(job.trace_id, record)
+                return
 
             fallback = TranslationUpdate(
                 trace_id=job.trace_id,
@@ -637,6 +710,9 @@ class SourcePipeline:
                 error_code=None,
             )
             self._publish_update(record, fallback)
+            if not self._job_is_current(record, job):
+                self._remove_record(job.trace_id, record)
+                return
 
     def _flush_ready_records(self) -> None:
         self._ready_event.clear()
@@ -682,6 +758,12 @@ class SourcePipeline:
                 self._remove_record(record.trace.trace_id, record)
 
     def _output_worker(self) -> None:
+        try:
+            self._output_worker_loop()
+        finally:
+            self._worker_exited("output")
+
+    def _output_worker_loop(self) -> None:
         while True:
             try:
                 task = self._output_queue.get(timeout=WORKER_POLL_SECONDS)
@@ -693,7 +775,7 @@ class SourcePipeline:
                 break
             if not isinstance(task, FinalOutputTask):
                 continue
-            if not self._is_current(task.generation):
+            if not self._task_is_current(task):
                 self._remove_record(task.trace_id)
                 continue
 
@@ -710,6 +792,9 @@ class SourcePipeline:
                     error_code=None,
                 )
             )
+            if not self._task_is_current(task):
+                self._remove_record(task.trace_id)
+                continue
             outcome = "success"
             error_code = None
             try:
@@ -720,19 +805,20 @@ class SourcePipeline:
             finally:
                 duration_ms = max(0, round((monotonic() - task.started_at_monotonic) * 1000))
                 try:
-                    self._safe_emit_metric(
-                        self._metric(
-                            trace_id=task.trace_id,
-                            stage="output",
-                            engine=None,
-                            target_slot=None,
-                            outcome=outcome,
-                            queue_age_ms=None,
-                            duration_ms=duration_ms,
-                            queue_depth=self._output_queue.qsize(),
-                            error_code=error_code,
+                    if self._task_is_current(task):
+                        self._safe_emit_metric(
+                            self._metric(
+                                trace_id=task.trace_id,
+                                stage="output",
+                                engine=None,
+                                target_slot=None,
+                                outcome=outcome,
+                                queue_age_ms=None,
+                                duration_ms=duration_ms,
+                                queue_depth=self._output_queue.qsize(),
+                                error_code=error_code,
+                            )
                         )
-                    )
                 finally:
                     self._remove_record(task.trace_id)
 
@@ -756,6 +842,12 @@ class SourcePipeline:
                 error_code=update.error_code,
             )
         )
+
+    def _task_is_current(self, task: FinalOutputTask) -> bool:
+        if not self._is_current(task.generation):
+            return False
+        record = self._get_record(task.trace_id)
+        return record is not None and record.trace.generation == task.generation
 
     def _safe_transliterate(
         self,
