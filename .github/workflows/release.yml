@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*' # Trigger when tag starts with 'v' (e.g. v3.0.0)
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag to publish (for example, v3.0.0)'
+        required: true
+        type: string
 
 jobs:
   release:
@@ -36,7 +42,23 @@ jobs:
         run: npm install
 
       - name: Setup Python environment
-        run: npm run setup-python
+        shell: pwsh
+        run: |
+          $maxAttempts = 4
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            npm run setup-python
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+
+            if ($attempt -eq $maxAttempts) {
+              throw "Python environment setup failed after $maxAttempts attempts."
+            }
+
+            $delaySeconds = 30 * [Math]::Pow(2, $attempt - 1)
+            Write-Warning "Python environment setup attempt $attempt failed; retrying in $delaySeconds seconds."
+            Start-Sleep -Seconds $delaySeconds
+          }
 
       - name: Install Python script dependencies
         run: pip install tqdm huggingface_hub==0.34.4
@@ -44,9 +66,16 @@ jobs:
       - name: Read release configuration
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         shell: pwsh
         run: |
-          $tag = $env:GITHUB_REF -replace "^refs/tags/", ""
+          $tag = $env:INPUT_RELEASE_TAG
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $tag = $env:GITHUB_REF -replace "^refs/tags/", ""
+          }
+          if ($tag -notmatch "^v[0-9]+\.[0-9]+\.[0-9]+$") {
+            throw "Release tag '$tag' must use the vMAJOR.MINOR.PATCH format."
+          }
           $version = $tag -replace "^v", ""
           $releaseConfig = Get-Content -Raw ./release.config.json | ConvertFrom-Json
 
