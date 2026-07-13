@@ -93,6 +93,22 @@ class TranslationAttemptTests(unittest.TestCase):
                 self.assertEqual(attempt.duration_ms, 25)
                 self.assertEqual(attempt.error_code, "provider_timeout")
 
+    def test_bing_timeout_is_classified_through_provider_dispatch(self):
+        web_translator = Mock(side_effect=requests.exceptions.Timeout("late"))
+        self.translator._web_translator = web_translator
+
+        with patch.object(self.translator, "getLanguageCode", return_value=("ja", "en")), patch.object(
+            translation_translator, "perf_counter", side_effect=[12.0, 12.01]
+        ):
+            attempt = self._attempt(translator_name="Bing")
+
+        self.assertEqual(attempt.status, TranslationStatus.TIMEOUT)
+        self.assertEqual(attempt.engine, "Bing")
+        self.assertIsNone(attempt.message)
+        self.assertEqual(attempt.error_code, "provider_timeout")
+        self.assertEqual(web_translator.call_count, 1)
+        self.assertEqual(web_translator.call_args.kwargs["timeout"], 5.0)
+
     def test_success_returns_structured_attempt(self):
         with patch.object(self.translator, "_translate_once", return_value="translated"), patch.object(
             translation_translator, "perf_counter", side_effect=[2.0, 2.008]
@@ -181,14 +197,16 @@ class LegacyTranslationTests(unittest.TestCase):
         self.assertEqual(translate_attempt.call_args.kwargs["timeout_seconds"], 5.0)
 
     def test_bounded_snapshot_preserves_order_and_never_injects_ctranslate2(self):
-        self.assertEqual(
-            model_module.boundedTranslationProviderSnapshot(
-                [" Google ", "", "Google", " Bing ", "CTranslate2"]
-            ),
-            ["Google", "Bing"],
+        snapshot = model_module.boundedTranslationProviderSnapshot(
+            [" Google ", "", "Google", " Bing ", "CTranslate2"]
         )
-        self.assertEqual(model_module.boundedTranslationProviderSnapshot(["", "  ", None]), [])
-        self.assertEqual(model_module.boundedTranslationProviderSnapshot("  Google  "), ["Google"])
+        self.assertIs(type(snapshot), tuple)
+        self.assertEqual(
+            snapshot,
+            ("Google", "Bing"),
+        )
+        self.assertEqual(model_module.boundedTranslationProviderSnapshot(["", "  ", None]), ())
+        self.assertEqual(model_module.boundedTranslationProviderSnapshot("  Google  "), ("Google",))
 
     def _make_model(self, selection, provider):
         instance = object.__new__(model_module.Model)

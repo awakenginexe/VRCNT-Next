@@ -71,7 +71,7 @@ def normalizeTranslationEngineSelection(selection, fallback: str = DEFAULT_TRANS
     return [fallback]
 
 
-def boundedTranslationProviderSnapshot(selection) -> list[str]:
+def boundedTranslationProviderSnapshot(selection) -> tuple[str, ...]:
     """Return at most two explicitly selected, distinct provider names."""
     if isinstance(selection, str):
         values = [selection]
@@ -90,7 +90,7 @@ def boundedTranslationProviderSnapshot(selection) -> list[str]:
         providers.append(provider)
         if len(providers) == 2:
             break
-    return providers
+    return tuple(providers)
 
 
 def collapseTranslationEngineSelection(engines: list[str], fallback: str = DEFAULT_TRANSLATION_ENGINE):
@@ -598,7 +598,7 @@ class Model:
         self.ensure_initialized()
         self.translation_history = []
 
-    def _getSelectedTranslationEngineCandidates(self) -> list[str]:
+    def _getSelectedTranslationEngineCandidates(self) -> tuple[str, ...]:
         selected = config.SELECTED_TRANSLATION_ENGINES.get(config.SELECTED_TAB_NO)
         return boundedTranslationProviderSnapshot(selected)
 
