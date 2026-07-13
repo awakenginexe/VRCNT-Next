@@ -1106,6 +1106,124 @@ class PipelineLifecycleTests(unittest.TestCase):
                 profile,
             )
 
+    def test_energy_checks_restore_device_access_when_model_start_raises(self):
+        cases = (
+            ("startCheckMicEnergy", "startCheckMicEnergy"),
+            ("startCheckSpeakerEnergy", "startCheckSpeakerEnergy"),
+        )
+        for controller_method, model_method in cases:
+            with self.subTest(controller_method=controller_method):
+                fake_model = _RecoveryModel()
+
+                def raise_energy_error(_callback):
+                    raise RuntimeError("controlled energy start failure")
+
+                setattr(fake_model, model_method, raise_energy_error)
+                with patch.object(controller_module, "model", fake_model):
+                    controller = Controller()
+                    try:
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "controlled energy start failure",
+                        ):
+                            getattr(controller, controller_method)()
+                        self.assertTrue(controller.device_access_status)
+                    finally:
+                        controller.device_access_status = True
+                        controller.shutdown()
+
+    def test_device_waiting_starts_exit_when_shutdown_is_requested(self):
+        class ObservedController(Controller):
+            def __init__(self):
+                self.device_wait_observed = threading.Event()
+                self._observed_device_access_status = True
+                super().__init__()
+
+            @property
+            def device_access_status(self):
+                value = self._observed_device_access_status
+                if value is False:
+                    self.device_wait_observed.set()
+                return value
+
+            @device_access_status.setter
+            def device_access_status(self, value):
+                self._observed_device_access_status = value
+
+        cases = (
+            (
+                "startTranscriptionSendMessage",
+                "startMicTranscript",
+                PipelineSource.MIC,
+            ),
+            (
+                "startTranscriptionReceiveMessage",
+                "startSpeakerTranscript",
+                PipelineSource.SPEAKER,
+            ),
+        )
+        for controller_method, model_method, source in cases:
+            with self.subTest(controller_method=controller_method):
+                fake_model = _RecoveryModel()
+                model_starts = []
+                fake_model.nextSourcePipelineGeneration = lambda _source: 42
+                fake_model.ensureSourcePipeline = (
+                    lambda started_source, _callbacks, _generation: model_starts.append(
+                        ("pipeline", started_source)
+                    )
+                )
+                setattr(
+                    fake_model,
+                    model_method,
+                    lambda _callback: model_starts.append(
+                        ("session", source)
+                    )
+                    or True,
+                )
+                fake_model.detectVRAMError = lambda _error: (False, None)
+                fake_model.stopSourcePipeline = lambda _source: None
+
+                with patch.object(controller_module, "model", fake_model):
+                    controller = ObservedController()
+                    controller.device_access_status = False
+                    start_done = threading.Event()
+                    shutdown_done = threading.Event()
+                    start_results = []
+                    start_thread = threading.Thread(
+                        target=lambda: (
+                            start_results.append(
+                                getattr(controller, controller_method)()
+                            ),
+                            start_done.set(),
+                        )
+                    )
+                    start_thread.start()
+                    self.assertTrue(
+                        controller.device_wait_observed.wait(WAIT_SECONDS)
+                    )
+                    shutdown_thread = threading.Thread(
+                        target=lambda: (
+                            controller.shutdown(),
+                            shutdown_done.set(),
+                        )
+                    )
+                    shutdown_thread.start()
+                    try:
+                        self.assertTrue(
+                            controller._transcription_shutdown_requested.wait(
+                                WAIT_SECONDS
+                            )
+                        )
+                        self.assertTrue(start_done.wait(0.25))
+                        self.assertEqual(start_results, [False])
+                        self.assertTrue(shutdown_done.wait(WAIT_SECONDS))
+                        self.assertEqual(model_starts, [])
+                    finally:
+                        controller.device_access_status = True
+                        controller._transcription_shutdown_requested.set()
+                        start_thread.join(WAIT_SECONDS)
+                        shutdown_thread.join(WAIT_SECONDS)
+
     def test_concurrent_and_repeated_shutdown_callers_share_one_terminal_result(self):
         fake_model = _RecoveryModel()
         model_shutdown_entered = threading.Event()
