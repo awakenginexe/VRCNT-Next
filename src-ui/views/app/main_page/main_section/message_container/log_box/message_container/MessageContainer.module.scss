@@ -114,14 +114,21 @@
     color: var(--dark_100_color);
 }
 
-.message_second {
-    color: var(--dark_400_color);
-    user-select: text;
-    font-size: 1.18em;
-    line-height: 1.45;
-    margin-bottom: 0.85em;
-    padding-bottom: 0.85em;
-    border-bottom: 0.1rem solid rgba(255, 255, 255, 0.06);
+.original_message {
+    max-width: 100%;
+
+    &.with_translations {
+        width: 100%;
+        margin-bottom: 0.85em;
+        padding-bottom: 0.85em;
+        border-bottom: 0.1rem solid rgba(255, 255, 255, 0.06);
+
+        .message_main {
+            color: var(--dark_400_color);
+            font-size: 1.18em;
+            line-height: 1.45;
+        }
+    }
 }
 
 

@@ -104,6 +104,18 @@ main_page:
 
         resend_button_on_hover_desc: "長按發送"
 
+        translation_status:
+            queued: "正在等待 {{engine}} · {{elapsed}}"
+            sending: "正在使用 {{engine}} 翻譯 · {{elapsed}}"
+            fallback: "{{previousEngine}} 回應緩慢 · 正在嘗試 {{engine}}"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "翻譯無法使用 · {{engine}} 請求逾時"
+            error: "翻譯無法使用 · {{engine}} 失敗"
+            skipped_overload: "已略過翻譯 · 佇列過載"
+            no_provider: "翻譯無法使用 · 未選擇服務商"
+            unavailable: "翻譯無法使用"
+            queue_position: "佇列 {{position}}"
+
     state_text_enabled: "啟用"
     state_text_disabled: "停用"
 

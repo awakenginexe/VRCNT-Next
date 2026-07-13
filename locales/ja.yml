@@ -104,6 +104,18 @@ main_page:
 
         resend_button_on_hover_desc: "長押しで送信"
 
+        translation_status:
+            queued: "{{engine}} を待機中 · {{elapsed}}"
+            sending: "{{engine}} で翻訳中 · {{elapsed}}"
+            fallback: "{{previousEngine}} が遅延 · {{engine}} を試行中"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "翻訳を利用できません · {{engine}} がタイムアウトしました"
+            error: "翻訳を利用できません · {{engine}} が失敗しました"
+            skipped_overload: "翻訳をスキップしました · キューが過負荷です"
+            no_provider: "翻訳を利用できません · プロバイダーが未選択です"
+            unavailable: "翻訳を利用できません"
+            queue_position: "キュー {{position}}"
+
     state_text_enabled: "有効"
     state_text_disabled: "無効"
 

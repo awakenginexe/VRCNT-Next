@@ -104,6 +104,18 @@ main_page:
 
         resend_button_on_hover_desc: "길게 눌러서 보내기"
 
+        translation_status:
+            queued: "{{engine}} 대기 중 · {{elapsed}}"
+            sending: "{{engine}}로 번역 중 · {{elapsed}}"
+            fallback: "{{previousEngine}} 지연 · {{engine}} 시도 중"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "번역을 사용할 수 없음 · {{engine}} 시간 초과"
+            error: "번역을 사용할 수 없음 · {{engine}} 실패"
+            skipped_overload: "번역 건너뜀 · 대기열 과부하"
+            no_provider: "번역을 사용할 수 없음 · 제공자 미선택"
+            unavailable: "번역을 사용할 수 없음"
+            queue_position: "대기열 {{position}}"
+
     state_text_enabled: "Enabled"
     state_text_disabled: "Disabled"
 

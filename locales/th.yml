@@ -104,6 +104,18 @@ main_page:
 
         resend_button_on_hover_desc: "กดค้างเพื่อส่ง"
 
+        translation_status:
+            queued: "กำลังรอ {{engine}} · {{elapsed}}"
+            sending: "กำลังแปลด้วย {{engine}} · {{elapsed}}"
+            fallback: "{{previousEngine}} ช้า · กำลังลอง {{engine}}"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "ไม่มีคำแปล · {{engine}} หมดเวลา"
+            error: "ไม่มีคำแปล · {{engine}} ล้มเหลว"
+            skipped_overload: "ข้ามการแปล · คิวทำงานหนักเกินไป"
+            no_provider: "ไม่มีคำแปล · ยังไม่ได้เลือกผู้ให้บริการ"
+            unavailable: "ไม่มีคำแปล"
+            queue_position: "คิว {{position}}"
+
     state_text_enabled: "เปิดใช้งาน"
     state_text_disabled: "ปิดใช้งาน"
 

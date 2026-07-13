@@ -104,6 +104,18 @@ main_page:
 
         resend_button_on_hover_desc: "Press And Hold To Send"
 
+        translation_status:
+            queued: "Waiting for {{engine}} · {{elapsed}}"
+            sending: "Translating with {{engine}} · {{elapsed}}"
+            fallback: "{{previousEngine}} is slow · trying {{engine}}"
+            success_meta: "{{engine}} · {{duration}}"
+            timeout: "Translation unavailable · {{engine}} timed out"
+            error: "Translation unavailable · {{engine}} failed"
+            skipped_overload: "Translation skipped · queue overloaded"
+            no_provider: "Translation unavailable · no provider selected"
+            unavailable: "Translation unavailable"
+            queue_position: "Queue {{position}}"
+
     state_text_enabled: "Enabled"
     state_text_disabled: "Disabled"
 

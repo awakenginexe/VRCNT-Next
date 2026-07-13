@@ -3,6 +3,8 @@ import { useI18n } from "@useI18n";
 import clsx from "clsx";
 import styles from "./MessageContainer.module.scss";
 import { MessageSubMenuContainer } from "./message_sub_menu_container/MessageSubMenuContainer";
+import { MessageText } from "./MessageText";
+import { TranslationEntry } from "./translation_entry/TranslationEntry";
 import { useMessage } from "@logics_common";
 import { useAppearance } from "@logics_configs";
 
@@ -39,7 +41,7 @@ export const MessageContainer = ({ messages, status, category, created_at }) => 
         setIsLocked(true);
     };
 
-    const is_translation_exist = messages.translations?.length > 0;
+    const has_translations = messages.translations.length > 0;
     const is_pending = status === "pending";
     const is_sent_message = category === "sent";
     const is_system_message = category === "system";
@@ -70,10 +72,19 @@ export const MessageContainer = ({ messages, status, category, created_at }) => 
                 <div className={clsx(styles.message_box, message_type_class_name)}>
                     {is_system_message ? (
                         <p className={styles.message_main_system}>{messages.original.message}</p>
-                    ) : is_translation_exist ? (
-                        <WithTranslatedMessages messages={messages} />
                     ) : (
-                        <OriginalMessage messages={messages} />
+                        <>
+                            <div
+                                className={clsx(styles.original_message, {
+                                    [styles.with_translations]: has_translations,
+                                })}
+                            >
+                                <MessageText item={messages.original} />
+                            </div>
+                            {messages.translations.map((entry) => (
+                                <TranslationEntry key={entry.target_slot} entry={entry} />
+                            ))}
+                        </>
                     )}
                 </div>
             </div>
@@ -85,83 +96,5 @@ export const MessageContainer = ({ messages, status, category, created_at }) => 
                 />
             ) : null}
         </div>
-    );
-};
-
-const MessageWithTransliteration = ({ item }) => {
-    const renderTokenNode = (token, key) => {
-        const orig = token.orig ?? "";
-        const hira = token.hira ?? "";
-        const hepburn = token.hepburn ?? "";
-
-        // Only hovered romaji if it exists. (No ruby cuz 'orig' and 'hira' are same.)
-        if (hira && hira === orig && hepburn) {
-            return (
-                <span key={key} title={hepburn} className={styles.with_hepburn}>
-                    {orig}
-                </span>
-            );
-        }
-
-        // Ruby hiragana and hovered romaji.
-        if (hira && hepburn) {
-            return (
-                <ruby key={key} title={hepburn} className={styles.with_hepburn}>
-                    {orig}
-                    <rt>{hira}</rt>
-                </ruby>
-            );
-        }
-
-        // Ruby romaji or hiragana.
-        if (hepburn || hira) {
-            const ruby = hepburn ? hepburn : hira;
-            if (ruby !== orig) {
-                return (
-                    <ruby key={key} className={styles.ruby}>
-                        {orig}
-                        <rt>{ruby}</rt>
-                    </ruby>
-                );
-            };
-        }
-
-        // Nothing. Original only.
-        return (
-            <span key={key} className={styles.original_only}>
-                {orig}
-            </span>
-        );
-    };
-
-    if (!item.transliteration.length) {
-        return <p className={styles.message_main}>{item.message}</p>;
-    }
-
-    return (
-        <p className={styles.message_main}>
-            {item.transliteration.map((token, idx) => renderTokenNode(token, idx))}
-        </p>
-    );
-};
-
-const OriginalMessage = ({ messages }) => {
-    return (
-        <>
-            <MessageWithTransliteration item={messages.original} />
-        </>
-    );
-};
-
-const WithTranslatedMessages = ({ messages }) => {
-    return (
-        <>
-            <p className={styles.message_second}>{messages.original.message}</p>
-            {messages.translations.map((item, idx) => (
-                <div key={idx}>
-                    <MessageWithTransliteration item={item} />
-                </div>
-            ))}
-        </>
     );
 };
