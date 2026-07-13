@@ -1132,6 +1132,72 @@ class PipelineLifecycleTests(unittest.TestCase):
                         controller.device_access_status = True
                         controller.shutdown()
 
+    def test_energy_start_rechecks_terminal_state_after_device_wait(self):
+        cases = (
+            ("startCheckMicEnergy", "startCheckMicEnergy", "mic-energy"),
+            (
+                "startCheckSpeakerEnergy",
+                "startCheckSpeakerEnergy",
+                "speaker-energy",
+            ),
+        )
+        for controller_method, model_method, label in cases:
+            with self.subTest(controller_method=controller_method):
+                fake_model = _RecoveryModel()
+                wait_succeeded = threading.Event()
+                release_wait_result = threading.Event()
+                energy_done = threading.Event()
+                model_starts_after_shutdown = []
+
+                with patch.object(controller_module, "model", fake_model):
+                    controller = Controller()
+                    original_wait = controller._waitForDeviceAccessOrShutdown
+
+                    def paused_successful_wait():
+                        result = original_wait()
+                        self.assertTrue(result)
+                        wait_succeeded.set()
+                        release_wait_result.wait()
+                        return result
+
+                    controller._waitForDeviceAccessOrShutdown = (
+                        paused_successful_wait
+                    )
+                    setattr(
+                        fake_model,
+                        model_method,
+                        lambda _callback: model_starts_after_shutdown.append(
+                            (
+                                label,
+                                controller._transcription_shutdown_state,
+                            )
+                        ),
+                    )
+                    energy_thread = threading.Thread(
+                        target=lambda: (
+                            getattr(controller, controller_method)(),
+                            energy_done.set(),
+                        )
+                    )
+                    energy_thread.start()
+                    try:
+                        self.assertTrue(wait_succeeded.wait(WAIT_SECONDS))
+                        self.assertEqual(
+                            controller.shutdown(),
+                            {"status": 200, "result": True},
+                        )
+                        self.assertEqual(
+                            controller._transcription_shutdown_state,
+                            "shutdown",
+                        )
+                        release_wait_result.set()
+                        self.assertTrue(energy_done.wait(WAIT_SECONDS))
+                        self.assertEqual(model_starts_after_shutdown, [])
+                        self.assertTrue(controller.device_access_status)
+                    finally:
+                        release_wait_result.set()
+                        energy_thread.join(WAIT_SECONDS)
+
     def test_device_waiting_starts_exit_when_shutdown_is_requested(self):
         class ObservedController(Controller):
             def __init__(self):
