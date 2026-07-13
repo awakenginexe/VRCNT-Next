@@ -5,6 +5,10 @@ import {
 } from "@store";
 
 import { useStdoutToPython } from "@useStdoutToPython";
+import {
+    createMessageLogEntry,
+    mergeTranslationUpdateByTrace,
+} from "./messageLogUtils.js";
 
 const COOLDOWN = 2000; // 2 seconds
 
@@ -58,13 +62,19 @@ export const useMessage = () => {
     };
 
     const addSentMessageLog = (payload) => {
-        const message_object = generateMessageObject(payload, "sent");
+        const message_object = createMessageLogEntry(payload, "sent");
         addMessageLogs(message_object);
     };
 
     const addReceivedMessageLog = (payload) => {
-        const message_object = generateMessageObject(payload, "received");
+        const message_object = createMessageLogEntry(payload, "received");
         addMessageLogs(message_object);
+    };
+
+    const updateTranscriptionTranslation = (payload) => {
+        updateMessageLogs((current) =>
+            mergeTranslationUpdateByTrace(current.data, payload, Date.now())
+        );
     };
 
     const startTyping = () => {
@@ -87,6 +97,7 @@ export const useMessage = () => {
         updateSentMessageLogById,
         addSentMessageLog,
         addReceivedMessageLog,
+        updateTranscriptionTranslation,
 
         currentMessageInputValue,
         updateMessageInputValue,
@@ -103,24 +114,24 @@ const generateTimeData = () => {
     );
 };
 
-const generateMessageObject = (data, category) => {
-    return {
-        id: crypto.randomUUID(),
-        created_at: generateTimeData(),
-        category: category,
-        status: "ok",
-        messages: {
-            original: data.original,
-            translations: data.translations ?? [],
-        },
-    };
-};
-
 const updateItemById = (id, updated_data) => (current_items) => {
     return current_items.data.map(item => {
         if (item.id === id) {
-            item.status = "ok";
-            if (updated_data.translations) item.messages.translations = updated_data.translations;
+            const normalized = createMessageLogEntry(updated_data, item.category, {
+                id: item.id,
+                createdAt: item.created_at,
+                nowMs: Date.now(),
+            });
+            return {
+                ...item,
+                status: "ok",
+                messages: updated_data.translations
+                    ? {
+                        ...item.messages,
+                        translations: normalized.messages.translations,
+                    }
+                    : item.messages,
+            };
         }
         return item;
     });
