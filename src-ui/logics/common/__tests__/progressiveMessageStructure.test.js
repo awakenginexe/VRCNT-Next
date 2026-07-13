@@ -40,6 +40,31 @@ test("pending translation slots render status without requiring translated text"
     assert.doesNotMatch(source, /updateMessageLogs|useAtom|useSetAtom|jotai/i);
 });
 
+test("translation state changes use a stable polite region without announcing timer ticks", () => {
+    const source = readSource(
+        `${componentRoot}/translation_entry/TranslationEntry.jsx`,
+    );
+
+    assert.match(source, /role="status"/);
+    assert.match(source, /aria-live="polite"/);
+    assert.match(source, /aria-atomic="true"/);
+    assert.match(source, /className=\{styles\.status\}[\s\S]*?aria-hidden="true"/);
+    assert.match(source, /const announcement = useMemo\(/);
+    assert.match(source, />\{announcement\}<\/span>/);
+    assert.doesNotMatch(source, /aria-busy=/);
+    assert.doesNotMatch(source, /aria-live=\{isActive \? "off" : "polite"\}/);
+
+    const announcementMemo = source.match(
+        /const announcement = useMemo\([\s\S]*?\n    \}, \[[\s\S]*?\n    \]\);/,
+    );
+    assert.ok(announcementMemo, "announcement must be memoized by semantic entry fields");
+    assert.doesNotMatch(
+        announcementMemo[0],
+        /nowMs/,
+        "the 250ms visual clock must not change the live announcement",
+    );
+});
+
 test("message text defensively preserves ruby and Hepburn rendering", () => {
     const relativePath = `${componentRoot}/MessageText.jsx`;
     assert.equal(

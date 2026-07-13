@@ -36,3 +36,16 @@
 .error {
     color: var(--error_bc_color);
 }
+
+.sr_only {
+    position: absolute;
+    width: 0.1rem;
+    height: 0.1rem;
+    padding: 0;
+    margin: -0.1rem;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}

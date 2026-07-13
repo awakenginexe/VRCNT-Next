@@ -198,6 +198,33 @@ class TranslationSchedulerTests(unittest.TestCase):
         translator.release.set()
         self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 2))
 
+    def test_queued_update_preserves_snapshotted_primary_provider(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        translator.block_message = "provider-gate"
+        self.addCleanup(translator.release.set)
+        pipeline = self.make_pipeline(translator, recorder)
+
+        pipeline.submit_trace(
+            make_trace(
+                "provider-trace",
+                message="provider-gate",
+                providers=("Google", "Bing", "ignored"),
+            )
+        )
+        self.assertTrue(translator.entered.wait(timeout=1.0))
+
+        queued = next(
+            item for item in recorder.updates
+            if item.trace_id == "provider-trace"
+            and item.status is TranslationStatus.QUEUED
+        )
+        self.assertEqual(queued.engine, "Google")
+        self.assertEqual(queued.to_payload()["engine"], "Google")
+
+        translator.release.set()
+        self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 1))
+
     def test_queue_positions_sending_zero_and_metric_depth_are_authoritative(self):
         recorder = Recorder()
         translator = ScriptedTranslator()
@@ -1365,6 +1392,11 @@ class TranslationSchedulerTests(unittest.TestCase):
         self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 1))
 
         self.assertEqual(translator.calls, [])
+        queued = [
+            update for update in recorder.updates
+            if update.status is TranslationStatus.QUEUED
+        ]
+        self.assertEqual([item.engine for item in queued], [None, None])
         errors = [update for update in recorder.updates if update.status is TranslationStatus.ERROR]
         self.assertEqual([item.target_slot for item in errors], ["target-1", "target-2"])
         self.assertEqual([item.error_code for item in errors], ["no_provider_configured"] * 2)

@@ -318,7 +318,7 @@ class SourcePipeline:
                     trace_id=trace.trace_id,
                     target_slot=target.target_slot,
                     status=TranslationStatus.QUEUED,
-                    engine=None,
+                    engine=providers[0] if providers else None,
                     message=None,
                     transliteration=(),
                     duration_ms=None,

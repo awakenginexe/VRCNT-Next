@@ -270,6 +270,26 @@ test("same-status data patches keep the original status-change timestamp", () =>
     assert.equal(translation.status_changed_at_ms, 1_000);
 });
 
+test("queued patches preserve the snapshotted provider in presentation", () => {
+    const logs = [createProgressiveLog()];
+    const patched = mergeTranslationUpdateByTrace(logs, {
+        trace_id: "speaker-test",
+        target_slot: "1",
+        status: "queued",
+        engine: "Google",
+        queue_position: 2,
+    }, 1_250);
+    const translation = patched[0].messages.translations[0];
+    const presentation = getTranslationPresentation(translation, 2_400);
+
+    assert.equal(translation.engine, "Google");
+    assert.equal(
+        presentation.textKey,
+        "main_page.message_log.translation_status.queued",
+    );
+    assert.equal(presentation.textValues.engine, "Google");
+});
+
 test("terminal translations cannot regress while active states can jump to terminal", () => {
     assert.deepEqual([...TRANSLATION_ACTIVE_STATUSES], ["queued", "sending", "fallback"]);
     assert.deepEqual(
