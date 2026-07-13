@@ -533,7 +533,7 @@ class TranscriberPipelineTests(unittest.TestCase):
         self.assertEqual(audio_queue.qsize(), 0)
         self.assertEqual(lease.calls[0][0].size, 480)
 
-    def test_inactive_generation_drops_result_and_success_metric(self):
+    def test_inactive_generation_drops_result_and_unsupported_terminal_metric(self):
         lease = FakeLease()
         events = []
         context = make_pipeline_context(
@@ -565,9 +565,9 @@ class TranscriberPipelineTests(unittest.TestCase):
             ("transcription", "success"),
             [(event.stage, event.outcome) for event in events],
         )
-        self.assertIn(
-            ("transcription", "stale"),
+        self.assertEqual(
             [(event.stage, event.outcome) for event in events],
+            [("queue", "success"), ("transcription", "running")],
         )
 
     def test_outer_whisper_processing_failure_is_terminal_and_returns_false(self):

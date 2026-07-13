@@ -472,7 +472,7 @@ class SourcePipeline:
         self._safe_emit_metric(
             self._metric(
                 trace_id=trace.trace_id,
-                stage="admission",
+                stage="queue",
                 engine=None,
                 target_slot=None,
                 outcome=TranslationStatus.ERROR.value,

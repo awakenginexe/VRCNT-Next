@@ -532,6 +532,8 @@ class TranslationSchedulerTests(unittest.TestCase):
             and item.error_code == "duplicate_trace_id"
         ]
         self.assertEqual(len(duplicate_metrics), 1)
+        self.assertEqual(duplicate_metrics[0].stage, "queue")
+        self.assertEqual(duplicate_metrics[0].outcome, "error")
         with pipeline._records_lock:
             self.assertEqual(
                 pipeline._records["same-trace"].trace.original_message,

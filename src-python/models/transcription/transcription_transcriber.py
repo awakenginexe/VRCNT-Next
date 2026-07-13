@@ -398,8 +398,6 @@ class AudioTranscriber:
                         if audio_data.size == 0 or not np.any(audio_data):
                             if self._isGenerationCurrent():
                                 emit_terminal_metric("success")
-                            else:
-                                emit_terminal_metric("stale", "stale_generation")
                             return True
                         max_samples = 16000 * MAX_WHISPER_LIVE_AUDIO_SECONDS
                         if audio_data.size > max_samples:
@@ -561,7 +559,6 @@ class AudioTranscriber:
             "phrase_started_at_monotonic"
         ]
         if not self._isGenerationCurrent():
-            emit_terminal_metric("stale", "stale_generation")
             return True
         emit_terminal_metric("success")
         if result["text"] != "":
