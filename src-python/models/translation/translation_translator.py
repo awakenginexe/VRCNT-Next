@@ -1,7 +1,7 @@
 from os import path as os_path
 import importlib
 import sys
-from threading import Lock
+from threading import Condition, Lock, RLock
 from time import perf_counter
 
 from deepl import DeepLClient
@@ -79,6 +79,9 @@ class Translator:
         self.ctranslate2_tokenizer: Any = None
         self.is_loaded_ctranslate2_model: bool = False
         self.is_changed_translator_parameters: bool = False
+        self._ctranslate2_condition = Condition(RLock())
+        self._ctranslate2_active_calls = 0
+        self._ctranslate2_transitioning = False
         self._web_translator = None
         self.is_enable_translators: bool = True
         self._context_provider_locks = {
@@ -371,29 +374,89 @@ class Translator:
         This sets internal translator/tokenizer objects and flips
         ``is_loaded_ctranslate2_model`` on success.
         """
-        self.is_loaded_ctranslate2_model = False
-        directory_name = ctranslate2_weights[model_type]["directory_name"]
-        weight_path = os_path.join(path, "weights", "ctranslate2", directory_name)
+        with self._ctranslate2_condition:
+            while self._ctranslate2_transitioning:
+                self._ctranslate2_condition.wait()
+            self._ctranslate2_transitioning = True
+            while self._ctranslate2_active_calls:
+                self._ctranslate2_condition.wait()
+            previous_translator = self.ctranslate2_translator
+            self.ctranslate2_translator = None
+            self.ctranslate2_tokenizer = None
+            self.is_loaded_ctranslate2_model = False
 
-        if compute_type == "auto":
-            compute_type = getBestComputeType(device, device_index)
-        self.ctranslate2_translator = _getCtrTranslate2().Translator(
-            weight_path,
-            device=device,
-            device_index=device_index,
-            compute_type=compute_type,
-            inter_threads=1,
-            intra_threads=4,
-        )
+        new_translator = None
         try:
-            self.ctranslate2_tokenizer = loadCTranslate2Tokenizer(path, model_type, local_files_only=True)
+            if previous_translator is not None:
+                try:
+                    previous_translator.unload_model(to_cpu=False)
+                except Exception:
+                    errorLogging()
+            directory_name = ctranslate2_weights[model_type]["directory_name"]
+            weight_path = os_path.join(path, "weights", "ctranslate2", directory_name)
+            if compute_type == "auto":
+                compute_type = getBestComputeType(device, device_index)
+            new_translator = _getCtrTranslate2().Translator(
+                weight_path,
+                device=device,
+                device_index=device_index,
+                compute_type=compute_type,
+                inter_threads=1,
+                intra_threads=4,
+            )
+            try:
+                new_tokenizer = loadCTranslate2Tokenizer(
+                    path, model_type, local_files_only=True
+                )
+            except Exception:
+                errorLogging()
+                new_tokenizer = loadCTranslate2Tokenizer(
+                    path,
+                    model_type,
+                    local_files_only=False,
+                    repair_cache=True,
+                )
+            with self._ctranslate2_condition:
+                self.ctranslate2_translator = new_translator
+                self.ctranslate2_tokenizer = new_tokenizer
+                self.is_loaded_ctranslate2_model = True
+        except Exception:
+            if new_translator is not None:
+                try:
+                    new_translator.unload_model(to_cpu=False)
+                except Exception:
+                    errorLogging()
+            raise
+        finally:
+            with self._ctranslate2_condition:
+                self._ctranslate2_transitioning = False
+                self._ctranslate2_condition.notify_all()
+
+    def unloadCTranslate2Model(self) -> None:
+        """Release the local model after active CTranslate2 inference ends."""
+        with self._ctranslate2_condition:
+            while self._ctranslate2_transitioning:
+                self._ctranslate2_condition.wait()
+            self._ctranslate2_transitioning = True
+            while self._ctranslate2_active_calls:
+                self._ctranslate2_condition.wait()
+            native_translator = self.ctranslate2_translator
+            self.ctranslate2_translator = None
+            self.ctranslate2_tokenizer = None
+            self.is_loaded_ctranslate2_model = False
+        try:
+            if native_translator is not None:
+                native_translator.unload_model(to_cpu=False)
         except Exception:
             errorLogging()
-            self.ctranslate2_tokenizer = loadCTranslate2Tokenizer(path, model_type, local_files_only=False, repair_cache=True)
-        self.is_loaded_ctranslate2_model = True
+        finally:
+            with self._ctranslate2_condition:
+                self._ctranslate2_transitioning = False
+                self._ctranslate2_condition.notify_all()
 
     def isLoadedCTranslate2Model(self) -> bool:
-        return self.is_loaded_ctranslate2_model
+        with self._ctranslate2_condition:
+            return self.is_loaded_ctranslate2_model
 
     def isChangedTranslatorParameters(self) -> bool:
         return self.is_changed_translator_parameters
@@ -406,23 +469,41 @@ class Translator:
 
         Returns a string on success or False on failure (keeps legacy behavior).
         """
+        with self._ctranslate2_condition:
+            if (
+                self._ctranslate2_transitioning
+                or self.is_loaded_ctranslate2_model is not True
+                or self.ctranslate2_translator is None
+                or self.ctranslate2_tokenizer is None
+            ):
+                return False
+            self._ctranslate2_active_calls += 1
+            native_translator = self.ctranslate2_translator
+            tokenizer = self.ctranslate2_tokenizer
+
         result: Any = False
-        if self.is_loaded_ctranslate2_model is True:
-            try:
-                self.ctranslate2_tokenizer.src_lang = source_language
-                source = self.ctranslate2_tokenizer.convert_ids_to_tokens(self.ctranslate2_tokenizer.encode(message))
-                match weight_type:
-                    case "m2m100_418M-ct2-int8" | "m2m100_1.2B-ct2-int8":
-                        target_prefix = [self.ctranslate2_tokenizer.lang_code_to_token[target_language]]
-                    case "nllb-200-distilled-1.3B-ct2-int8" | "nllb-200-3.3B-ct2-int8":
-                        target_prefix = [target_language]
-                    case _:
-                        return False
-                results = self.ctranslate2_translator.translate_batch([source], target_prefix=[target_prefix])
-                target = results[0].hypotheses[0][1:]
-                result = self.ctranslate2_tokenizer.decode(self.ctranslate2_tokenizer.convert_tokens_to_ids(target))
-            except Exception:
-                errorLogging()
+        try:
+            tokenizer.src_lang = source_language
+            source = tokenizer.convert_ids_to_tokens(tokenizer.encode(message))
+            match weight_type:
+                case "m2m100_418M-ct2-int8" | "m2m100_1.2B-ct2-int8":
+                    target_prefix = [tokenizer.lang_code_to_token[target_language]]
+                case "nllb-200-distilled-1.3B-ct2-int8" | "nllb-200-3.3B-ct2-int8":
+                    target_prefix = [target_language]
+                case _:
+                    return False
+            results = native_translator.translate_batch(
+                [source],
+                target_prefix=[target_prefix],
+            )
+            target = results[0].hypotheses[0][1:]
+            result = tokenizer.decode(tokenizer.convert_tokens_to_ids(target))
+        except Exception:
+            errorLogging()
+        finally:
+            with self._ctranslate2_condition:
+                self._ctranslate2_active_calls -= 1
+                self._ctranslate2_condition.notify_all()
         return result
 
     @staticmethod

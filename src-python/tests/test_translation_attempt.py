@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -20,6 +21,7 @@ import controller as controller_module
 import model as model_module
 
 requests = translation_translator.requests
+WAIT_SECONDS = 2.0
 
 
 class FakeProvider:
@@ -94,6 +96,40 @@ class RecordingContextClient:
         return self.context
 
 
+class FakeCTranslate2Tokenizer:
+    def __init__(self):
+        self.src_lang = None
+        self.lang_code_to_token = {"en": "__en__"}
+
+    @staticmethod
+    def encode(_message):
+        return [1]
+
+    @staticmethod
+    def convert_ids_to_tokens(values):
+        return ["source"] if values == [1] else ["translated"]
+
+    @staticmethod
+    def convert_tokens_to_ids(_values):
+        return [2]
+
+    @staticmethod
+    def decode(_values):
+        return "translated"
+
+
+class BlockingNativeCTranslate2Translator:
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.unload_model = Mock()
+
+    def translate_batch(self, *_args, **_kwargs):
+        self.entered.set()
+        self.release.wait(WAIT_SECONDS)
+        return [SimpleNamespace(hypotheses=[["__en__", "translated"]])]
+
+
 class CaptureStartedPipeline:
     """Deterministic source-session boundary for controller integration tests."""
 
@@ -124,6 +160,91 @@ class TranslationAttemptTests(unittest.TestCase):
         }
         arguments.update(overrides)
         return self.translator.translateAttempt(**arguments)
+
+    @staticmethod
+    def _mark_ctranslate2_loaded(translator, native=None):
+        native = native or BlockingNativeCTranslate2Translator()
+        translator.ctranslate2_translator = native
+        translator.ctranslate2_tokenizer = FakeCTranslate2Tokenizer()
+        translator.is_loaded_ctranslate2_model = True
+        return native
+
+    def test_unload_waits_for_active_local_inference_and_clears_references(self):
+        native = self._mark_ctranslate2_loaded(
+            self.translator,
+            BlockingNativeCTranslate2Translator(),
+        )
+        result = []
+        translation = threading.Thread(
+            target=lambda: result.append(
+                self.translator.translateCTranslate2(
+                    "message",
+                    "ja",
+                    "en",
+                    "m2m100_418M-ct2-int8",
+                )
+            ),
+            daemon=True,
+        )
+        translation.start()
+        self.assertTrue(native.entered.wait(WAIT_SECONDS))
+
+        unloaded = threading.Event()
+        teardown = threading.Thread(
+            target=lambda: (
+                self.translator.unloadCTranslate2Model(),
+                unloaded.set(),
+            ),
+            daemon=True,
+        )
+        teardown.start()
+        self.assertFalse(unloaded.wait(0.05))
+        native.release.set()
+        translation.join(WAIT_SECONDS)
+        teardown.join(WAIT_SECONDS)
+
+        self.assertFalse(translation.is_alive())
+        self.assertFalse(teardown.is_alive())
+        self.assertEqual(result, ["translated"])
+        native.unload_model.assert_called_once_with(to_cpu=False)
+        self.assertIsNone(self.translator.ctranslate2_translator)
+        self.assertIsNone(self.translator.ctranslate2_tokenizer)
+        self.assertFalse(self.translator.isLoadedCTranslate2Model())
+
+    def test_unload_error_still_clears_local_model_state(self):
+        native = self._mark_ctranslate2_loaded(self.translator)
+        native.unload_model.side_effect = RuntimeError("unload failed")
+
+        with patch.object(translation_translator, "errorLogging") as log_error:
+            self.translator.unloadCTranslate2Model()
+
+        log_error.assert_called_once_with()
+        self.assertIsNone(self.translator.ctranslate2_translator)
+        self.assertIsNone(self.translator.ctranslate2_tokenizer)
+        self.assertFalse(self.translator.isLoadedCTranslate2Model())
+
+    def test_local_attempt_is_rejected_during_lifecycle_transition(self):
+        native = self._mark_ctranslate2_loaded(self.translator)
+        self.translator._ctranslate2_transitioning = True
+
+        result = self.translator.translateCTranslate2(
+            "message",
+            "ja",
+            "en",
+            "m2m100_418M-ct2-int8",
+        )
+
+        self.assertIs(result, False)
+        self.assertFalse(native.entered.is_set())
+
+    def test_model_facade_exposes_ctranslate2_unload(self):
+        instance = object.__new__(model_module.Model)
+        instance._inited = True
+        instance.translator = Mock()
+
+        instance.unloadTranslatorCTranslate2Model()
+
+        instance.translator.unloadCTranslate2Model.assert_called_once_with()
 
     def test_google_and_bing_web_providers_receive_timeout(self):
         for provider in ("Google", "Bing"):

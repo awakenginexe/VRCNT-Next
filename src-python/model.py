@@ -742,6 +742,10 @@ class Model:
             compute_type=config.SELECTED_TRANSLATION_COMPUTE_TYPE
             )
 
+    def unloadTranslatorCTranslate2Model(self):
+        self.ensure_initialized()
+        self.translator.unloadCTranslate2Model()
+
     def downloadCTranslate2ModelWeight(self, weight_type, callback=None, end_callback=None):
         return downloadCTranslate2Weight(config.PATH_DATA, weight_type, callback, end_callback)
 
