@@ -571,8 +571,7 @@ class Translator:
     ) -> Any:
         """Keep one shared client's context mutation and invocation atomic."""
         with self._context_provider_locks[name]:
-            if context:
-                client.setContextHistory(context)
+            client.setContextHistory(context or [])
             return client.translate(
                 message,
                 input_lang=source,

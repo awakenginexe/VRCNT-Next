@@ -75,6 +75,19 @@ class IndependentlyBlockingContextClient:
         return self.context
 
 
+class RecordingContextClient:
+    def __init__(self):
+        self.context = "unset"
+        self.context_calls = []
+
+    def setContextHistory(self, context):
+        self.context_calls.append(context)
+        self.context = context[0]["request"] if context else "empty"
+
+    def translate(self, message, input_lang, output_lang):
+        return self.context
+
+
 class TranslationAttemptTests(unittest.TestCase):
     def setUp(self):
         self.translator = Translator()
@@ -185,6 +198,22 @@ class TranslationAttemptTests(unittest.TestCase):
         self.assertFalse(client.calls_overlapped)
         self.assertEqual(results["A"].message, "A")
         self.assertEqual(results["B"].message, "B")
+
+    def test_same_provider_empty_context_clears_stale_history(self):
+        client = RecordingContextClient()
+        self.translator._web_translator = Mock()
+        self.translator.plamo_client = client
+        context_a = [{"request": "A"}]
+
+        with patch.object(self.translator, "getLanguageCode", return_value=("ja", "en")):
+            attempts = [
+                self._attempt(translator_name="Plamo_API", context_history=context_a),
+                self._attempt(translator_name="Plamo_API", context_history=[]),
+                self._attempt(translator_name="Plamo_API", context_history=None),
+            ]
+
+        self.assertEqual([attempt.message for attempt in attempts], ["A", "empty", "empty"])
+        self.assertEqual(client.context_calls, [context_a, [], []])
 
     def test_different_provider_context_calls_do_not_share_a_lock(self):
         release = threading.Event()
