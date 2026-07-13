@@ -4398,11 +4398,19 @@ class Controller:
     def startCheckMicEnergy(self) -> None:
         if not self._waitForDeviceAccessOrShutdown():
             return
-        self.device_access_status = False
-        try:
-            model.startCheckMicEnergy(self.progressBarMicEnergy)
-        finally:
-            self.device_access_status = True
+        with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return
+            self.device_access_status = False
+            try:
+                # Starting the recorder/thread is the energy-check lifecycle
+                # publication point. Keep it ordered with terminal shutdown.
+                model.startCheckMicEnergy(self.progressBarMicEnergy)
+            finally:
+                self.device_access_status = True
 
     def startThreadingCheckMicEnergy(self) -> None:
         th_startCheckMicEnergy = Thread(target=self.startCheckMicEnergy)
@@ -4421,11 +4429,19 @@ class Controller:
     def startCheckSpeakerEnergy(self) -> None:
         if not self._waitForDeviceAccessOrShutdown():
             return
-        self.device_access_status = False
-        try:
-            model.startCheckSpeakerEnergy(self.progressBarSpeakerEnergy)
-        finally:
-            self.device_access_status = True
+        with self._transcription_restart_lock:
+            if (
+                self._transcription_shutdown_state != "running"
+                or self._transcription_shutdown_requested.is_set()
+            ):
+                return
+            self.device_access_status = False
+            try:
+                # Starting the recorder/thread is the energy-check lifecycle
+                # publication point. Keep it ordered with terminal shutdown.
+                model.startCheckSpeakerEnergy(self.progressBarSpeakerEnergy)
+            finally:
+                self.device_access_status = True
 
     def startThreadingCheckSpeakerEnergy(self) -> None:
         th_startCheckSpeakerEnergy = Thread(target=self.startCheckSpeakerEnergy)
