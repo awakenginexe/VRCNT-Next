@@ -690,10 +690,6 @@ class SourcePipeline:
                 ):
                     self._remove_record(job.trace_id, record)
                 return
-            self._publish_update(record, failure)
-            if not self._job_is_current(record, job):
-                self._remove_record(job.trace_id, record)
-                return
             self._emit_translation_metric(
                 job,
                 failure,

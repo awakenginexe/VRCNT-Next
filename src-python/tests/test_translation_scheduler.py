@@ -1113,7 +1113,6 @@ class TranslationSchedulerTests(unittest.TestCase):
             [
                 TranslationStatus.QUEUED,
                 TranslationStatus.SENDING,
-                TranslationStatus.TIMEOUT,
                 TranslationStatus.FALLBACK,
                 TranslationStatus.SENDING,
                 TranslationStatus.SUCCESS,
@@ -1124,6 +1123,18 @@ class TranslationSchedulerTests(unittest.TestCase):
             ["primary", "alternate"],
         )
         self.assertNotIn("CTranslate2", [call["translator_name"] for call in translator.calls])
+        primary_failure_metrics = [
+            item for item in recorder.metrics
+            if item.stage == "translation"
+            and item.trace_id == "trace-1"
+            and item.outcome == "timeout"
+        ]
+        self.assertEqual(len(primary_failure_metrics), 1)
+        primary_failure = primary_failure_metrics[0]
+        self.assertEqual(primary_failure.engine, "primary")
+        self.assertEqual(primary_failure.target_slot, "target-1")
+        self.assertEqual(primary_failure.duration_ms, 9)
+        self.assertEqual(primary_failure.error_code, "provider_timeout")
         timeout_metric_index = next(
             index for index, (kind, item) in enumerate(recorder.timeline)
             if kind == "metric" and item.stage == "translation" and item.outcome == "timeout"
@@ -1159,14 +1170,70 @@ class TranslationSchedulerTests(unittest.TestCase):
             [
                 TranslationStatus.QUEUED,
                 TranslationStatus.SENDING,
-                TranslationStatus.ERROR,
                 TranslationStatus.FALLBACK,
                 TranslationStatus.SENDING,
                 TranslationStatus.TIMEOUT,
             ],
         )
+        terminal_updates = [
+            item for item in recorder.updates
+            if item.status in (TranslationStatus.TIMEOUT, TranslationStatus.ERROR)
+        ]
+        self.assertEqual(len(terminal_updates), 1)
+        self.assertEqual(terminal_updates[0].engine, "two")
+        primary_failure_metrics = [
+            item for item in recorder.metrics
+            if item.stage == "translation"
+            and item.engine == "one"
+            and item.outcome == "error"
+        ]
+        self.assertEqual(len(primary_failure_metrics), 1)
+        self.assertEqual(primary_failure_metrics[0].duration_ms, 1)
+        self.assertEqual(primary_failure_metrics[0].error_code, "first_error")
         self.assertEqual(len(recorder.finals[0].translations), 1)
         self.assertEqual(recorder.finals[0].translations[0].status, TranslationStatus.TIMEOUT)
+
+    def test_last_provider_error_is_the_only_terminal_translation_update(self):
+        attempts = [
+            TranslationAttempt(
+                TranslationStatus.TIMEOUT,
+                "one",
+                None,
+                3,
+                "provider_timeout",
+            ),
+            TranslationAttempt(
+                TranslationStatus.ERROR,
+                "two",
+                None,
+                5,
+                "provider_error",
+            ),
+        ]
+        recorder = Recorder()
+        pipeline = self.make_pipeline(ScriptedTranslator(attempts), recorder)
+
+        pipeline.submit_trace(make_trace("trace-final-error", providers=("one", "two")))
+        self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 1))
+
+        self.assertEqual(
+            [item.status for item in recorder.updates],
+            [
+                TranslationStatus.QUEUED,
+                TranslationStatus.SENDING,
+                TranslationStatus.FALLBACK,
+                TranslationStatus.SENDING,
+                TranslationStatus.ERROR,
+            ],
+        )
+        terminal_updates = [
+            item for item in recorder.updates
+            if item.status in (TranslationStatus.TIMEOUT, TranslationStatus.ERROR)
+        ]
+        self.assertEqual(len(terminal_updates), 1)
+        self.assertEqual(terminal_updates[0].engine, "two")
+        self.assertEqual(terminal_updates[0].duration_ms, 5)
+        self.assertEqual(terminal_updates[0].error_code, "provider_error")
 
     def test_empty_provider_snapshot_errors_each_slot_and_finalizes_once(self):
         recorder = Recorder()
