@@ -136,6 +136,68 @@ class ProgressivePipelineTests(unittest.TestCase):
         translator.release.set()
         self.assertTrue(harness.wait_for(lambda: len(harness.finals) == 10))
 
+    def test_partial_multi_target_displacement_only_terminates_exact_slot(self):
+        harness = Harness()
+        translator = BlockingTranslator()
+        pipeline = self.make_pipeline(translator, harness)
+        pipeline.submit_trace(trace("in-flight"))
+        self.assertTrue(translator.entered.wait(timeout=1.0))
+        targets = (
+            TranslationTarget("displaced-slot", "French", "France"),
+            TranslationTarget("surviving-slot", "German", "Germany"),
+        )
+        pipeline.submit_trace(trace("partial", targets=targets))
+        for index in range(7):
+            pipeline.submit_trace(trace(f"filler-{index}"))
+
+        partial_before_release = [
+            item for item in harness.updates
+            if item.trace_id == "partial"
+        ]
+        self.assertEqual(
+            [item.status for item in partial_before_release],
+            [
+                TranslationStatus.QUEUED,
+                TranslationStatus.QUEUED,
+                TranslationStatus.SKIPPED_OVERLOAD,
+            ],
+        )
+        self.assertEqual(
+            partial_before_release[-1].target_slot,
+            "displaced-slot",
+        )
+        self.assertNotIn("partial", [item.trace_id for item in harness.finals])
+
+        translator.release.set()
+        self.assertTrue(
+            harness.wait_for(
+                lambda: len(
+                    [item for item in harness.finals if item.trace_id == "partial"]
+                ) == 1
+            )
+        )
+        partial_final = next(
+            item for item in harness.finals
+            if item.trace_id == "partial"
+        )
+        self.assertEqual(partial_final.targets, targets)
+        self.assertEqual(
+            [item.target_slot for item in partial_final.translations],
+            ["displaced-slot", "surviving-slot"],
+        )
+        self.assertEqual(
+            [item.status for item in partial_final.translations],
+            [TranslationStatus.SKIPPED_OVERLOAD, TranslationStatus.SUCCESS],
+        )
+        partial_calls = [
+            call for call in translator.calls
+            if call["message"] == "partial"
+        ]
+        self.assertEqual(
+            [call["target_language"] for call in partial_calls],
+            ["German"],
+        )
+
     def test_target_slots_aggregate_independently_and_preserve_target_order(self):
         harness = Harness()
         translator = BlockingTranslator()
@@ -196,6 +258,29 @@ class ProgressivePipelineTests(unittest.TestCase):
         self.assertEqual(len(translator.calls), 0)
         release_finalizer.set()
         submitter.join(timeout=1.0)
+        self.assertTrue(harness.wait_for(lambda: len(harness.finals) == 16))
+        self.assertEqual(len(translator.calls), 0)
+        self.assertNotIn("rejected-17", [item.trace_id for item in harness.finals])
+        self.assertEqual(
+            [item.trace_id for item in harness.initial].count("rejected-17"),
+            1,
+        )
+        rejected_updates_after_release = [
+            item for item in harness.updates
+            if item.trace_id == "rejected-17"
+        ]
+        rejected_metrics_after_release = [
+            item for item in harness.metrics
+            if item.trace_id == "rejected-17"
+        ]
+        self.assertEqual(
+            [item.status for item in rejected_updates_after_release],
+            [TranslationStatus.SKIPPED_OVERLOAD],
+        )
+        self.assertEqual(
+            [item.outcome for item in rejected_metrics_after_release],
+            [TranslationStatus.SKIPPED_OVERLOAD.value],
+        )
 
     def test_full_output_queue_never_backpressures_zero_target_or_displacing_submitters(self):
         harness = Harness()

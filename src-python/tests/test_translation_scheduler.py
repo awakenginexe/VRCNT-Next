@@ -172,6 +172,195 @@ class TranslationSchedulerTests(unittest.TestCase):
         translator.release.set()
         self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 2))
 
+    def test_queue_positions_sending_zero_and_metric_depth_are_authoritative(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        translator.block_message = "blocked"
+        pipeline = self.make_pipeline(translator, recorder)
+
+        pipeline.submit_trace(make_trace("blocked", message="blocked"))
+        self.assertTrue(translator.entered.wait(timeout=1.0))
+        pipeline.submit_trace(make_trace("one-waiting"))
+        pipeline.submit_trace(
+            make_trace(
+                "two-slots",
+                targets=(
+                    TranslationTarget("slot-1", "French", "France"),
+                    TranslationTarget("slot-2", "German", "Germany"),
+                ),
+            )
+        )
+
+        queued = {
+            (item.trace_id, item.target_slot): item.queue_position
+            for item in recorder.updates
+            if item.status is TranslationStatus.QUEUED
+        }
+        self.assertEqual(queued[("one-waiting", "target-1")], 1)
+        self.assertEqual(queued[("two-slots", "slot-1")], 2)
+        self.assertEqual(queued[("two-slots", "slot-2")], 3)
+
+        translator.release.set()
+        self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 3))
+        sending = [
+            item for item in recorder.updates
+            if item.status is TranslationStatus.SENDING
+        ]
+        self.assertEqual(len(sending), 4)
+        self.assertTrue(all(item.queue_position == 0 for item in sending))
+        success_metrics = [
+            item for item in recorder.metrics
+            if item.stage == "translation" and item.outcome == "success"
+        ]
+        self.assertEqual([item.queue_depth for item in success_metrics], [3, 2, 1, 0])
+
+    def test_translation_disabled_finalizes_original_only_once(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        transliterator_called = threading.Event()
+
+        def forbidden_transliteration(*_args):
+            transliterator_called.set()
+            raise AssertionError("disabled translation called transliteration")
+
+        pipeline = self.make_pipeline(translator, recorder, forbidden_transliteration)
+        pipeline.submit_trace(
+            make_trace(
+                "disabled",
+                config=make_output_config(translation_enabled=False),
+            )
+        )
+        self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 1))
+
+        self.assertEqual(translator.calls, [])
+        self.assertFalse(transliterator_called.is_set())
+        self.assertEqual(recorder.updates, [])
+        self.assertEqual(len(recorder.finals), 1)
+        final = recorder.finals[0]
+        self.assertEqual(final.original_message, "disabled")
+        self.assertEqual(final.translations, ())
+
+    def test_start_owns_exactly_two_daemons_and_stop_waits_for_provider(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        translator.block_message = "in-flight"
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            translator,
+            lambda *_: (),
+            recorder.emit_initial,
+            recorder.emit_update,
+            recorder.emit_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+
+        pipeline.start(7)
+        translation_thread = pipeline._translation_thread
+        output_thread = pipeline._output_thread
+        self.assertTrue(translation_thread.daemon)
+        self.assertTrue(output_thread.daemon)
+        self.assertTrue(translation_thread.is_alive())
+        self.assertTrue(output_thread.is_alive())
+        with self.assertRaises(RuntimeError):
+            pipeline.start(7)
+        self.assertIs(pipeline._translation_thread, translation_thread)
+        self.assertIs(pipeline._output_thread, output_thread)
+
+        pipeline.submit_trace(make_trace("in-flight", message="in-flight"))
+        self.assertTrue(translator.entered.wait(timeout=1.0))
+        stop_returned = threading.Event()
+
+        def stop_pipeline():
+            pipeline.stop(7, discard_pending=True)
+            stop_returned.set()
+
+        stopper = threading.Thread(target=stop_pipeline, daemon=True)
+        stopper.start()
+        self.assertTrue(pipeline._stop_event.wait(timeout=1.0))
+        self.assertIsNone(pipeline._generation)
+        self.assertFalse(stop_returned.is_set())
+        translator.release.set()
+        self.assertTrue(stop_returned.wait(timeout=1.0))
+        stopper.join(timeout=1.0)
+
+        self.assertFalse(translation_thread.is_alive())
+        self.assertFalse(output_thread.is_alive())
+        self.assertEqual(
+            [item.status for item in recorder.updates],
+            [TranslationStatus.QUEUED, TranslationStatus.SENDING],
+        )
+        self.assertEqual(recorder.finals, [])
+
+    def test_translation_job_is_a_complete_deep_snapshot(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        translator.block_message = "gate"
+        pipeline = self.make_pipeline(translator, recorder)
+        pipeline.submit_trace(make_trace("gate", message="gate"))
+        self.assertTrue(translator.entered.wait(timeout=1.0))
+
+        target = TranslationTarget("slot-x", "Thai", "Thailand")
+        targets = [target]
+        providers = ["one", "two", "three"]
+        context = [{"role": "user", "content": "snapshot"}]
+        snapshot_trace = TranscriptionTrace(
+            trace_id="snapshot-job",
+            generation=7,
+            source=PipelineSource.SPEAKER,
+            original_message="original text",
+            source_language="Japanese",
+            original_transliteration=(),
+            targets=targets,
+            providers=providers,
+            ctranslate2_weight_type="Large",
+            context_history=context,
+            started_at_monotonic=time.monotonic(),
+            output_config=make_output_config(),
+        )
+        before_enqueue = time.monotonic()
+        pipeline.submit_trace(snapshot_trace)
+        after_enqueue = time.monotonic()
+
+        providers[:] = ["mutated"]
+        context[0]["content"] = "mutated"
+        targets[0] = TranslationTarget("other", "German", "Germany")
+        with pipeline._translation_queue._condition:
+            job = next(
+                item for item in pipeline._translation_queue._items
+                if item.trace_id == "snapshot-job"
+            )
+
+        self.assertEqual(job.trace_id, "snapshot-job")
+        self.assertEqual(job.generation, 7)
+        self.assertEqual(job.source, PipelineSource.SPEAKER)
+        self.assertEqual(job.original_message, "original text")
+        self.assertEqual(job.source_language, "Japanese")
+        self.assertEqual(job.target, target)
+        self.assertEqual(job.target.target_slot, "slot-x")
+        self.assertEqual(job.target.language, "Thai")
+        self.assertEqual(job.target.country, "Thailand")
+        self.assertEqual(job.providers, ("one", "two"))
+        self.assertEqual(job.ctranslate2_weight_type, "Large")
+        self.assertEqual(
+            job.context_history,
+            ({"role": "user", "content": "snapshot"},),
+        )
+        self.assertGreaterEqual(job.enqueued_at_monotonic, before_enqueue)
+        self.assertLessEqual(job.enqueued_at_monotonic, after_enqueue)
+
+        translator.release.set()
+        self.assertTrue(recorder.wait_for(lambda: len(recorder.finals) == 2))
+        snapshot_call = next(
+            call for call in translator.calls
+            if call["message"] == "original text"
+        )
+        self.assertEqual(snapshot_call["translator_name"], "one")
+        self.assertEqual(
+            snapshot_call["context_history"],
+            [{"role": "user", "content": "snapshot"}],
+        )
+
     def test_success_and_fallback_state_order_and_attempt_metrics(self):
         attempts = [
             TranslationAttempt(TranslationStatus.TIMEOUT, "primary", None, 9, "provider_timeout"),

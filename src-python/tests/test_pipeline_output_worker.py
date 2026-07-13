@@ -3,6 +3,7 @@ import sys
 import threading
 import time
 import unittest
+from queue import Queue
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -26,6 +27,34 @@ def make_trace(trace_id, started_at):
         trace_id, 5, PipelineSource.MIC, trace_id, "English", (), (), (),
         "Small", (), started_at, config,
     )
+
+
+class GatedGetQueue(Queue):
+    def __init__(self):
+        super().__init__(maxsize=4)
+        self.item_put = threading.Event()
+        self.allow_get = threading.Event()
+
+    def put(self, item, block=True, timeout=None):
+        result = super().put(item, block=block, timeout=timeout)
+        self.item_put.set()
+        return result
+
+    def get(self, block=True, timeout=None):
+        if not self.allow_get.wait(timeout=2.0):
+            raise AssertionError("test did not release output get")
+        return super().get(block=block, timeout=timeout)
+
+
+class ObservedOutputQueue(Queue):
+    def __init__(self):
+        super().__init__(maxsize=4)
+        self.put_waiting_for_capacity = threading.Event()
+
+    def put(self, item, block=True, timeout=None):
+        if self.full():
+            self.put_waiting_for_capacity.set()
+        return super().put(item, block=block, timeout=timeout)
 
 
 class OutputWorkerTests(unittest.TestCase):
@@ -54,6 +83,16 @@ class OutputWorkerTests(unittest.TestCase):
             emit_final,
             lambda generation: generation == 5,
         )
+        removed = []
+        original_remove = pipeline._remove_record
+
+        def observe_remove(trace_id, expected=None):
+            original_remove(trace_id, expected)
+            with condition:
+                removed.append(trace_id)
+                condition.notify_all()
+
+        pipeline._remove_record = observe_remove
         pipeline.start(5)
         self.addCleanup(lambda: pipeline.stop(5, discard_pending=True))
         started = time.monotonic() - 0.05
@@ -72,6 +111,10 @@ class OutputWorkerTests(unittest.TestCase):
                 remaining = deadline - time.monotonic()
                 self.assertGreater(remaining, 0)
                 condition.wait(remaining)
+            while not {"first", "second"}.issubset(removed):
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0)
+                condition.wait(remaining)
 
         output_metrics = [item for item in metrics if item.stage == "output"]
         self.assertEqual(
@@ -82,6 +125,125 @@ class OutputWorkerTests(unittest.TestCase):
         terminal = [item for item in output_metrics if item.outcome in ("error", "success")]
         self.assertTrue(all(item.duration_ms >= 50 for item in terminal))
         self.assertTrue(pipeline._output_thread.is_alive())
+        with pipeline._records_lock:
+            self.assertNotIn("first", pipeline._records)
+            self.assertNotIn("second", pipeline._records)
+
+    def test_stale_generation_drops_output_task_and_cleans_aggregation(self):
+        current = threading.Event()
+        current.set()
+        final_calls = []
+        metrics = []
+        removed = threading.Event()
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            object(),
+            lambda *_: (),
+            lambda _trace: None,
+            lambda _update: None,
+            metrics.append,
+            lambda task: final_calls.append(task.trace_id),
+            lambda generation: generation == 5 and current.is_set(),
+        )
+        gated_queue = GatedGetQueue()
+        pipeline._output_queue = gated_queue
+        original_remove = pipeline._remove_record
+
+        def observe_remove(trace_id, expected=None):
+            original_remove(trace_id, expected)
+            if trace_id == "stale":
+                removed.set()
+
+        pipeline._remove_record = observe_remove
+        pipeline.start(5)
+        self.addCleanup(lambda: pipeline.stop(5, discard_pending=True))
+        pipeline.submit_trace(make_trace("stale", time.monotonic()))
+        self.assertTrue(gated_queue.item_put.wait(timeout=1.0))
+        with pipeline._records_lock:
+            self.assertIn("stale", pipeline._records)
+
+        current.clear()
+        gated_queue.allow_get.set()
+        self.assertTrue(removed.wait(timeout=1.0))
+
+        self.assertEqual(final_calls, [])
+        self.assertEqual(
+            [item for item in metrics if item.trace_id == "stale"],
+            [],
+        )
+        with pipeline._records_lock:
+            self.assertNotIn("stale", pipeline._records)
+
+    def test_full_output_put_cancels_on_stop_and_waits_for_inflight_finalizer(self):
+        finalizer_entered = threading.Event()
+        release_finalizer = threading.Event()
+        translation_exited = threading.Event()
+        stop_returned = threading.Event()
+        final_calls = []
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            object(),
+            lambda *_: (),
+            lambda _trace: None,
+            lambda _update: None,
+            lambda _metric: None,
+            lambda task: self._blocking_finalizer(
+                task,
+                final_calls,
+                finalizer_entered,
+                release_finalizer,
+            ),
+            lambda generation: generation == 5,
+        )
+        observed_queue = ObservedOutputQueue()
+        pipeline._output_queue = observed_queue
+        original_translation_worker = pipeline._translation_worker
+
+        def observe_translation_exit():
+            try:
+                original_translation_worker()
+            finally:
+                translation_exited.set()
+
+        pipeline._translation_worker = observe_translation_exit
+        pipeline.start(5)
+        for index in range(6):
+            pipeline.submit_trace(make_trace(f"full-{index}", time.monotonic()))
+        self.assertTrue(finalizer_entered.wait(timeout=1.0))
+        self.assertTrue(observed_queue.put_waiting_for_capacity.wait(timeout=1.0))
+
+        def stop_pipeline():
+            pipeline.stop(5, discard_pending=True)
+            stop_returned.set()
+
+        stopper = threading.Thread(target=stop_pipeline, daemon=True)
+        stopper.start()
+        self.assertTrue(pipeline._stop_event.wait(timeout=1.0))
+        self.assertTrue(translation_exited.wait(timeout=1.0))
+        self.assertFalse(stop_returned.is_set())
+        self.assertEqual(final_calls, ["full-0"])
+
+        release_finalizer.set()
+        self.assertTrue(stop_returned.wait(timeout=1.0))
+        stopper.join(timeout=1.0)
+        self.assertEqual(final_calls, ["full-0"])
+        self.assertFalse(pipeline._translation_thread.is_alive())
+        self.assertFalse(pipeline._output_thread.is_alive())
+        self.assertTrue(pipeline._output_queue.empty())
+        with pipeline._records_lock:
+            self.assertEqual(pipeline._records, {})
+
+    @staticmethod
+    def _blocking_finalizer(
+        task,
+        calls,
+        entered,
+        release,
+    ):
+        calls.append(task.trace_id)
+        entered.set()
+        if not release.wait(timeout=3.0):
+            raise AssertionError("test did not release finalizer")
 
 
 if __name__ == "__main__":

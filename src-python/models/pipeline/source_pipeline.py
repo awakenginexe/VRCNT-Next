@@ -132,17 +132,28 @@ class SourcePipeline:
         self._ready_event.set()
         if discard_pending:
             self._translation_queue.drain()
-            self._drain_output_queue()
-        try:
-            self._output_queue.put_nowait(self._output_stop_sentinel)
-        except Full:
-            # A full queue means the output worker is already runnable.  It polls
-            # the stop flag after the in-flight finalizer returns.
-            pass
 
-        for worker in (self._translation_thread, self._output_thread):
-            if worker is not None and worker is not current_thread():
-                worker.join()
+        translation_thread = self._translation_thread
+        if (
+            translation_thread is not None
+            and translation_thread is not current_thread()
+        ):
+            translation_thread.join()
+
+        # No translation producer remains after this point, so draining and
+        # adding the wake sentinel cannot race with a stale final-task put.
+        if discard_pending:
+            self._drain_output_queue()
+        output_thread = self._output_thread
+        if output_thread is not None and output_thread.is_alive():
+            try:
+                self._output_queue.put_nowait(self._output_stop_sentinel)
+            except Full:
+                # A full queue means the output worker is already runnable.  It
+                # polls the stop flag after the in-flight finalizer returns.
+                pass
+        if output_thread is not None and output_thread is not current_thread():
+            output_thread.join()
 
         with self._records_lock:
             self._records.clear()
@@ -152,6 +163,7 @@ class SourcePipeline:
         with self._submit_lock:
             if not self._can_accept(trace.generation):
                 return False
+            trace = self._snapshot_trace(trace)
 
             with self._records_lock:
                 over_capacity = len(self._records) >= MAX_ACTIVE_TRACES_PER_SOURCE
@@ -383,7 +395,7 @@ class SourcePipeline:
                     target_language=job.target.language,
                     target_country=job.target.country,
                     message=job.original_message,
-                    context_history=list(job.context_history),
+                    context_history=list(deepcopy(job.context_history)),
                     timeout_seconds=PROVIDER_TIMEOUT_SECONDS,
                 )
             except Exception:
@@ -611,6 +623,23 @@ class SourcePipeline:
     def _get_record(self, trace_id: str) -> Optional[_TraceRecord]:
         with self._records_lock:
             return self._records.get(trace_id)
+
+    @staticmethod
+    def _snapshot_trace(trace: TranscriptionTrace) -> TranscriptionTrace:
+        return TranscriptionTrace(
+            trace_id=trace.trace_id,
+            generation=trace.generation,
+            source=trace.source,
+            original_message=trace.original_message,
+            source_language=trace.source_language,
+            original_transliteration=tuple(deepcopy(trace.original_transliteration)),
+            targets=tuple(trace.targets),
+            providers=tuple(trace.providers),
+            ctranslate2_weight_type=trace.ctranslate2_weight_type,
+            context_history=tuple(deepcopy(trace.context_history)),
+            started_at_monotonic=trace.started_at_monotonic,
+            output_config=deepcopy(trace.output_config),
+        )
 
     def _remove_record(
         self,
