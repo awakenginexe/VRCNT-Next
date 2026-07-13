@@ -3,6 +3,10 @@ import * as main from "@logics_main";
 import * as configs from "@logics_configs";
 import { _useBackendErrorHandling } from "./_useBackendErrorHandling";
 import { SETTINGS_ARRAY } from "./configs/config_page_setter/ui_config_setter";
+import {
+    buildConfigFailureSettlementMeta,
+    handleConfigRouteErrorOutcome,
+} from "./routeFailureSettlement.js";
 
 export const STATIC_ROUTE_META_LIST = [
     // Common
@@ -152,6 +156,9 @@ export const useReceiveRoutes = () => {
             return [endpoint, typeof fn === "function" ? fn : noop];
         })
     );
+    const routeMetaByEndpoint = new Map(
+        ROUTE_META_LIST.map((routeMeta) => [routeMeta.endpoint, routeMeta]),
+    );
 
 
     const receiveRoutes = (parsed_data) => {
@@ -193,9 +200,20 @@ export const useReceiveRoutes = () => {
                 break;
 
             case 500:
-                showNotification_Error(
-                    `An error occurred. Please restart VRCNT-Next or contact the developers. ${JSON.stringify(parsed_data.result)}`, { hide_duration: null });
+            case 503: {
+                const routeMeta = routeMetaByEndpoint.get(endpoint);
+                handleConfigRouteErrorOutcome({
+                    routeMeta,
+                    hookResult: hook_results[routeMeta?.hook_name] ?? {},
+                    status,
+                    result,
+                    showError: () => showNotification_Error(
+                        `An error occurred. Please restart VRCNT-Next or contact the developers. ${JSON.stringify(parsed_data.result)}`,
+                        { hide_duration: null },
+                    ),
+                });
                 break;
+            }
 
             default:
                 console.log("Received data status does not match.", parsed_data);
@@ -224,6 +242,7 @@ const buildRouteMetaList = () => {
         const setSuccessMethodName = `setSuccess${base}`;
         const deleteSuccessMethodName = `deleteSuccess${base}`;
         const updateFromBackendMethodName = `updateFromBackend${base}`;
+        const failureSettlementMeta = buildConfigFailureSettlementMeta(s);
 
 
         if (s.add_endpoint_run_array?.includes("from_backend")) {
@@ -259,6 +278,7 @@ const buildRouteMetaList = () => {
                 ns: namespace_module,
                 hook_name: hookName,
                 method_name: setSuccessMethodName,
+                ...failureSettlementMeta,
             });
         }
 
@@ -336,6 +356,9 @@ const buildRouteMetaList = () => {
             ns: item.ns ?? null,
             hook_name: item.hook_name ?? null,
             method_name: item.method_name ?? null,
+            failure_method_name: item.failure_method_name ?? null,
+            failure_statuses: item.failure_statuses ?? null,
+            failure_result_values: item.failure_result_values ?? null,
         });
     }
 
@@ -352,6 +375,9 @@ const buildRouteMetaList = () => {
             ns: existing.ns ?? gen.ns ?? null,
             hook_name: existing.hook_name ?? gen.hook_name ?? null,
             method_name: existing.method_name ?? gen.method_name ?? null,
+            failure_method_name: existing.failure_method_name ?? gen.failure_method_name ?? null,
+            failure_statuses: existing.failure_statuses ?? gen.failure_statuses ?? null,
+            failure_result_values: existing.failure_result_values ?? gen.failure_result_values ?? null,
         };
         mergedMap.set(ep, merged);
     }

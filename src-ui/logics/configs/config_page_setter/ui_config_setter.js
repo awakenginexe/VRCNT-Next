@@ -579,6 +579,8 @@ export const SETTINGS_ARRAY = [
         ui_template_id: "select",
         logics_template_id: "get_set",
         base_endpoint_name: "whisper_decoding_profile",
+        failure_settlement_statuses: [500, 503],
+        failure_settlement_results: ["fast", "balanced", "accurate"],
     },
     {
         Category: "Transcription",
