@@ -27,6 +27,37 @@ class Controller:
         self.run: Callable[[int, str, Any], None] = _noop_run
         self.device_access_status: bool = True
 
+    @staticmethod
+    def _translationResultViews(translation, success) -> tuple[list[str], list[str]]:
+        """Build string response slots and a compact successful-output view."""
+        translation_values = translation if isinstance(translation, (list, tuple)) else []
+        success_values = success if isinstance(success, (list, tuple)) else []
+        slots = []
+        successful = []
+        for index, value in enumerate(translation_values):
+            is_success = (
+                index < len(success_values)
+                and success_values[index] is True
+                and isinstance(value, str)
+                and bool(value)
+            )
+            slot = value if is_success else ""
+            slots.append(slot)
+            if slot:
+                successful.append(slot)
+        return slots, successful
+
+    @staticmethod
+    def _successfulTransliterationView(
+        translation_slots: list[str],
+        transliteration_slots: list[Any],
+    ) -> list[Any]:
+        return [
+            transliteration
+            for translation, transliteration in zip(translation_slots, transliteration_slots)
+            if translation
+        ]
+
     def _startupWhisperWeightType(self) -> str:
         selectable_weights = config.SELECTABLE_WHISPER_WEIGHT_TYPE_DICT
         if config.WHISPER_WEIGHT_TYPE in selectable_weights:
@@ -577,6 +608,9 @@ class Controller:
         elif isinstance(message, str) and len(message) > 0:
             model.telemetryTrackCoreFeature("mic_speech_to_text")
             translation = []
+            success = []
+            translation_slots = []
+            successful_translations = []
             transliteration_message = []
             transliteration_translation = []
             if model.checkKeywords(message):
@@ -595,7 +629,6 @@ class Controller:
                     model.telemetryTrackCoreFeature("translation")
                     translation, success = model.getInputTranslate(message, source_language=language)
                     if all(success) is not True:
-                        self.changeToCTranslate2Process()
                         self.run(
                             400,
                             self.run_mapping["error_translation_engine"],
@@ -635,6 +668,7 @@ class Controller:
                         # その他のエラーは通常通り処理
                         raise
 
+            translation_slots, successful_translations = self._translationResultViews(translation, success)
             if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
                 if config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese":
                     transliteration_message = model.convertMessageToTransliteration(
@@ -643,33 +677,41 @@ class Controller:
                         romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                     )
 
-                for i, no in enumerate(config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST):
-                    if (config.ENABLE_TRANSLATION is True and
+                transliteration_translation = [[] for _ in translation_slots]
+                target_numbers = config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST
+                for i, translation_message in enumerate(translation_slots):
+                    if i >= len(target_numbers):
+                        continue
+                    no = target_numbers[i]
+                    if (translation_message and
+                        config.ENABLE_TRANSLATION is True and
                         config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["language"] == "Japanese" and
                         config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["enable"] is True
                         ):
-                        transliteration_translation.append(
-                            model.convertMessageToTransliteration(
-                                translation[i],
-                                hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
-                                romaji=config.CONVERT_MESSAGE_TO_ROMAJI
-                            )
+                        transliteration_translation[i] = model.convertMessageToTransliteration(
+                            translation_message,
+                            hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
+                            romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                         )
-                    else:
-                        transliteration_translation.append([])
             else:
-                transliteration_translation = [[] for _ in config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST]
+                transliteration_translation = [[] for _ in translation_slots]
+            successful_transliterations = self._successfulTransliterationView(
+                translation_slots,
+                transliteration_translation,
+            )
 
             if config.ENABLE_TRANSCRIPTION_SEND is True:
                 if config.SEND_MESSAGE_TO_VRC is True:
+                    osc_message = None
                     if config.SEND_ONLY_TRANSLATED_MESSAGES is True:
                         if config.ENABLE_TRANSLATION is False:
                             osc_message = self.messageFormatter("SEND", [], message)
-                        else:
-                            osc_message = self.messageFormatter("SEND", translation, "")
+                        elif successful_translations:
+                            osc_message = self.messageFormatter("SEND", successful_translations, "")
                     else:
-                        osc_message = self.messageFormatter("SEND", translation, message)
-                    model.oscSendMessage(osc_message)
+                        osc_message = self.messageFormatter("SEND", successful_translations, message)
+                    if osc_message is not None:
+                        model.oscSendMessage(osc_message)
 
                 self.run(
                     200,
@@ -683,21 +725,21 @@ class Controller:
                             {
                                 "message": translation_message,
                                 "transliteration": transliteration
-                            } for translation_message, transliteration in zip(translation, transliteration_translation)
+                            } for translation_message, transliteration in zip(translation_slots, transliteration_translation)
                         ]
                     })
 
                 if config.OVERLAY_LARGE_LOG is True and self._is_overlay_available():
                     if config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True:
-                        if len(translation) > 0:
+                        if successful_translations:
                             overlay_image = model.createOverlayImageLargeLog(
                                 "send",
                                 None,
                                 None,
-                                translation,
+                                successful_translations,
                                 config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
                                 transliteration_message,
-                                transliteration_translation
+                                successful_transliterations
                             )
                             model.updateOverlayLargeLog(overlay_image)
                     else:
@@ -705,15 +747,15 @@ class Controller:
                             "send",
                             message,
                             config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"],
-                            translation,
+                            successful_translations,
                             config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
                             transliteration_message,
-                            transliteration_translation
+                            successful_transliterations
                         )
                         model.updateOverlayLargeLog(overlay_image)
 
                 if config.ENABLE_CLIPBOARD is True:
-                    clipboard_message = self.messageFormatter("SEND", translation, message)
+                    clipboard_message = self.messageFormatter("SEND", successful_translations, message)
                     model.setCopyToClipboardAndPasteFromClipboard(clipboard_message)
 
                 if model.checkWebSocketServerAlive() is True:
@@ -723,13 +765,13 @@ class Controller:
                             "src_languages":config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
                             "dst_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
                             "message":message,
-                            "translation":translation,
-                            "transliteration":transliteration_translation
+                            "translation":successful_translations,
+                            "transliteration":successful_transliterations
                         }
                     )
 
                 if config.LOGGER_FEATURE is True:
-                    translation_text = f" ({'/'.join(translation)})" if translation else ""
+                    translation_text = f" ({'/'.join(successful_translations)})" if successful_translations else ""
                     model.logger.info(f"[SENT] {message}{translation_text}")
 
             model.addTranslationHistory("mic", message)
@@ -749,6 +791,9 @@ class Controller:
         elif isinstance(message, str) and len(message) > 0:
             model.telemetryTrackCoreFeature("speaker_speech_to_text")
             translation = []
+            success = []
+            translation_slots = []
+            successful_translations = []
             transliteration_message = []
             transliteration_translation = []
             if model.checkKeywords(message):
@@ -767,7 +812,6 @@ class Controller:
                     model.telemetryTrackCoreFeature("translation")
                     translation, success = model.getOutputTranslate(message, source_language=language)
                     if all(success) is not True:
-                        self.changeToCTranslate2Process()
                         error_response = VRCTError.create_error_response(
                             ErrorCode.TRANSLATION_ENGINE_LIMIT,
                             data=None
@@ -808,6 +852,7 @@ class Controller:
                         # その他のエラーは通常通り処理
                         raise
 
+            translation_slots, successful_translations = self._translationResultViews(translation, success)
             if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
                 if language == "Japanese":
                     transliteration_message = model.convertMessageToTransliteration(
@@ -816,12 +861,13 @@ class Controller:
                         romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                     )
 
-                if (config.ENABLE_TRANSLATION is True and
+                if (successful_translations and
+                    config.ENABLE_TRANSLATION is True and
                     config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese"
                     ):
                     transliteration_translation.append(
                         model.convertMessageToTransliteration(
-                            translation[0],
+                            successful_translations[0],
                             hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
                             romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                         )
@@ -829,43 +875,47 @@ class Controller:
                 else:
                     transliteration_translation.append([])
             else:
-                transliteration_translation = [[]]
+                transliteration_translation = [[] for _ in translation_slots]
+            successful_transliterations = self._successfulTransliterationView(
+                translation_slots,
+                transliteration_translation,
+            )
 
             if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
                 if config.OVERLAY_SMALL_LOG is True and self._is_overlay_available():
                     if config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True:
-                        if len(translation) > 0:
+                        if successful_translations:
                             overlay_image = model.createOverlayImageSmallLog(
                                 None,
                                 None,
-                                translation,
+                                successful_translations,
                                 config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                                 transliteration_message,
-                                transliteration_translation
+                                successful_transliterations
                             )
                             model.updateOverlaySmallLog(overlay_image)
                     else:
                         overlay_image = model.createOverlayImageSmallLog(
                             message,
                             language,
-                            translation,
+                            successful_translations,
                             config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                             transliteration_message,
-                            transliteration_translation
+                            successful_transliterations
                         )
                         model.updateOverlaySmallLog(overlay_image)
 
                 if config.OVERLAY_LARGE_LOG is True and self._is_overlay_available():
                     if config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True:
-                        if len(translation) > 0:
+                        if successful_translations:
                             overlay_image = model.createOverlayImageLargeLog(
                                 "receive",
                                 None,
                                 None,
-                                translation,
+                                successful_translations,
                                 config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                                 transliteration_message,
-                                transliteration_translation
+                                successful_transliterations
                             )
                             model.updateOverlayLargeLog(overlay_image)
                     else:
@@ -873,22 +923,24 @@ class Controller:
                             "receive",
                             message,
                             language,
-                            translation,
+                            successful_translations,
                             config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                             transliteration_message,
-                            transliteration_translation
+                            successful_transliterations
                         )
                         model.updateOverlayLargeLog(overlay_image)
 
                 if config.SEND_RECEIVED_MESSAGE_TO_VRC is True:
+                    osc_message = None
                     if config.SEND_ONLY_TRANSLATED_MESSAGES is True:
                         if config.ENABLE_TRANSLATION is False:
                             osc_message = self.messageFormatter("RECEIVED", [], message)
-                        else:
-                            osc_message = self.messageFormatter("RECEIVED", translation, "")
+                        elif successful_translations:
+                            osc_message = self.messageFormatter("RECEIVED", successful_translations, "")
                     else:
-                        osc_message = self.messageFormatter("RECEIVED", translation, message)
-                    model.oscSendMessage(osc_message)
+                        osc_message = self.messageFormatter("RECEIVED", successful_translations, message)
+                    if osc_message is not None:
+                        model.oscSendMessage(osc_message)
 
                 # update textbox message log (Received)
                 self.run(
@@ -903,7 +955,7 @@ class Controller:
                             {
                                 "message": translation_message,
                                 "transliteration": transliteration
-                            } for translation_message, transliteration in zip(translation, transliteration_translation)
+                            } for translation_message, transliteration in zip(translation_slots, transliteration_translation)
                         ]
                     })
 
@@ -914,13 +966,13 @@ class Controller:
                             "src_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
                             "dst_languages":config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
                             "message":message,
-                            "translation":translation,
-                            "transliteration":transliteration_translation
+                            "translation":successful_translations,
+                            "transliteration":successful_transliterations
                         }
                     )
 
                 if config.LOGGER_FEATURE is True:
-                    translation_text = f" ({'/'.join(translation)})" if translation else ""
+                    translation_text = f" ({'/'.join(successful_translations)})" if successful_translations else ""
                     model.logger.info(f"[RECEIVED] {message}{translation_text}")
 
             model.addTranslationHistory("speaker", message)
@@ -931,6 +983,9 @@ class Controller:
         if len(message) > 0:
             model.telemetryTrackCoreFeature("text_input")
             translation = []
+            success = []
+            translation_slots = []
+            successful_translations = []
             transliteration_message: List[Any] = []
             transliteration_translation = []
             if config.ENABLE_TRANSLATION is False:
@@ -944,7 +999,12 @@ class Controller:
 
                         message = self.removeExclamations(message)
                         for i in range(len(translation)):
-                            translation[i] = self.restoreText(translation[i], replacement_dict)
+                            if (
+                                i < len(success)
+                                and success[i] is True
+                                and isinstance(translation[i], str)
+                            ):
+                                translation[i] = self.restoreText(translation[i], replacement_dict)
                     else:
                         translation, success = model.getInputTranslate(message)
 
@@ -1005,6 +1065,7 @@ class Controller:
                         # その他のエラーは通常通り処理
                         raise
 
+            translation_slots, successful_translations = self._translationResultViews(translation, success)
             if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
                 if config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese":
                     transliteration_message = model.convertMessageToTransliteration(
@@ -1012,45 +1073,53 @@ class Controller:
                         hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
                         romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                     )
-                for i, no in enumerate(config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST):
-                    if (config.ENABLE_TRANSLATION is True and
+                transliteration_translation = [[] for _ in translation_slots]
+                target_numbers = config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST
+                for i, translation_message in enumerate(translation_slots):
+                    if i >= len(target_numbers):
+                        continue
+                    no = target_numbers[i]
+                    if (translation_message and
+                        config.ENABLE_TRANSLATION is True and
                         config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["language"] == "Japanese" and
                         config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["enable"] is True
                         ):
-                        transliteration_translation.append(
-                            model.convertMessageToTransliteration(
-                                translation[i],
-                                hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
-                                romaji=config.CONVERT_MESSAGE_TO_ROMAJI
-                            )
+                        transliteration_translation[i] = model.convertMessageToTransliteration(
+                            translation_message,
+                            hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
+                            romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                         )
-                    else:
-                        transliteration_translation.append([])
             else:
-                transliteration_translation = [[] for _ in config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST]
+                transliteration_translation = [[] for _ in translation_slots]
+            successful_transliterations = self._successfulTransliterationView(
+                translation_slots,
+                transliteration_translation,
+            )
 
             # send OSC message
             if config.SEND_MESSAGE_TO_VRC is True:
+                osc_message = None
                 if config.SEND_ONLY_TRANSLATED_MESSAGES is True:
                     if config.ENABLE_TRANSLATION is False:
                         osc_message = self.messageFormatter("SEND", [], message)
-                    else:
-                        osc_message = self.messageFormatter("SEND", translation, "")
+                    elif successful_translations:
+                        osc_message = self.messageFormatter("SEND", successful_translations, "")
                 else:
-                    osc_message = self.messageFormatter("SEND", translation, message)
-                model.oscSendMessage(osc_message)
+                    osc_message = self.messageFormatter("SEND", successful_translations, message)
+                if osc_message is not None:
+                    model.oscSendMessage(osc_message)
 
             if config.OVERLAY_LARGE_LOG is True:
                 if config.OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES is True:
-                    if len(translation) > 0:
+                    if successful_translations:
                         overlay_image = model.createOverlayImageLargeLog(
                             "send",
                             None,
                             None,
-                            translation,
+                            successful_translations,
                             config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
                             transliteration_message,
-                            transliteration_translation
+                            successful_transliterations
                         )
                         model.updateOverlayLargeLog(overlay_image)
                 else:
@@ -1058,10 +1127,10 @@ class Controller:
                         "send",
                         message,
                         config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"],
-                        translation,
+                        successful_translations,
                         config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
                         transliteration_message,
-                        transliteration_translation
+                        successful_transliterations
                     )
                     model.updateOverlayLargeLog(overlay_image)
 
@@ -1072,13 +1141,13 @@ class Controller:
                         "src_languages":config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
                         "dst_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
                         "message":message,
-                        "translation":translation,
-                        "transliteration":transliteration_translation
+                        "translation":successful_translations,
+                        "transliteration":successful_transliterations
                     }
                 )
 
             if config.LOGGER_FEATURE is True:
-                translation_text = f" ({'/'.join(translation)})" if translation else ""
+                translation_text = f" ({'/'.join(successful_translations)})" if successful_translations else ""
                 model.logger.info(f"[CHAT] {message}{translation_text}")
 
         model.addTranslationHistory("chat", message)
@@ -1095,7 +1164,7 @@ class Controller:
                         {
                             "message": translation_message,
                             "transliteration": transliteration
-                        } for translation_message, transliteration in zip(translation, transliteration_translation)
+                        } for translation_message, transliteration in zip(translation_slots, transliteration_translation)
                     ]
                 }}
 

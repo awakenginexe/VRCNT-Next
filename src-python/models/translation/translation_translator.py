@@ -1,6 +1,7 @@
 from os import path as os_path
 import importlib
 import sys
+from threading import Lock
 from time import perf_counter
 
 from deepl import DeepLClient
@@ -80,6 +81,18 @@ class Translator:
         self.is_changed_translator_parameters: bool = False
         self._web_translator = None
         self.is_enable_translators: bool = True
+        self._context_provider_locks = {
+            provider: Lock()
+            for provider in (
+                "Plamo_API",
+                "Gemini_API",
+                "OpenAI_API",
+                "Groq_API",
+                "OpenRouter_API",
+                "LMStudio",
+                "Ollama",
+            )
+        }
 
     def authenticationDeepLAuthKey(self, auth_key: str) -> bool:
         """Authenticate DeepL API with the provided key.
@@ -479,66 +492,38 @@ class Translator:
                         ).text
             case "Plamo_API":
                 if self.plamo_client is not None:
-                    if context:
-                        self.plamo_client.setContextHistory(context)
-                    result = self.plamo_client.translate(
-                        message,
-                        input_lang=source,
-                        output_lang=target,
+                    result = self._translate_context_provider(
+                        name, self.plamo_client, message, source, target, context
                     )
             case "Gemini_API":
                 if self.gemini_client is not None:
-                    if context:
-                        self.gemini_client.setContextHistory(context)
-                    result = self.gemini_client.translate(
-                        message,
-                        input_lang=source,
-                        output_lang=target,
+                    result = self._translate_context_provider(
+                        name, self.gemini_client, message, source, target, context
                     )
             case "OpenAI_API":
                 if self.openai_client is not None:
-                    if context:
-                        self.openai_client.setContextHistory(context)
-                    result = self.openai_client.translate(
-                        message,
-                        input_lang=source,
-                        output_lang=target,
+                    result = self._translate_context_provider(
+                        name, self.openai_client, message, source, target, context
                     )
             case "Groq_API":
                 if self.groq_client is not None:
-                    if context:
-                        self.groq_client.setContextHistory(context)
-                    result = self.groq_client.translate(
-                        message,
-                        input_lang=source,
-                        output_lang=target,
+                    result = self._translate_context_provider(
+                        name, self.groq_client, message, source, target, context
                     )
             case "OpenRouter_API":
                 if self.openrouter_client is not None:
-                    if context:
-                        self.openrouter_client.setContextHistory(context)
-                    result = self.openrouter_client.translate(
-                        message,
-                        input_lang=source,
-                        output_lang=target,
+                    result = self._translate_context_provider(
+                        name, self.openrouter_client, message, source, target, context
                     )
             case "LMStudio":
                 if self.lmstudio_client is not None:
-                    if context:
-                        self.lmstudio_client.setContextHistory(context)
-                    result = self.lmstudio_client.translate(
-                        message,
-                        input_lang=source,
-                        output_lang=target,
+                    result = self._translate_context_provider(
+                        name, self.lmstudio_client, message, source, target, context
                     )
             case "Ollama":
                 if self.ollama_client is not None:
-                    if context:
-                        self.ollama_client.setContextHistory(context)
-                    result = self.ollama_client.translate(
-                        message,
-                        input_lang=source,
-                        output_lang=target,
+                    result = self._translate_context_provider(
+                        name, self.ollama_client, message, source, target, context
                     )
             case "Google":
                 if self.is_enable_translators is True and self._web_translator is not None:
@@ -574,6 +559,25 @@ class Translator:
                     weight_type=weight,
                 )
         return result
+
+    def _translate_context_provider(
+        self,
+        name: str,
+        client: Any,
+        message: str,
+        source: str,
+        target: str,
+        context: Optional[list[dict]],
+    ) -> Any:
+        """Keep one shared client's context mutation and invocation atomic."""
+        with self._context_provider_locks[name]:
+            if context:
+                client.setContextHistory(context)
+            return client.translate(
+                message,
+                input_lang=source,
+                output_lang=target,
+            )
 
     def translateAttempt(
         self,
@@ -613,7 +617,7 @@ class Translator:
                 status=TranslationStatus.TIMEOUT,
                 engine=translator_name,
                 message=None,
-                duration_ms=max(0, int((perf_counter() - started_at) * 1000)),
+                duration_ms=max(0, round((perf_counter() - started_at) * 1000)),
                 error_code="provider_timeout",
             )
         except Exception:
@@ -622,11 +626,11 @@ class Translator:
                 status=TranslationStatus.ERROR,
                 engine=translator_name,
                 message=None,
-                duration_ms=max(0, int((perf_counter() - started_at) * 1000)),
+                duration_ms=max(0, round((perf_counter() - started_at) * 1000)),
                 error_code="provider_error",
             )
 
-        duration_ms = max(0, int((perf_counter() - started_at) * 1000))
+        duration_ms = max(0, round((perf_counter() - started_at) * 1000))
         if result:
             return TranslationAttempt(
                 status=TranslationStatus.SUCCESS,

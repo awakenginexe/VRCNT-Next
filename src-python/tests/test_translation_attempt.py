@@ -1,16 +1,9 @@
 import copy
-import importlib
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import Mock, patch
-
-import requests
-
-if not hasattr(requests, "exceptions"):
-    sys.modules.pop("requests", None)
-    requests = importlib.import_module("requests")
-
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -19,6 +12,8 @@ from models.translation import translation_translator
 from models.translation.translation_translator import Translator
 import controller as controller_module
 import model as model_module
+
+requests = translation_translator.requests
 
 
 class FakeProvider:
@@ -32,6 +27,52 @@ class FakeProvider:
         if index >= len(self.responses):
             raise AssertionError("unexpected extra provider call")
         return self.responses[index]
+
+
+class BlockingContextClient:
+    def __init__(self):
+        self.current_context = None
+        self.first_translate_entered = threading.Event()
+        self.release_first_translate = threading.Event()
+        self.second_context_set = threading.Event()
+        self.active_calls = 0
+        self.calls_overlapped = False
+        self._active_lock = threading.Lock()
+
+    def setContextHistory(self, context):
+        self.current_context = context[0]["request"]
+        if self.current_context == "B":
+            self.second_context_set.set()
+
+    def translate(self, message, input_lang, output_lang):
+        request = self.current_context
+        with self._active_lock:
+            self.active_calls += 1
+            if self.active_calls > 1:
+                self.calls_overlapped = True
+        try:
+            if request == "A":
+                self.first_translate_entered.set()
+                self.release_first_translate.wait(timeout=2.0)
+            return self.current_context
+        finally:
+            with self._active_lock:
+                self.active_calls -= 1
+
+
+class IndependentlyBlockingContextClient:
+    def __init__(self, entered, release):
+        self.context = None
+        self.entered = entered
+        self.release = release
+
+    def setContextHistory(self, context):
+        self.context = context[0]["request"]
+
+    def translate(self, message, input_lang, output_lang):
+        self.entered.set()
+        self.release.wait(timeout=2.0)
+        return self.context
 
 
 class TranslationAttemptTests(unittest.TestCase):
@@ -94,7 +135,9 @@ class TranslationAttemptTests(unittest.TestCase):
                 self.assertEqual(attempt.error_code, "provider_timeout")
 
     def test_bing_timeout_is_classified_through_provider_dispatch(self):
-        web_translator = Mock(side_effect=requests.exceptions.Timeout("late"))
+        timeout_exception = translation_translator.PROVIDER_TIMEOUT_EXCEPTIONS[1]
+        self.assertIs(timeout_exception, requests.exceptions.Timeout)
+        web_translator = Mock(side_effect=timeout_exception("late"))
         self.translator._web_translator = web_translator
 
         with patch.object(self.translator, "getLanguageCode", return_value=("ja", "en")), patch.object(
@@ -108,6 +151,78 @@ class TranslationAttemptTests(unittest.TestCase):
         self.assertEqual(attempt.error_code, "provider_timeout")
         self.assertEqual(web_translator.call_count, 1)
         self.assertEqual(web_translator.call_args.kwargs["timeout"], 5.0)
+
+    def test_same_provider_context_and_call_are_atomic(self):
+        client = BlockingContextClient()
+        self.translator._web_translator = Mock()
+        self.translator.plamo_client = client
+        results = {}
+        second_attempting = threading.Event()
+
+        def run_attempt(request):
+            if request == "B":
+                second_attempting.set()
+            results[request] = self._attempt(
+                translator_name="Plamo_API",
+                context_history=[{"request": request}],
+            )
+
+        first = threading.Thread(target=run_attempt, args=("A",), daemon=True)
+        second = threading.Thread(target=run_attempt, args=("B",), daemon=True)
+        with patch.object(self.translator, "getLanguageCode", return_value=("ja", "en")):
+            first.start()
+            self.assertTrue(client.first_translate_entered.wait(timeout=1.0))
+            second.start()
+            self.assertTrue(second_attempting.wait(timeout=1.0))
+            second_entered_before_release = client.second_context_set.wait(timeout=0.1)
+            client.release_first_translate.set()
+            first.join(timeout=1.0)
+            second.join(timeout=1.0)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertFalse(second_entered_before_release)
+        self.assertFalse(client.calls_overlapped)
+        self.assertEqual(results["A"].message, "A")
+        self.assertEqual(results["B"].message, "B")
+
+    def test_different_provider_context_calls_do_not_share_a_lock(self):
+        release = threading.Event()
+        plamo_entered = threading.Event()
+        gemini_entered = threading.Event()
+        self.translator._web_translator = Mock()
+        self.translator.plamo_client = IndependentlyBlockingContextClient(plamo_entered, release)
+        self.translator.gemini_client = IndependentlyBlockingContextClient(gemini_entered, release)
+        results = []
+
+        def run_attempt(provider, request):
+            results.append(
+                self._attempt(
+                    translator_name=provider,
+                    context_history=[{"request": request}],
+                )
+            )
+
+        first = threading.Thread(target=run_attempt, args=("Plamo_API", "A"), daemon=True)
+        second = threading.Thread(target=run_attempt, args=("Gemini_API", "B"), daemon=True)
+        with patch.object(self.translator, "getLanguageCode", return_value=("ja", "en")):
+            first.start()
+            second.start()
+            both_entered = plamo_entered.wait(timeout=1.0) and gemini_entered.wait(timeout=1.0)
+            release.set()
+            first.join(timeout=1.0)
+            second.join(timeout=1.0)
+
+        self.assertTrue(both_entered)
+        self.assertEqual({attempt.message for attempt in results}, {"A", "B"})
+
+    def test_duration_uses_rounded_milliseconds(self):
+        with patch.object(self.translator, "_translate_once", return_value="translated"), patch.object(
+            translation_translator, "perf_counter", side_effect=[3.0, 3.0016]
+        ):
+            attempt = self._attempt()
+
+        self.assertEqual(attempt.duration_ms, 2)
 
     def test_success_returns_structured_attempt(self):
         with patch.object(self.translator, "_translate_once", return_value="translated"), patch.object(
@@ -330,6 +445,161 @@ class TypedChatTranslationTests(unittest.TestCase):
         self.assertTrue(
             any(call.args[1] == "/error/translation-engine" for call in controller.run.call_args_list)
         )
+
+
+class ControllerTranslationSanitizationTests(unittest.TestCase):
+    def _config_patch(self, *, send_only_translated=False, overlay_only_translated=False):
+        return patch.multiple(
+            controller_module.config,
+            _SELECTED_TAB_NO="1",
+            _SELECTED_TRANSLATION_ENGINES={"1": ["Google", "Bing"]},
+            _ENABLE_TRANSLATION=True,
+            _USE_EXCLUDE_WORDS=False,
+            _CONVERT_MESSAGE_TO_HIRAGANA=True,
+            _CONVERT_MESSAGE_TO_ROMAJI=False,
+            _SELECTED_TAB_TARGET_LANGUAGES_NO_LIST=["1", "2"],
+            _SELECTED_YOUR_LANGUAGES={
+                "1": {"1": {"enable": True, "language": "English", "country": "United States"}}
+            },
+            _SELECTED_TARGET_LANGUAGES={
+                "1": {
+                    "1": {"enable": True, "language": "Japanese", "country": "Japan"},
+                    "2": {"enable": True, "language": "French", "country": "France"},
+                }
+            },
+            _SELECTED_YOUR_TRANSLATION_LANGUAGES={
+                "1": {"1": {"enable": True, "language": "Japanese", "country": "Japan"}}
+            },
+            _SEND_MESSAGE_TO_VRC=True,
+            _SEND_ONLY_TRANSLATED_MESSAGES=send_only_translated,
+            _OVERLAY_SMALL_LOG=True,
+            _OVERLAY_LARGE_LOG=True,
+            _OVERLAY_SHOW_ONLY_TRANSLATED_MESSAGES=overlay_only_translated,
+            _LOGGER_FEATURE=True,
+            _ENABLE_TRANSCRIPTION_SEND=True,
+            _ENABLE_TRANSCRIPTION_RECEIVE=True,
+            _SEND_RECEIVED_MESSAGE_TO_VRC=True,
+            _ENABLE_CLIPBOARD=True,
+        )
+
+    def _fake_model(self):
+        fake_model = Mock()
+        fake_model.checkKeywords.return_value = False
+        fake_model.detectRepeatSendMessage.return_value = False
+        fake_model.detectRepeatReceiveMessage.return_value = False
+        fake_model.checkWebSocketServerAlive.return_value = True
+        fake_model.logger = Mock()
+        fake_model.createOverlayImageLargeLog.return_value = "large-image"
+        fake_model.createOverlayImageSmallLog.return_value = "small-image"
+
+        def transliterate(message, **kwargs):
+            self.assertIs(type(message), str)
+            self.assertTrue(message)
+            return f"kana:{message}"
+
+        fake_model.convertMessageToTransliteration.side_effect = transliterate
+        return fake_model
+
+    def _controller(self):
+        controller = controller_module.Controller()
+        controller.run_mapping = {
+            "error_translation_engine": "/error/translation-engine",
+            "transcription_mic": "/transcription/mic",
+            "transcription_speaker": "/transcription/speaker",
+            "word_filter": "/word-filter",
+        }
+        controller.run = Mock()
+        controller.changeToCTranslate2Process = Mock()
+        controller.messageFormatter = Mock(return_value="formatted")
+        controller._is_overlay_available = Mock(return_value=True)
+        return controller
+
+    @staticmethod
+    def _run_payload(controller, endpoint):
+        return next(call.args[2] for call in controller.run.call_args_list if call.args[1] == endpoint)
+
+    def test_chat_partial_failure_keeps_string_slots_and_sanitizes_side_effects(self):
+        fake_model = self._fake_model()
+        fake_model.getInputTranslate.return_value = (["translated", False], [True, False])
+        controller = self._controller()
+
+        with patch.object(controller_module, "model", fake_model), self._config_patch():
+            result = controller.chatMessage({"id": "chat-1", "message": "hello"})
+            current_selection = controller_module.config.SELECTED_TRANSLATION_ENGINES
+
+        self.assertEqual(
+            [item["message"] for item in result["result"]["translations"]],
+            ["translated", ""],
+        )
+        self.assertEqual(controller.messageFormatter.call_args.args[1], ["translated"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["translated"])
+        self.assertEqual(fake_model.websocketSendMessage.call_args.args[0]["translation"], ["translated"])
+        fake_model.logger.info.assert_called_once_with("[CHAT] hello (translated)")
+        self.assertEqual(current_selection, {"1": ["Google", "Bing"]})
+        controller.changeToCTranslate2Process.assert_not_called()
+
+    def test_chat_total_failure_suppresses_translated_only_side_effects(self):
+        fake_model = self._fake_model()
+        fake_model.getInputTranslate.return_value = ([False, False], [False, False])
+        controller = self._controller()
+
+        with patch.object(controller_module, "model", fake_model), self._config_patch(
+            send_only_translated=True,
+            overlay_only_translated=True,
+        ):
+            result = controller.chatMessage({"id": "chat-2", "message": "hello"})
+
+        self.assertEqual(
+            [item["message"] for item in result["result"]["translations"]],
+            ["", ""],
+        )
+        fake_model.convertMessageToTransliteration.assert_not_called()
+        controller.messageFormatter.assert_not_called()
+        fake_model.oscSendMessage.assert_not_called()
+        fake_model.createOverlayImageLargeLog.assert_not_called()
+        self.assertEqual(fake_model.websocketSendMessage.call_args.args[0]["translation"], [])
+        fake_model.logger.info.assert_called_once_with("[CHAT] hello")
+
+    def test_mic_partial_failure_sanitizes_all_outputs_without_engine_mutation(self):
+        fake_model = self._fake_model()
+        fake_model.getInputTranslate.return_value = (["translated", False], [True, False])
+        controller = self._controller()
+
+        with patch.object(controller_module, "model", fake_model), self._config_patch():
+            controller.micMessage({"text": "spoken", "language": "English"})
+            current_selection = controller_module.config.SELECTED_TRANSLATION_ENGINES
+
+        payload = self._run_payload(controller, "/transcription/mic")
+        self.assertEqual([item["message"] for item in payload["translations"]], ["translated", ""])
+        self.assertTrue(controller.messageFormatter.call_args_list)
+        for formatter_call in controller.messageFormatter.call_args_list:
+            self.assertEqual(formatter_call.args[1], ["translated"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["translated"])
+        self.assertEqual(fake_model.websocketSendMessage.call_args.args[0]["translation"], ["translated"])
+        fake_model.logger.info.assert_called_once_with("[SENT] spoken (translated)")
+        self.assertEqual(current_selection, {"1": ["Google", "Bing"]})
+        controller.changeToCTranslate2Process.assert_not_called()
+
+    def test_speaker_total_failure_uses_original_only_and_string_response_slot(self):
+        fake_model = self._fake_model()
+        fake_model.getOutputTranslate.return_value = ([False], [False])
+        controller = self._controller()
+
+        with patch.object(controller_module, "model", fake_model), self._config_patch():
+            controller.speakerMessage({"text": "heard", "language": "English"})
+            current_selection = controller_module.config.SELECTED_TRANSLATION_ENGINES
+
+        payload = self._run_payload(controller, "/transcription/speaker")
+        self.assertEqual([item["message"] for item in payload["translations"]], [""])
+        fake_model.convertMessageToTransliteration.assert_not_called()
+        controller.messageFormatter.assert_called_once_with("RECEIVED", [], "heard")
+        fake_model.oscSendMessage.assert_called_once_with("formatted")
+        self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[2], [])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], [])
+        self.assertEqual(fake_model.websocketSendMessage.call_args.args[0]["translation"], [])
+        fake_model.logger.info.assert_called_once_with("[RECEIVED] heard")
+        self.assertEqual(current_selection, {"1": ["Google", "Bing"]})
+        controller.changeToCTranslate2Process.assert_not_called()
 
 
 if __name__ == "__main__":
