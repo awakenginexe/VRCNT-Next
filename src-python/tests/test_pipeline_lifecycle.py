@@ -78,6 +78,273 @@ class _RecoveryModel:
 
 
 class PipelineLifecycleTests(unittest.TestCase):
+    def _exercise_healthy_silence_source(self, source):
+        generation = 11 if source is PipelineSource.MIC else 12
+        instance = object.__new__(Model)
+        instance._inited = True
+        instance._ensureTranscriptionLifecycleState()
+        instance._source_pipeline_generations = {source: generation}
+        instance._source_pipeline_generation_counters[source] = generation
+        instance.mic_source_pipeline = (
+            object() if source is PipelineSource.MIC else None
+        )
+        instance.speaker_source_pipeline = (
+            object() if source is PipelineSource.SPEAKER else None
+        )
+        instance.mic_print_transcript = None
+        instance.mic_audio_recorder = None
+        instance.mic_whisper_runtime_lease = None
+        instance.mic_transcriber = None
+        instance.mic_transcript_stop_event = None
+        instance.mic_mute_status = None
+        instance.speaker_print_transcript = None
+        instance.speaker_audio_recorder = None
+        instance.speaker_whisper_runtime_lease = None
+        instance.speaker_transcriber = None
+        instance.speaker_transcript_stop_event = None
+        instance.restartRecorder = Mock(return_value=True)
+        instance._acquireWhisperRuntimeLease = Mock(return_value=None)
+        instance._makeTranscriberPipelineContext = Mock(return_value=None)
+        instance._startTranscriptStallWatchdog = Mock()
+        recorders = []
+        heartbeat_values = iter((10.0, 60.0))
+
+        class Recorder:
+            source = SimpleNamespace()
+
+            def __init__(self, **_kwargs):
+                self.callbacks = {}
+                recorders.append(self)
+
+            def recordIntoQueue(self, _queue, _energy, **callbacks):
+                self.callbacks = callbacks
+
+            def resume(self):
+                return None
+
+            def stop(self, *_args):
+                return None
+
+        class Transcriber:
+            def __init__(self, **_kwargs):
+                return None
+
+            def transcribeAudioQueue(self, *_args, **_kwargs):
+                recorders[-1].callbacks["on_heartbeat"](
+                    next(heartbeat_values)
+                )
+                return False
+
+            def resetAudioSource(self, _source):
+                return None
+
+        class TwoIterationThread:
+            def __init__(self, fnc, end_fnc=None, **_kwargs):
+                self.fnc = fnc
+                self.end_fnc = end_fnc
+
+            def start(self):
+                self.fnc()
+                self.fnc()
+
+            def stop(self):
+                return None
+
+            def join(self, timeout=None):
+                del timeout
+                return None
+
+            def is_alive(self):
+                return False
+
+        config_values = {
+            "_SELECTED_TAB_NO": "1",
+            "_SELECTED_YOUR_LANGUAGES": {
+                "1": {
+                    "1": {
+                        "enable": True,
+                        "language": "English",
+                        "country": "United States",
+                    }
+                }
+            },
+            "_SELECTED_TARGET_LANGUAGES": {
+                "1": {
+                    "1": {
+                        "enable": True,
+                        "language": "Japanese",
+                        "country": "Japan",
+                    }
+                }
+            },
+            "_ENABLE_TRANSCRIPTION_SEND": True,
+            "_ENABLE_TRANSCRIPTION_RECEIVE": True,
+            "_SELECTED_MIC_HOST": "Host",
+            "_SELECTED_MIC_DEVICE": "Mic",
+            "_SELECTED_SPEAKER_DEVICE": "Speaker",
+            "_MIC_RECORD_TIMEOUT": 3,
+            "_MIC_PHRASE_TIMEOUT": 3,
+            "_SPEAKER_RECORD_TIMEOUT": 3,
+            "_SPEAKER_PHRASE_TIMEOUT": 3,
+            "_VRC_MIC_MUTE_SYNC": False,
+        }
+        with (
+            patch.multiple(model_module.config, **config_values),
+            patch.object(model_module, "AudioTranscriber", Transcriber),
+            patch.object(model_module, "threadFnc", TwoIterationThread),
+            patch.object(
+                model_module,
+                "SelectedMicEnergyAndAudioRecorder",
+                Recorder,
+            ),
+            patch.object(
+                model_module,
+                "SelectedSpeakerEnergyAndAudioRecorder",
+                Recorder,
+            ),
+            patch.object(
+                model_module.device_manager,
+                "getMicDevices",
+                return_value={"Host": [{"name": "Mic"}]},
+            ),
+            patch.object(
+                model_module.device_manager,
+                "getSpeakerDevices",
+                return_value=[{"name": "Speaker"}],
+            ),
+            patch.object(
+                model_module,
+                "monotonic",
+                side_effect=(0.0, 0.0, 10.0, 60.0),
+            ),
+        ):
+            if source is PipelineSource.MIC:
+                started = instance._startMicTranscript(
+                    lambda _result: None,
+                    generation,
+                )
+            else:
+                started = instance._startSpeakerTranscript(
+                    lambda _result: None,
+                    generation,
+                )
+
+            self.assertTrue(started)
+            self.assertEqual(
+                instance._source_heartbeat_timestamps[source],
+                60.0,
+            )
+            instance.restartRecorder.assert_not_called()
+
+            if source is PipelineSource.MIC:
+                instance.stopMicTranscript(stop_pipeline=False)
+            else:
+                instance.stopSpeakerTranscript(stop_pipeline=False)
+
+        self.assertNotIn(source, instance._source_heartbeat_timestamps)
+        self.assertNotIn(source, instance._source_transcription_sessions)
+
+    def test_healthy_mic_heartbeat_during_empty_queue_never_refreshes_recorder(self):
+        self._exercise_healthy_silence_source(PipelineSource.MIC)
+
+    def test_healthy_speaker_heartbeat_during_empty_queue_never_refreshes_recorder(self):
+        self._exercise_healthy_silence_source(PipelineSource.SPEAKER)
+
+    def test_capture_watchdog_recovers_each_stale_heartbeat_once_and_ignores_old_sessions(self):
+        class ImmediateThread:
+            def __init__(self, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        class ScriptedStopEvent:
+            def __init__(self, outcomes):
+                self.outcomes = iter(outcomes)
+                self.stopped = False
+
+            def wait(self, _timeout):
+                outcome = next(self.outcomes, True)
+                self.stopped = self.stopped or outcome
+                return outcome
+
+            def is_set(self):
+                return self.stopped
+
+        for source in (PipelineSource.MIC, PipelineSource.SPEAKER):
+            with self.subTest(source=source.value, state="active"):
+                generation = 20
+                stop_event = ScriptedStopEvent((False, False, True))
+                instance = object.__new__(Model)
+                instance._inited = True
+                instance._ensureTranscriptionLifecycleState()
+                instance._source_pipeline_generations = {source: generation}
+                instance.mic_source_pipeline = (
+                    object() if source is PipelineSource.MIC else None
+                )
+                instance.speaker_source_pipeline = (
+                    object() if source is PipelineSource.SPEAKER else None
+                )
+                instance._source_heartbeat_timestamps[source] = 0.0
+                instance._source_transcription_sessions[source] = {
+                    "generation": generation,
+                    "stop_event": stop_event,
+                }
+                instance.restartRecorder = Mock(return_value=True)
+
+                with (
+                    patch.object(model_module, "Thread", ImmediateThread),
+                    patch.object(
+                        model_module,
+                        "monotonic",
+                        side_effect=(100.0, 101.0),
+                    ),
+                ):
+                    instance._startCaptureHeartbeatWatchdog(
+                        source,
+                        generation,
+                        stop_event,
+                        stall_seconds=90.0,
+                    )
+
+                instance.restartRecorder.assert_called_once_with(
+                    source,
+                    generation,
+                )
+
+            with self.subTest(source=source.value, state="stale_generation"):
+                generation = 30
+                stop_event = ScriptedStopEvent((False, True))
+                instance = object.__new__(Model)
+                instance._inited = True
+                instance._ensureTranscriptionLifecycleState()
+                instance._source_pipeline_generations = {source: generation + 1}
+                instance.mic_source_pipeline = (
+                    object() if source is PipelineSource.MIC else None
+                )
+                instance.speaker_source_pipeline = (
+                    object() if source is PipelineSource.SPEAKER else None
+                )
+                instance._source_heartbeat_timestamps[source] = 0.0
+                instance._source_transcription_sessions[source] = {
+                    "generation": generation + 1,
+                    "stop_event": stop_event,
+                }
+                instance.restartRecorder = Mock(return_value=True)
+
+                with (
+                    patch.object(model_module, "Thread", ImmediateThread),
+                    patch.object(model_module, "monotonic", return_value=100.0),
+                ):
+                    instance._startCaptureHeartbeatWatchdog(
+                        source,
+                        generation,
+                        stop_event,
+                        stall_seconds=90.0,
+                    )
+
+                instance.restartRecorder.assert_not_called()
+
     def test_mainloop_stop_route_returns_after_translation_and_output_workers_exit(self):
         from mainloop import Main
         transcription_release = threading.Event()

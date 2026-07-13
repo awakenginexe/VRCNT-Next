@@ -60,7 +60,6 @@ from models.telemetry import Telemetry
 from utils import errorLogging, setupLogger, printLog
 
 TRANSCRIPT_THREAD_JOIN_TIMEOUT = 2.0
-TRANSCRIPT_IDLE_RECORDER_REFRESH_SECONDS = 45.0
 TRANSCRIPT_STALL_RESTART_SECONDS = 90.0
 TRANSCRIPT_STALL_CHECK_SECONDS = 5.0
 DEFAULT_TRANSLATION_ENGINE = "CTranslate2"
@@ -1276,9 +1275,23 @@ class Model:
         generation: int,
         captured_at: float,
     ) -> None:
-        if self.isSourcePipelineGenerationCurrent(source, generation):
-            with self._source_session_lock:
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_lock:
+            session = self._source_transcription_sessions.get(source)
+            if (
+                session is not None
+                and session.get("generation") == generation
+                and not session["stop_event"].is_set()
+                and self._source_pipeline_generations.get(source) == generation
+                and getattr(
+                    self,
+                    self._sourcePipelineAttribute(source),
+                    None,
+                )
+                is not None
+            ):
                 self._source_heartbeat_timestamps[source] = captured_at
+                session["heartbeat_at"] = captured_at
 
     def _recorderCallbacks(
         self,
@@ -1411,12 +1424,34 @@ class Model:
         stall_seconds: float,
     ) -> None:
         def watchCaptureHeartbeat():
+            last_recovery_heartbeat = None
             while not stop_event.wait(TRANSCRIPT_STALL_CHECK_SECONDS):
                 with self._source_session_lock:
+                    session = self._source_transcription_sessions.get(source)
+                    if (
+                        session is None
+                        or session.get("generation") != generation
+                        or session.get("stop_event") is not stop_event
+                        or self._source_pipeline_generations.get(source)
+                        != generation
+                        or getattr(
+                            self,
+                            self._sourcePipelineAttribute(source),
+                            None,
+                        )
+                        is None
+                    ):
+                        return
                     heartbeat_at = self._source_heartbeat_timestamps.get(source)
                 if heartbeat_at is None or monotonic() - heartbeat_at <= stall_seconds:
                     continue
-                self.restartRecorder(source, generation)
+                if heartbeat_at == last_recovery_heartbeat:
+                    continue
+                last_recovery_heartbeat = heartbeat_at
+                try:
+                    self.restartRecorder(source, generation)
+                except Exception:
+                    errorLogging()
 
         watchdog_thread = Thread(
             target=watchCaptureHeartbeat,
@@ -1539,7 +1574,6 @@ class Model:
             transcriber = self.mic_transcriber
             stop_event = Event()
             self.mic_transcript_stop_event = stop_event
-            idle_state = {"last_refresh_at": monotonic()}
             heartbeat_at = monotonic()
             with self._source_session_lock:
                 self._source_heartbeat_timestamps[PipelineSource.MIC] = heartbeat_at
@@ -1561,24 +1595,10 @@ class Model:
                 float(phrase_timeout) * 4.0,
             )
 
-            def refreshMicRecorderIfIdle():
-                now = monotonic()
-                if not audio_queue.empty():
-                    idle_state["last_refresh_at"] = now
-                    return
-                if now - idle_state["last_refresh_at"] < TRANSCRIPT_IDLE_RECORDER_REFRESH_SECONDS:
-                    return
-                idle_state["last_refresh_at"] = now
-                try:
-                    self.restartRecorder(PipelineSource.MIC, generation)
-                except Exception:
-                    errorLogging()
-
             def sendMicTranscript():
                 if stop_event.is_set():
                     return
                 try:
-                    refreshMicRecorderIfIdle()
                     selected_your_languages = config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]
                     languages = [data["language"] for data in selected_your_languages.values() if data["enable"] is True]
                     countries = [data["country"] for data in selected_your_languages.values() if data["enable"] is True]
@@ -2029,7 +2049,6 @@ class Model:
             transcriber = self.speaker_transcriber
             stop_event = Event()
             self.speaker_transcript_stop_event = stop_event
-            idle_state = {"last_refresh_at": monotonic()}
             heartbeat_at = monotonic()
             with self._source_session_lock:
                 self._source_heartbeat_timestamps[PipelineSource.SPEAKER] = heartbeat_at
@@ -2051,24 +2070,10 @@ class Model:
                 float(phrase_timeout) * 4.0,
             )
 
-            def refreshSpeakerRecorderIfIdle():
-                now = monotonic()
-                if not speaker_audio_queue.empty():
-                    idle_state["last_refresh_at"] = now
-                    return
-                if now - idle_state["last_refresh_at"] < TRANSCRIPT_IDLE_RECORDER_REFRESH_SECONDS:
-                    return
-                idle_state["last_refresh_at"] = now
-                try:
-                    self.restartRecorder(PipelineSource.SPEAKER, generation)
-                except Exception:
-                    errorLogging()
-
             def sendSpeakerTranscript():
                 if stop_event.is_set():
                     return
                 try:
-                    refreshSpeakerRecorderIfIdle()
                     selected_target_languages = config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO]
                     languages = [data["language"] for data in selected_target_languages.values() if data["enable"] is True]
                     countries = [data["country"] for data in selected_target_languages.values() if data["enable"] is True]
