@@ -105,6 +105,10 @@ class PipelineMetricsTests(unittest.TestCase):
             PipelineSource.SPEAKER,
             "whisper_inference_failed",
         )
+        instance.recordTranscriptionRecoveryFailure(
+            PipelineSource.MIC,
+            "whisper_inference_failed",
+        )
 
         matrix = {
             (event.source, event.stage, event.outcome)
@@ -119,6 +123,7 @@ class PipelineMetricsTests(unittest.TestCase):
                 (PipelineSource.MIC, "queue", "skipped_overload"),
                 (PipelineSource.MIC, "capture", "recovered"),
                 (PipelineSource.SPEAKER, "transcription", "recovered"),
+                (PipelineSource.MIC, "transcription", "error"),
             }.issubset(matrix)
         )
         overload = next(
@@ -128,6 +133,14 @@ class PipelineMetricsTests(unittest.TestCase):
         )
         self.assertEqual(overload.queue_depth, 4)
         self.assertEqual(overload.dropped_count, 1)
+        recovery_failure = next(
+            event
+            for event in instance.transcription_pipeline_metrics
+            if event.stage == "transcription"
+            and event.outcome == "error"
+            and event.error_code == "recovery_failed"
+        )
+        self.assertEqual(recovery_failure.source, PipelineSource.MIC)
         for event in instance.transcription_pipeline_metrics:
             payload = event.to_payload()
             self.assertIsNone(payload["trace_id"])

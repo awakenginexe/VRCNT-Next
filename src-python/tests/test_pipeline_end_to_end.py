@@ -52,8 +52,23 @@ class _ControlledTranslator:
     def __init__(self):
         self.a_entered = threading.Event()
         self.release_a = threading.Event()
+        self.attempts = []
 
-    def translateAttempt(self, *, translator_name, message, target_language, **kwargs):
+    def translateAttempt(
+        self,
+        *,
+        translator_name,
+        weight_type,
+        source_language,
+        target_language,
+        target_country,
+        message,
+        context_history,
+        timeout_seconds,
+    ):
+        self.attempts.append(
+            (translator_name, message, target_language, timeout_seconds)
+        )
         if message == "A":
             self.a_entered.set()
             if not self.release_a.wait(WAIT_SECONDS):
@@ -130,6 +145,10 @@ class PipelineEndToEndTests(unittest.TestCase):
             pipeline.submit_trace(trace("trace-a", fake_transcribe(chunk_a, "A")))
         )
         self.assertTrue(translator.a_entered.wait(WAIT_SECONDS))
+        self.assertEqual(
+            translator.attempts[0],
+            ("Google", "A", "Japanese", 5.0),
+        )
         self.assertTrue(
             pipeline.submit_trace(trace("trace-b", fake_transcribe(chunk_b, "B")))
         )
@@ -142,7 +161,27 @@ class PipelineEndToEndTests(unittest.TestCase):
 
         a_finals = [task for task in finals if task.trace_id == "trace-a"]
         self.assertEqual(len(a_finals), 1)
-        self.assertTrue(any(update.trace_id == "trace-a" for update in updates))
+        a_updates = [update for update in updates if update.trace_id == "trace-a"]
+        self.assertEqual(
+            [
+                (update.trace_id, update.target_slot, update.status)
+                for update in a_updates
+            ],
+            [
+                ("trace-a", "1", TranslationStatus.QUEUED),
+                ("trace-a", "1", TranslationStatus.SENDING),
+                ("trace-a", "1", TranslationStatus.SUCCESS),
+            ],
+        )
+        a_final = a_finals[0]
+        self.assertEqual(a_final.trace_id, "trace-a")
+        self.assertEqual(len(a_final.translations), 1)
+        self.assertEqual(a_final.translations[0].trace_id, "trace-a")
+        self.assertEqual(a_final.translations[0].target_slot, "1")
+        self.assertEqual(
+            a_final.translations[0].status,
+            TranslationStatus.SUCCESS,
+        )
         a_output = next(
             event
             for event in metrics

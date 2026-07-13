@@ -380,6 +380,20 @@ class Model:
             engine="Whisper",
         )
 
+    def recordTranscriptionRecoveryFailure(
+        self,
+        source: PipelineSource,
+        error_code: str,
+    ) -> None:
+        del error_code  # Never expose provider/runtime exception text in metrics.
+        self._emitTranscriptionLifecycleMetric(
+            source,
+            stage="transcription",
+            outcome="error",
+            error_code="recovery_failed",
+            engine="Whisper",
+        )
+
     @staticmethod
     def _sourcePipelineAttribute(source: PipelineSource) -> str:
         if source is PipelineSource.MIC:

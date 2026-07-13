@@ -126,8 +126,26 @@ class Controller:
                             generation,
                         )
                     ):
-                        self._requestCoordinatedTranscriptionRestart(error_code)
-                        model.recordTranscriptionRecovery(source, error_code)
+                        try:
+                            recovered = self._requestCoordinatedTranscriptionRestart(
+                                error_code
+                            )
+                        except Exception:
+                            errorLogging()
+                            recovered = False
+                        try:
+                            if recovered:
+                                model.recordTranscriptionRecovery(
+                                    source,
+                                    error_code,
+                                )
+                            else:
+                                model.recordTranscriptionRecoveryFailure(
+                                    source,
+                                    error_code,
+                                )
+                        except Exception:
+                            errorLogging()
                     break
                 if self._transcription_recovery_stop_event.is_set():
                     return
@@ -3656,7 +3674,7 @@ class Controller:
     def _requestCoordinatedTranscriptionRestart(
         self,
         reason: str = "configuration_changed",
-    ) -> None:
+    ) -> bool:
         """Stop all active generations before any replacement runtime loads."""
         del reason  # The reason is carried by recovery metrics at the caller.
         with self._transcription_restart_lock:
@@ -3667,14 +3685,49 @@ class Controller:
             else:
                 active_mic = config.ENABLE_TRANSCRIPTION_SEND is True
                 active_speaker = config.ENABLE_TRANSCRIPTION_RECEIVE is True
+            selected = []
             if active_mic:
-                self.stopTranscriptionSendMessage()
+                selected.append(
+                    (
+                        PipelineSource.MIC,
+                        self.stopTranscriptionSendMessage,
+                        self.startTranscriptionSendMessage,
+                    )
+                )
             if active_speaker:
-                self.stopTranscriptionReceiveMessage()
-            if active_mic:
-                self.startTranscriptionSendMessage()
-            if active_speaker:
-                self.startTranscriptionReceiveMessage()
+                selected.append(
+                    (
+                        PipelineSource.SPEAKER,
+                        self.stopTranscriptionReceiveMessage,
+                        self.startTranscriptionReceiveMessage,
+                    )
+                )
+
+            stopped_cleanly = True
+            for _source, stop, _start in selected:
+                try:
+                    stop()
+                except Exception:
+                    stopped_cleanly = False
+                    errorLogging()
+            if not stopped_cleanly:
+                return False
+
+            all_established = True
+            for source, _stop, start in selected:
+                try:
+                    established = start() is True
+                except Exception:
+                    errorLogging()
+                    established = False
+                if established and callable(is_active):
+                    try:
+                        established = bool(is_active(source))
+                    except Exception:
+                        errorLogging()
+                        established = False
+                all_established = all_established and established
+            return all_established
 
     def swapYourLanguageAndTargetLanguage(self, *args, **kwargs) -> dict:
         your_languages = config.SELECTED_YOUR_LANGUAGES
@@ -3814,15 +3867,16 @@ class Controller:
         self.run(200, self.run_mapping["selected_translation_engines"], config.SELECTED_TRANSLATION_ENGINES)
         self.run(200, self.run_mapping["translation_engines"], selectable_engines)
 
-    def startTranscriptionSendMessage(self) -> None:
+    def startTranscriptionSendMessage(self) -> bool:
         with self._transcription_restart_lock:
-            self._startTranscriptionSendMessageUnlocked()
+            return self._startTranscriptionSendMessageUnlocked()
 
-    def _startTranscriptionSendMessageUnlocked(self) -> None:
+    def _startTranscriptionSendMessageUnlocked(self) -> bool:
         while self.device_access_status is False:
             sleep(1)
         self.device_access_status = False
         pipeline_ensured = False
+        session_established = False
         try:
             model.ensureSourcePipeline(
                 PipelineSource.MIC,
@@ -3872,6 +3926,7 @@ class Controller:
                 self.run(200, self.run_mapping["enable_transcription_send"], False)
         finally:
             self.device_access_status = True
+        return session_established is True
 
     def stopTranscriptionSendMessage(self) -> None:
         with self._transcription_restart_lock:
@@ -3888,15 +3943,16 @@ class Controller:
         th_stopTranscriptionSendMessage.start()
         th_stopTranscriptionSendMessage.join()
 
-    def startTranscriptionReceiveMessage(self) -> None:
+    def startTranscriptionReceiveMessage(self) -> bool:
         with self._transcription_restart_lock:
-            self._startTranscriptionReceiveMessageUnlocked()
+            return self._startTranscriptionReceiveMessageUnlocked()
 
-    def _startTranscriptionReceiveMessageUnlocked(self) -> None:
+    def _startTranscriptionReceiveMessageUnlocked(self) -> bool:
         while self.device_access_status is False:
             sleep(1)
         self.device_access_status = False
         pipeline_ensured = False
+        session_established = False
         try:
             model.ensureSourcePipeline(
                 PipelineSource.SPEAKER,
@@ -3946,6 +4002,7 @@ class Controller:
                 self.run(200, self.run_mapping["enable_transcription_receive"], False)
         finally:
             self.device_access_status = True
+        return session_established is True
 
     def stopTranscriptionReceiveMessage(self) -> None:
         with self._transcription_restart_lock:

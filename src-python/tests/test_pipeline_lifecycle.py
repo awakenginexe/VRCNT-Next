@@ -2,6 +2,7 @@ import os
 import sys
 import threading
 import unittest
+from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import patch
 from unittest.mock import Mock
@@ -12,8 +13,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import controller as controller_module
 import model as model_module
 from controller import Controller
-from model import Model
-from models.pipeline.pipeline_types import PipelineSource
+from model import Model, threadFnc
+from models.pipeline.pipeline_types import (
+    LanguageSlotSnapshot,
+    MessageFormatSnapshot,
+    OutputConfigSnapshot,
+    PipelineSource,
+    TranscriptionTrace,
+    TranslationAttempt,
+    TranslationStatus,
+    TranslationTarget,
+)
+from models.pipeline.source_pipeline import SourcePipeline
 from models.transcription.whisper_runtime import WhisperRuntimeManager
 
 
@@ -26,6 +37,8 @@ class _RecoveryModel:
         self.generations = {PipelineSource.MIC: 3, PipelineSource.SPEAKER: 8}
         self.active = {PipelineSource.MIC: True, PipelineSource.SPEAKER: True}
         self.recovered = []
+        self.recovery_failed = []
+        self.recovery_metric_event = threading.Event()
         self.shutdown_calls = 0
         self.telemetry_calls = 0
 
@@ -43,6 +56,11 @@ class _RecoveryModel:
 
     def recordTranscriptionRecovery(self, source, error_code):
         self.recovered.append((source, error_code))
+        self.recovery_metric_event.set()
+
+    def recordTranscriptionRecoveryFailure(self, source, error_code):
+        self.recovery_failed.append((source, error_code))
+        self.recovery_metric_event.set()
 
     def shutdownTranscriptionPipelines(self):
         self.shutdown_calls += 1
@@ -54,35 +72,208 @@ class _RecoveryModel:
 class PipelineLifecycleTests(unittest.TestCase):
     def test_mainloop_stop_route_returns_after_translation_and_output_workers_exit(self):
         from mainloop import Main
+        transcription_release = threading.Event()
+        provider_release = threading.Event()
+        finalizer_release = threading.Event()
+        transcription_entered = threading.Event()
+        provider_entered = threading.Event()
+        finalizer_entered = threading.Event()
+        recorder_stopped = threading.Event()
+        main_stopped = threading.Event()
+        order = []
+        self.addCleanup(transcription_release.set)
+        self.addCleanup(provider_release.set)
+        self.addCleanup(finalizer_release.set)
 
-        release = threading.Event()
-        entered = [threading.Event(), threading.Event()]
+        class ControlledTranslator:
+            def translateAttempt(
+                self,
+                *,
+                translator_name,
+                weight_type,
+                source_language,
+                target_language,
+                target_country,
+                message,
+                context_history,
+                timeout_seconds,
+            ):
+                provider_entered.set()
+                provider_release.wait()
+                return TranslationAttempt(
+                    TranslationStatus.SUCCESS,
+                    translator_name,
+                    f"translated-{message}",
+                    1,
+                    None,
+                )
 
-        def worker(index):
-            entered[index].set()
-            release.wait(WAIT_SECONDS)
+        instance = object.__new__(Model)
+        instance._inited = True
+        instance._ensureTranscriptionLifecycleState()
+        instance.transcription_pipeline_metrics = []
+        generation = 21
 
-        workers = [
-            threading.Thread(target=worker, args=(0,), name="fake-translation"),
-            threading.Thread(target=worker, args=(1,), name="fake-output"),
-        ]
-        for worker_thread in workers:
-            worker_thread.start()
-        for entered_event in entered:
-            self.assertTrue(entered_event.wait(WAIT_SECONDS))
+        def finalizer(_task):
+            finalizer_entered.set()
+            finalizer_release.wait()
 
-        class FakeController:
+        pipeline = SourcePipeline(
+            source=PipelineSource.MIC,
+            translator=ControlledTranslator(),
+            transliterate=lambda *args: (),
+            emit_initial=lambda trace: None,
+            emit_update=lambda update: None,
+            emit_metric=lambda event: None,
+            emit_final=finalizer,
+            is_generation_current=lambda candidate: (
+                instance.isSourcePipelineGenerationCurrent(
+                    PipelineSource.MIC,
+                    candidate,
+                )
+            ),
+        )
+        instance.mic_source_pipeline = pipeline
+        instance.speaker_source_pipeline = None
+        instance._source_pipeline_generations = {PipelineSource.MIC: generation}
+        instance._source_pipeline_generation_counters = {
+            PipelineSource.MIC: generation,
+            PipelineSource.SPEAKER: 0,
+        }
+        pipeline.start(generation)
+        translation_worker = pipeline._translation_thread
+        output_worker = pipeline._output_thread
+
+        fmt = MessageFormatSnapshot("", "", "", "", "", "", False)
+        output_config = OutputConfigSnapshot(
+            "1",
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            (),
+            (),
+            (LanguageSlotSnapshot("1", "Japanese", "Japan", True),),
+            fmt,
+            fmt,
+        )
+
+        def trace(trace_id, targets):
+            return TranscriptionTrace(
+                trace_id,
+                generation,
+                PipelineSource.MIC,
+                trace_id,
+                "English",
+                (),
+                targets,
+                ("Google",),
+                "Small",
+                (),
+                monotonic(),
+                output_config,
+            )
+
+        self.assertTrue(pipeline.submit_trace(trace("finalizer", ())))
+        self.assertTrue(finalizer_entered.wait(WAIT_SECONDS))
+        target = TranslationTarget("1", "Japanese", "Japan")
+        self.assertTrue(pipeline.submit_trace(trace("provider", (target,))))
+        self.assertTrue(provider_entered.wait(WAIT_SECONDS))
+
+        def transcription_call():
+            transcription_entered.set()
+            transcription_release.wait()
+
+        transcription_worker = threadFnc(transcription_call)
+        transcription_worker.start()
+        self.assertTrue(transcription_entered.wait(WAIT_SECONDS))
+
+        class Recorder:
+            def resume(self):
+                pass
+
+            def stop(self, *_args):
+                order.append("recorder")
+                recorder_stopped.set()
+
+        class Lease:
+            def close(self):
+                order.append("lease")
+
+        class RuntimeManager:
             def shutdown(self):
-                release.set()
-                for worker_thread in workers:
-                    worker_thread.join()
-                return {"status": 200, "result": True}
+                self_outer.assertFalse(translation_worker.is_alive())
+                self_outer.assertFalse(output_worker.is_alive())
+                self_outer.assertIsNone(instance.mic_source_pipeline)
+                self_outer.assertNotIn(
+                    PipelineSource.MIC,
+                    instance._source_pipeline_generations,
+                )
+                order.append("runtime")
 
-        main = Main(FakeController(), {}, worker_count=0)
-        main.stop()
+        self_outer = self
+        audio_queue = model_module._MetricAudioQueue(
+            PipelineSource.MIC,
+            instance._emitTranscriptionLifecycleMetric,
+        )
+        stop_event = threading.Event()
+        lease = Lease()
+        instance.mic_audio_recorder = Recorder()
+        instance.mic_audio_queue = audio_queue
+        instance.mic_print_transcript = transcription_worker
+        instance.mic_transcriber = object()
+        instance.mic_transcript_stop_event = stop_event
+        instance.mic_whisper_runtime_lease = lease
+        instance.speaker_audio_recorder = None
+        instance.speaker_audio_queue = None
+        instance.speaker_print_transcript = None
+        instance.speaker_transcriber = None
+        instance.speaker_transcript_stop_event = None
+        instance.speaker_whisper_runtime_lease = None
+        instance.whisper_runtime_manager = RuntimeManager()
+        instance.telemetry = SimpleNamespace(
+            shutdown=lambda: order.append("telemetry")
+        )
+        instance._source_transcription_sessions = {
+            PipelineSource.MIC: {
+                "generation": generation,
+                "worker": transcription_worker,
+                "stop_event": stop_event,
+            }
+        }
+
+        with patch.object(controller_module, "model", instance):
+            controller = Controller()
+            main = Main(controller, {}, worker_count=0)
+            stop_thread = threading.Thread(
+                target=lambda: (main.stop(), main_stopped.set()),
+                name="controlled-main-stop",
+            )
+            stop_thread.start()
+            self.addCleanup(stop_thread.join, WAIT_SECONDS)
+            self.assertTrue(recorder_stopped.wait(WAIT_SECONDS))
+            transcription_release.set()
+            self.assertTrue(pipeline._stop_event.wait(WAIT_SECONDS))
+            provider_release.set()
+            finalizer_release.set()
+            self.assertTrue(main_stopped.wait(WAIT_SECONDS))
+            stop_thread.join()
 
         self.assertTrue(main._stop_event.is_set())
-        self.assertTrue(all(not worker_thread.is_alive() for worker_thread in workers))
+        self.assertFalse(transcription_worker.is_alive())
+        self.assertFalse(translation_worker.is_alive())
+        self.assertFalse(output_worker.is_alive())
+        self.assertIsNone(instance.mic_source_pipeline)
+        self.assertNotIn(PipelineSource.MIC, instance._source_pipeline_generations)
+        self.assertEqual(order[-3:], ["lease", "runtime", "telemetry"])
 
     def test_all_transcription_runtime_setters_route_exactly_one_restart(self):
         controller = Controller()
@@ -351,6 +542,7 @@ class PipelineLifecycleTests(unittest.TestCase):
             def restart(reason="configuration_changed"):
                 reasons.append(reason)
                 restarted.set()
+                return True
 
             controller._requestCoordinatedTranscriptionRestart = restart
             safe = threading.Event()
@@ -380,6 +572,66 @@ class PipelineLifecycleTests(unittest.TestCase):
             )
             self.assertFalse(restarted.wait(0.1))
 
+    def test_recovery_restart_failure_or_exception_never_emits_recovered(self):
+        for failing_source in (PipelineSource.MIC, PipelineSource.SPEAKER):
+            for failure in (False, RuntimeError("controlled start failure")):
+                with self.subTest(
+                    source=failing_source.value,
+                    failure=type(failure).__name__,
+                ):
+                    fake_model = _RecoveryModel()
+                    calls = []
+                    with patch.object(controller_module, "model", fake_model):
+                        controller = Controller()
+                        controller.stopTranscriptionSendMessage = (
+                            lambda: calls.append("stop-mic")
+                        )
+                        controller.stopTranscriptionReceiveMessage = (
+                            lambda: calls.append("stop-speaker")
+                        )
+
+                        def start(source):
+                            calls.append(f"start-{source.value}")
+                            if source is failing_source:
+                                if isinstance(failure, Exception):
+                                    raise failure
+                                return False
+                            return True
+
+                        controller.startTranscriptionSendMessage = lambda: start(
+                            PipelineSource.MIC
+                        )
+                        controller.startTranscriptionReceiveMessage = lambda: start(
+                            PipelineSource.SPEAKER
+                        )
+                        safe = threading.Event()
+                        safe.set()
+                        fake_model.callback(
+                            PipelineSource.MIC,
+                            3,
+                            "whisper_inference_failed",
+                            safe,
+                        )
+                        self.assertTrue(
+                            fake_model.recovery_metric_event.wait(WAIT_SECONDS)
+                        )
+                        controller.shutdown()
+
+                    self.assertEqual(fake_model.recovered, [])
+                    self.assertEqual(
+                        fake_model.recovery_failed,
+                        [(PipelineSource.MIC, "whisper_inference_failed")],
+                    )
+                    self.assertEqual(
+                        calls,
+                        [
+                            "stop-mic",
+                            "stop-speaker",
+                            "start-mic",
+                            "start-speaker",
+                        ],
+                    )
+
     def test_coordinated_restart_snapshots_active_sources_and_restarts_each_once(self):
         fake_model = _RecoveryModel()
         calls = []
@@ -388,15 +640,22 @@ class PipelineLifecycleTests(unittest.TestCase):
             self.addCleanup(controller.shutdown)
             controller.stopTranscriptionSendMessage = lambda: calls.append("stop-mic")
             controller.stopTranscriptionReceiveMessage = lambda: calls.append("stop-speaker")
-            controller.startTranscriptionSendMessage = lambda: calls.append("start-mic")
-            controller.startTranscriptionReceiveMessage = lambda: calls.append("start-speaker")
+            controller.startTranscriptionSendMessage = lambda: (
+                calls.append("start-mic") or True
+            )
+            controller.startTranscriptionReceiveMessage = lambda: (
+                calls.append("start-speaker") or True
+            )
 
-            controller._requestCoordinatedTranscriptionRestart("weight_changed")
+            result = controller._requestCoordinatedTranscriptionRestart(
+                "weight_changed"
+            )
 
         self.assertEqual(
             calls,
             ["stop-mic", "stop-speaker", "start-mic", "start-speaker"],
         )
+        self.assertTrue(result)
 
     def test_controller_shutdown_stops_pipelines_before_telemetry(self):
         fake_model = _RecoveryModel()
