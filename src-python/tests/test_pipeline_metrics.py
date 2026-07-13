@@ -20,6 +20,7 @@ from models.pipeline.pipeline_types import (
     TranslationTarget,
     TranslationUpdate,
 )
+from model import Model, _MetricAudioQueue
 
 
 def make_format() -> MessageFormatSnapshot:
@@ -66,6 +67,76 @@ def make_output_config() -> OutputConfigSnapshot:
 
 
 class PipelineMetricsTests(unittest.TestCase):
+    def test_lifecycle_metric_matrix_uses_null_traces_and_never_emits_text(self):
+        instance = object.__new__(Model)
+        instance.transcription_pipeline_metrics = []
+        queue = _MetricAudioQueue(
+            PipelineSource.MIC,
+            instance._emitTranscriptionLifecycleMetric,
+        )
+        spoken_at = datetime(2026, 7, 13, tzinfo=timezone.utc)
+        for index in range(5):
+            result = queue.offer(AudioChunk(bytes([index]), spoken_at, float(index)))
+            if result.dropped is not None:
+                queue.record_drop()
+
+        instance._emitTranscriptionLifecycleMetric(
+            PipelineSource.MIC,
+            stage="capture",
+            outcome="running",
+        )
+        instance._emitTranscriptionLifecycleMetric(
+            PipelineSource.SPEAKER,
+            stage="capture",
+            outcome="error",
+            error_code="recorder_construction_failed",
+        )
+        instance._emitTranscriptionLifecycleMetric(
+            PipelineSource.MIC,
+            stage="queue",
+            outcome="success",
+        )
+        instance._emitTranscriptionLifecycleMetric(
+            PipelineSource.MIC,
+            stage="capture",
+            outcome="recovered",
+        )
+        instance.recordTranscriptionRecovery(
+            PipelineSource.SPEAKER,
+            "whisper_inference_failed",
+        )
+
+        matrix = {
+            (event.source, event.stage, event.outcome)
+            for event in instance.transcription_pipeline_metrics
+        }
+        self.assertTrue(
+            {
+                (PipelineSource.MIC, "capture", "running"),
+                (PipelineSource.SPEAKER, "capture", "error"),
+                (PipelineSource.MIC, "queue", "waiting"),
+                (PipelineSource.MIC, "queue", "success"),
+                (PipelineSource.MIC, "queue", "skipped_overload"),
+                (PipelineSource.MIC, "capture", "recovered"),
+                (PipelineSource.SPEAKER, "transcription", "recovered"),
+            }.issubset(matrix)
+        )
+        overload = next(
+            event
+            for event in instance.transcription_pipeline_metrics
+            if event.outcome == "skipped_overload"
+        )
+        self.assertEqual(overload.queue_depth, 4)
+        self.assertEqual(overload.dropped_count, 1)
+        for event in instance.transcription_pipeline_metrics:
+            payload = event.to_payload()
+            self.assertIsNone(payload["trace_id"])
+            self.assertTrue(
+                {"message", "original", "translation", "text"}.isdisjoint(
+                    payload
+                )
+            )
+
     def test_pipeline_enums_have_exact_members_and_values(self):
         self.assertEqual(
             {

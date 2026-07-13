@@ -6,9 +6,9 @@ from subprocess import Popen
 from os import makedirs as os_makedirs
 from os import path as os_path
 from datetime import datetime
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from queue import Queue
-from threading import Event, Thread
+from threading import Event, RLock, Thread, current_thread
 from requests import get as requests_get
 from typing import Callable, Optional, cast
 from packaging.version import parse
@@ -27,6 +27,7 @@ from models.pipeline.pipeline_types import (
     PipelineSource,
     PipelineStatusEvent,
 )
+from models.pipeline.latest_queue import LatestQueue
 from models.pipeline.source_pipeline import SourcePipeline
 from models.transcription.transcription_transcriber import (
     AudioTranscriber,
@@ -62,6 +63,40 @@ TRANSCRIPT_IDLE_RECORDER_REFRESH_SECONDS = 45.0
 TRANSCRIPT_STALL_RESTART_SECONDS = 90.0
 TRANSCRIPT_STALL_CHECK_SECONDS = 5.0
 DEFAULT_TRANSLATION_ENGINE = "CTranslate2"
+TRANSCRIPTION_AUDIO_QUEUE_SIZE = 4
+
+
+class _MetricAudioQueue(LatestQueue):
+    """Latest-only capture queue with non-blocking admission metrics."""
+
+    def __init__(self, source: PipelineSource, emit_metric: Callable) -> None:
+        super().__init__(TRANSCRIPTION_AUDIO_QUEUE_SIZE)
+        self._source = source
+        self._emit_metric = emit_metric
+        self._dropped_count = 0
+
+    def offer(self, item):
+        result = super().offer(item)
+        if result.accepted:
+            self._emit_metric(
+                self._source,
+                stage="queue",
+                outcome="waiting",
+                queue_depth=result.depth,
+                dropped_count=self._dropped_count,
+            )
+        return result
+
+    def record_drop(self) -> None:
+        self._dropped_count += 1
+        self._emit_metric(
+            self._source,
+            stage="queue",
+            outcome="skipped_overload",
+            queue_depth=self.qsize(),
+            dropped_count=self._dropped_count,
+            error_code="audio_queue_overload",
+        )
 
 
 def normalizeTranslationEngineSelection(selection, fallback: str = DEFAULT_TRANSLATION_ENGINE) -> list[str]:
@@ -170,6 +205,11 @@ class Model:
         if getattr(self, '_inited', False):
             return
 
+        recovery_callback = getattr(
+            self,
+            "_transcription_recovery_callback",
+            None,
+        )
         self.logger = None
         self.th_check_device = None
         self.mic_print_transcript = None
@@ -220,10 +260,17 @@ class Model:
         self.telemetry = Telemetry()
         self.whisper_runtime_manager = WhisperRuntimeManager()
         self.transcription_pipeline_metrics: list[PipelineStatusEvent] = []
-        self.transcription_recovery_requests: list[dict[str, object]] = []
+        self._transcription_recovery_callback = recovery_callback
         self.mic_source_pipeline: Optional[SourcePipeline] = None
         self.speaker_source_pipeline: Optional[SourcePipeline] = None
         self._source_pipeline_generations: dict[PipelineSource, int] = {}
+        self._source_pipeline_generation_counters: dict[PipelineSource, int] = {
+            PipelineSource.MIC: 0,
+            PipelineSource.SPEAKER: 0,
+        }
+        self._source_transcription_sessions: dict[PipelineSource, dict] = {}
+        self._source_heartbeat_timestamps: dict[PipelineSource, float] = {}
+        self._source_session_lock = RLock()
 
         self._inited = True
 
@@ -253,22 +300,84 @@ class Model:
     ) -> None:
         self.transcription_pipeline_metrics.append(event)
 
+    def _ensureTranscriptionLifecycleState(self) -> None:
+        """Backfill lifecycle-only state for focused/bare Model instances."""
+        if not hasattr(self, "_source_session_lock"):
+            self._source_session_lock = RLock()
+        if not hasattr(self, "_source_pipeline_generations"):
+            self._source_pipeline_generations = {}
+        if not hasattr(self, "_source_pipeline_generation_counters"):
+            self._source_pipeline_generation_counters = {
+                PipelineSource.MIC: 0,
+                PipelineSource.SPEAKER: 0,
+            }
+        if not hasattr(self, "_source_transcription_sessions"):
+            self._source_transcription_sessions = {}
+        if not hasattr(self, "_source_heartbeat_timestamps"):
+            self._source_heartbeat_timestamps = {}
+        if not hasattr(self, "transcription_pipeline_metrics"):
+            self.transcription_pipeline_metrics = []
+
+    def _emitTranscriptionLifecycleMetric(
+        self,
+        source: PipelineSource,
+        *,
+        stage: str,
+        outcome: str,
+        queue_depth: int = 0,
+        dropped_count: int = 0,
+        error_code: Optional[str] = None,
+        engine: Optional[str] = None,
+    ) -> None:
+        self._recordTranscriptionPipelineMetric(
+            PipelineStatusEvent(
+                schema_version=1,
+                trace_id=None,
+                source=source,
+                stage=stage,
+                engine=engine,
+                target_slot=None,
+                outcome=outcome,
+                queue_age_ms=None,
+                duration_ms=None,
+                queue_depth=max(0, queue_depth),
+                dropped_count=max(0, dropped_count),
+                observed_at_ms=int(time() * 1000),
+                error_code=error_code,
+            )
+        )
+
+    def setTranscriptionRecoveryCallback(
+        self,
+        callback: Optional[
+            Callable[[PipelineSource, int, str, Event], None]
+        ],
+    ) -> None:
+        """Register the non-blocking Controller recovery offer callback."""
+        self._transcription_recovery_callback = callback
+
     def _recordTranscriptionRecoveryRequest(
         self,
         source: PipelineSource,
         generation: int,
-        reason: str,
+        error_code: str,
         safe_to_restart: Event,
     ) -> None:
-        # Task 9 replaces this recorder with the recovery coordinator. It must
-        # never wait here because inference cleanup owns the Event signal.
-        self.transcription_recovery_requests.append(
-            {
-                "source": source,
-                "generation": generation,
-                "reason": reason,
-                "safe_to_restart": safe_to_restart,
-            }
+        callback = getattr(self, "_transcription_recovery_callback", None)
+        if callable(callback):
+            callback(source, generation, error_code, safe_to_restart)
+
+    def recordTranscriptionRecovery(
+        self,
+        source: PipelineSource,
+        error_code: str,
+    ) -> None:
+        self._emitTranscriptionLifecycleMetric(
+            source,
+            stage="transcription",
+            outcome="recovered",
+            error_code=error_code,
+            engine="Whisper",
         )
 
     @staticmethod
@@ -289,6 +398,29 @@ class Model:
     ) -> Optional[int]:
         self.ensure_initialized()
         return getattr(self, "_source_pipeline_generations", {}).get(source)
+
+    def nextSourcePipelineGeneration(self, source: PipelineSource) -> int:
+        self.ensure_initialized()
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_lock:
+            current = self._source_pipeline_generation_counters.get(source, 0)
+            generation = current + 1
+            self._source_pipeline_generation_counters[source] = generation
+            return generation
+
+    def isTranscriptionSourceActive(self, source: PipelineSource) -> bool:
+        self.ensure_initialized()
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_lock:
+            session = self._source_transcription_sessions.get(source)
+            return bool(
+                session is not None
+                and not session["stop_event"].is_set()
+                and self.isSourcePipelineGenerationCurrent(
+                    source,
+                    session["generation"],
+                )
+            )
 
     def isSourcePipelineGenerationCurrent(
         self,
@@ -332,8 +464,18 @@ class Model:
         generation: int,
     ) -> SourcePipeline:
         self.ensure_initialized()
+        self._ensureTranscriptionLifecycleState()
         if not hasattr(self, "_source_pipeline_generations"):
             self._source_pipeline_generations = {}
+        if not hasattr(self, "_source_pipeline_generation_counters"):
+            self._source_pipeline_generation_counters = {
+                PipelineSource.MIC: 0,
+                PipelineSource.SPEAKER: 0,
+            }
+        self._source_pipeline_generation_counters[source] = max(
+            generation,
+            self._source_pipeline_generation_counters.get(source, 0),
+        )
         attribute = self._sourcePipelineAttribute(source)
         current = getattr(self, attribute, None)
         current_generation = self._source_pipeline_generations.get(source)
@@ -380,12 +522,26 @@ class Model:
 
     def stopSourcePipeline(self, source: PipelineSource) -> None:
         self.ensure_initialized()
+        pipeline, generation = self._detachSourcePipeline(source)
+        self._stopDetachedSourcePipeline(pipeline, generation)
+
+    def _detachSourcePipeline(
+        self,
+        source: PipelineSource,
+    ) -> tuple[Optional[SourcePipeline], Optional[int]]:
         attribute = self._sourcePipelineAttribute(source)
         pipeline = getattr(self, attribute, None)
         generations = getattr(self, "_source_pipeline_generations", None)
         generation = generations.pop(source, None) if generations is not None else None
         if getattr(self, attribute, None) is pipeline:
             setattr(self, attribute, None)
+        return pipeline, generation
+
+    @staticmethod
+    def _stopDetachedSourcePipeline(
+        pipeline: Optional[SourcePipeline],
+        generation: Optional[int],
+    ) -> None:
         if pipeline is not None and generation is not None:
             pipeline.stop(generation, discard_pending=True)
 
@@ -393,14 +549,21 @@ class Model:
         self,
         source: PipelineSource,
         lease: Optional[WhisperRuntimeLease],
+        generation: Optional[int] = None,
     ) -> TranscriberPipelineContext:
-        generation = 0
+        self._ensureTranscriptionLifecycleState()
+        if generation is None:
+            generation = self.getSourcePipelineGeneration(source)
+        if generation is None:
+            generation = self.nextSourcePipelineGeneration(source)
         return TranscriberPipelineContext(
             source=source,
             whisper_runtime_lease=lease,
             whisper_decoding_profile=config.WHISPER_DECODING_PROFILE,
             generation=generation,
-            is_generation_current=lambda candidate: candidate == generation,
+            is_generation_current=lambda candidate: (
+                self.isSourcePipelineGenerationCurrent(source, candidate)
+            ),
             emit_metric=self._recordTranscriptionPipelineMetric,
             request_recovery=self._recordTranscriptionRecoveryRequest,
         )
@@ -991,7 +1154,162 @@ class Model:
             result = ["NoDevice"]
         return result
 
-    def startMicTranscript(self, fnc) -> bool:
+    def _recordCaptureHeartbeat(
+        self,
+        source: PipelineSource,
+        generation: int,
+        captured_at: float,
+    ) -> None:
+        if self.isSourcePipelineGenerationCurrent(source, generation):
+            with self._source_session_lock:
+                self._source_heartbeat_timestamps[source] = captured_at
+
+    def _recorderCallbacks(
+        self,
+        source: PipelineSource,
+        generation: int,
+        audio_queue: _MetricAudioQueue,
+    ) -> dict[str, Callable]:
+        return {
+            "on_drop": lambda _chunk: audio_queue.record_drop(),
+            "on_heartbeat": lambda captured_at: self._recordCaptureHeartbeat(
+                source,
+                generation,
+                captured_at,
+            ),
+        }
+
+    def _recordIntoTranscriptionQueue(
+        self,
+        recorder,
+        source: PipelineSource,
+        generation: int,
+        audio_queue: _MetricAudioQueue,
+    ) -> None:
+        callbacks = self._recorderCallbacks(source, generation, audio_queue)
+        try:
+            recorder.recordIntoQueue(audio_queue, None, **callbacks)
+        except TypeError as error:
+            # Focused compatibility adapters may implement the historical
+            # two-argument recorder seam. Runtime recorders accept callbacks.
+            if "unexpected keyword argument" not in str(error):
+                raise
+            recorder.recordIntoQueue(audio_queue, None)
+
+    def restartRecorder(
+        self,
+        source: PipelineSource,
+        generation: int,
+    ) -> bool:
+        """Replace only capture for a current session; keep its worker/lease."""
+        self.ensure_initialized()
+        self._ensureTranscriptionLifecycleState()
+        with self._source_session_lock:
+            session = self._source_transcription_sessions.get(source)
+            if (
+                session is None
+                or session["generation"] != generation
+                or session["stop_event"].is_set()
+                or not self.isSourcePipelineGenerationCurrent(source, generation)
+                or session.get("recorder_restarting") is True
+            ):
+                return False
+            session["recorder_restarting"] = True
+            old_recorder = session["recorder"]
+            recorder_factory = session["recorder_factory"]
+            audio_queue = session["audio_queue"]
+
+        self._requestRecorderStop(old_recorder, resume_first=True)
+        try:
+            new_recorder = recorder_factory()
+            self._recordIntoTranscriptionQueue(
+                new_recorder,
+                source,
+                generation,
+                audio_queue,
+            )
+        except Exception:
+            with self._source_session_lock:
+                session = self._source_transcription_sessions.get(source)
+                if session is not None and session["generation"] == generation:
+                    session["recorder_restarting"] = False
+            self._emitTranscriptionLifecycleMetric(
+                source,
+                stage="capture",
+                outcome="error",
+                error_code="recorder_restart_failed",
+            )
+            errorLogging()
+            return False
+
+        with self._source_session_lock:
+            session = self._source_transcription_sessions.get(source)
+            if (
+                session is None
+                or session["generation"] != generation
+                or session["stop_event"].is_set()
+                or not self.isSourcePipelineGenerationCurrent(source, generation)
+            ):
+                if session is not None and session["generation"] == generation:
+                    session["recorder_restarting"] = False
+                stale = True
+            else:
+                stale = False
+                session["recorder_restarting"] = False
+                session["recorder"] = new_recorder
+                session["heartbeat_at"] = monotonic()
+                self._source_heartbeat_timestamps[source] = session["heartbeat_at"]
+                if source is PipelineSource.MIC:
+                    self.mic_audio_recorder = new_recorder
+                else:
+                    self.speaker_audio_recorder = new_recorder
+                transcriber = session.get("transcriber")
+
+        if stale:
+            self._requestRecorderStop(new_recorder, resume_first=True)
+            return False
+        if isinstance(transcriber, AudioTranscriber):
+            try:
+                transcriber.resetAudioSource(new_recorder.source)
+            except Exception:
+                self._emitTranscriptionLifecycleMetric(
+                    source,
+                    stage="capture",
+                    outcome="error",
+                    error_code="recorder_source_reset_failed",
+                )
+                errorLogging()
+
+        self._emitTranscriptionLifecycleMetric(
+            source,
+            stage="capture",
+            outcome="recovered",
+        )
+        return True
+
+    def _startCaptureHeartbeatWatchdog(
+        self,
+        source: PipelineSource,
+        generation: int,
+        stop_event: Event,
+        stall_seconds: float,
+    ) -> None:
+        def watchCaptureHeartbeat():
+            while not stop_event.wait(TRANSCRIPT_STALL_CHECK_SECONDS):
+                with self._source_session_lock:
+                    heartbeat_at = self._source_heartbeat_timestamps.get(source)
+                if heartbeat_at is None or monotonic() - heartbeat_at <= stall_seconds:
+                    continue
+                self.restartRecorder(source, generation)
+
+        watchdog_thread = Thread(
+            target=watchCaptureHeartbeat,
+            name=f"{source.value}-capture-watchdog-{generation}",
+            daemon=True,
+        )
+        watchdog_thread.start()
+
+    def startMicTranscript(self, fnc, generation: Optional[int] = None) -> bool:
         self.ensure_initialized()
         if (
             isinstance(self.mic_print_transcript, threadFnc)
@@ -1003,15 +1321,19 @@ class Model:
         ):
             self.stopMicTranscript(stop_pipeline=False)
         try:
-            return self._startMicTranscript(fnc)
+            return self._startMicTranscript(fnc, generation=generation)
         except Exception:
             self.stopMicTranscript(stop_pipeline=False)
             raise
 
-    def _startMicTranscript(self, fnc) -> bool:
+    def _startMicTranscript(self, fnc, generation: Optional[int] = None) -> bool:
         self.ensure_initialized()
         if config.ENABLE_TRANSCRIPTION_SEND is False:
             return False
+        if generation is None:
+            generation = self.getSourcePipelineGeneration(PipelineSource.MIC)
+        if generation is None:
+            generation = self.nextSourcePipelineGeneration(PipelineSource.MIC)
         mic_host_name = config.SELECTED_MIC_HOST
         mic_device_name = config.SELECTED_MIC_DEVICE
 
@@ -1022,7 +1344,10 @@ class Model:
             fnc({"text": False, "language": None})
             return False
         else:
-            self.mic_audio_queue = Queue()
+            self.mic_audio_queue = _MetricAudioQueue(
+                PipelineSource.MIC,
+                self._emitTranscriptionLifecycleMetric,
+            )
             # self.mic_energy_queue = Queue()
 
             mic_device = selected_mic_device[0]
@@ -1031,16 +1356,38 @@ class Model:
             if record_timeout > phrase_timeout:
                 record_timeout = phrase_timeout
 
-            self.mic_audio_recorder = SelectedMicEnergyAndAudioRecorder(
-                device=mic_device,
-                energy_threshold=config.MIC_THRESHOLD,
-                dynamic_energy_threshold=config.MIC_AUTOMATIC_THRESHOLD,
-                phrase_time_limit=record_timeout,
-                phrase_timeout=phrase_timeout,
-                record_timeout=record_timeout,
-            )
+            def recorder_factory():
+                return SelectedMicEnergyAndAudioRecorder(
+                    device=mic_device,
+                    energy_threshold=config.MIC_THRESHOLD,
+                    dynamic_energy_threshold=config.MIC_AUTOMATIC_THRESHOLD,
+                    phrase_time_limit=record_timeout,
+                    phrase_timeout=phrase_timeout,
+                    record_timeout=record_timeout,
+                )
+
+            try:
+                self.mic_audio_recorder = recorder_factory()
+            except Exception:
+                self._emitTranscriptionLifecycleMetric(
+                    PipelineSource.MIC,
+                    stage="capture",
+                    outcome="error",
+                    error_code="recorder_construction_failed",
+                )
+                raise
             # self.mic_audio_recorder.recordIntoQueue(self.mic_audio_queue, mic_energy_queue)
-            self.mic_audio_recorder.recordIntoQueue(self.mic_audio_queue, None)
+            self._recordIntoTranscriptionQueue(
+                self.mic_audio_recorder,
+                PipelineSource.MIC,
+                generation,
+                self.mic_audio_queue,
+            )
+            self._emitTranscriptionLifecycleMetric(
+                PipelineSource.MIC,
+                stage="capture",
+                outcome="running",
+            )
             whisper_runtime_lease = None
             try:
                 whisper_runtime_lease = self._acquireWhisperRuntimeLease()
@@ -1062,6 +1409,7 @@ class Model:
                     pipeline_context=self._makeTranscriberPipelineContext(
                         PipelineSource.MIC,
                         whisper_runtime_lease,
+                        generation,
                     ),
                 )
             except Exception:
@@ -1076,7 +1424,21 @@ class Model:
             stop_event = Event()
             self.mic_transcript_stop_event = stop_event
             idle_state = {"last_refresh_at": monotonic()}
-            activity_state = {"busy_since": None}
+            heartbeat_at = monotonic()
+            with self._source_session_lock:
+                self._source_heartbeat_timestamps[PipelineSource.MIC] = heartbeat_at
+                self._source_transcription_sessions[PipelineSource.MIC] = {
+                    "generation": generation,
+                    "callback": fnc,
+                    "audio_queue": audio_queue,
+                    "recorder": self.mic_audio_recorder,
+                    "recorder_factory": recorder_factory,
+                    "transcriber": transcriber,
+                    "worker": None,
+                    "lease": whisper_runtime_lease,
+                    "stop_event": stop_event,
+                    "heartbeat_at": heartbeat_at,
+                }
             stall_seconds = max(
                 TRANSCRIPT_STALL_RESTART_SECONDS,
                 float(record_timeout) * 4.0,
@@ -1092,22 +1454,7 @@ class Model:
                     return
                 idle_state["last_refresh_at"] = now
                 try:
-                    old_recorder = self.mic_audio_recorder
-                    self._requestRecorderStop(old_recorder, resume_first=True)
-                    if stop_event.is_set() or config.ENABLE_TRANSCRIPTION_SEND is False:
-                        return
-                    new_recorder = SelectedMicEnergyAndAudioRecorder(
-                        device=mic_device,
-                        energy_threshold=config.MIC_THRESHOLD,
-                        dynamic_energy_threshold=config.MIC_AUTOMATIC_THRESHOLD,
-                        phrase_time_limit=record_timeout,
-                        phrase_timeout=phrase_timeout,
-                        record_timeout=record_timeout,
-                    )
-                    new_recorder.recordIntoQueue(audio_queue, None)
-                    self.mic_audio_recorder = new_recorder
-                    if isinstance(transcriber, AudioTranscriber):
-                        transcriber.resetAudioSource(new_recorder.source)
+                    self.restartRecorder(PipelineSource.MIC, generation)
                 except Exception:
                     errorLogging()
 
@@ -1120,21 +1467,24 @@ class Model:
                     languages = [data["language"] for data in selected_your_languages.values() if data["enable"] is True]
                     countries = [data["country"] for data in selected_your_languages.values() if data["enable"] is True]
                     if isinstance(transcriber, AudioTranscriber) is True:
-                        activity_state["busy_since"] = monotonic()
-                        try:
-                            res = transcriber.transcribeAudioQueue(
-                                audio_queue,
-                                languages,
-                                countries,
-                                config.MIC_AVG_LOGPROB,
-                                config.MIC_NO_SPEECH_PROB,
-                                config.MIC_NO_REPEAT_NGRAM_SIZE,
-                                config.MIC_VAD_FILTER,
-                                config.MIC_VAD_PARAMETERS,
+                        res = transcriber.transcribeAudioQueue(
+                            audio_queue,
+                            languages,
+                            countries,
+                            config.MIC_AVG_LOGPROB,
+                            config.MIC_NO_SPEECH_PROB,
+                            config.MIC_NO_REPEAT_NGRAM_SIZE,
+                            config.MIC_VAD_FILTER,
+                            config.MIC_VAD_PARAMETERS,
+                        )
+                        if (
+                            res
+                            and not stop_event.is_set()
+                            and self.isSourcePipelineGenerationCurrent(
+                                PipelineSource.MIC,
+                                generation,
                             )
-                        finally:
-                            activity_state["busy_since"] = None
-                        if res and not stop_event.is_set():
+                        ):
                             result = transcriber.getTranscript()
                             fnc(result)
                 except Exception:
@@ -1142,8 +1492,7 @@ class Model:
 
             def endMicTranscript():
                 stop_event.set()
-                while not audio_queue.empty():
-                    audio_queue.get()
+                audio_queue.drain()
                 # while not self.mic_energy_queue.empty():
                 #     self.mic_energy_queue.get()
                 if self.mic_audio_queue is audio_queue:
@@ -1167,20 +1516,20 @@ class Model:
             self.mic_print_transcript = threadFnc(sendMicTranscript, end_fnc=endMicTranscript)
             self.mic_print_transcript.daemon = True
             self.mic_print_transcript.start()
-
-            def restartMicTranscriptAfterStall():
-                self._requestRecorderStop(self.mic_audio_recorder, resume_first=True)
-                if config.ENABLE_TRANSCRIPTION_SEND is True:
-                    restart_thread = Thread(target=lambda: self.startMicTranscript(fnc))
-                    restart_thread.daemon = True
-                    restart_thread.start()
+            with self._source_session_lock:
+                session = self._source_transcription_sessions.get(PipelineSource.MIC)
+                if session is not None and session["generation"] == generation:
+                    session["worker"] = self.mic_print_transcript
 
             self._startTranscriptStallWatchdog(
                 "Mic",
                 stop_event,
-                activity_state,
+                {
+                    "source": PipelineSource.MIC,
+                    "generation": generation,
+                },
                 stall_seconds,
-                restartMicTranscriptAfterStall,
+                lambda: self.restartRecorder(PipelineSource.MIC, generation),
             )
 
             # self.mic_get_energy = threadFnc(sendMicEnergy)
@@ -1193,7 +1542,9 @@ class Model:
     def resumeMicTranscript(self):
         self.ensure_initialized()
         # キューをクリア
-        if isinstance(self.mic_audio_queue, Queue):
+        if hasattr(self.mic_audio_queue, "drain"):
+            self.mic_audio_queue.drain()
+        elif isinstance(self.mic_audio_queue, Queue):
             while not self.mic_audio_queue.empty():
                 self.mic_audio_queue.get()
 
@@ -1249,7 +1600,14 @@ class Model:
             return True
         try:
             thread.stop()
+            if thread is current_thread():
+                return False
+            # A provider call already in progress cannot be cancelled safely.
+            # Google recognition has a bounded operation timeout; other
+            # third-party providers must cooperate or shutdown waits here.
             thread.join(timeout=TRANSCRIPT_THREAD_JOIN_TIMEOUT)
+            if thread.is_alive():
+                thread.join()
             return not thread.is_alive()
         except Exception:
             errorLogging()
@@ -1263,6 +1621,17 @@ class Model:
         stall_seconds: float,
         restart_callback: Callable[[], None],
     ) -> None:
+        source = activity_state.get("source")
+        generation = activity_state.get("generation")
+        if isinstance(source, PipelineSource) and isinstance(generation, int):
+            self._startCaptureHeartbeatWatchdog(
+                source,
+                generation,
+                stop_event,
+                stall_seconds,
+            )
+            return
+
         def watchTranscriptStall():
             while stop_event.wait(TRANSCRIPT_STALL_CHECK_SECONDS) is False:
                 busy_since = activity_state.get("busy_since")
@@ -1305,13 +1674,23 @@ class Model:
 
     def stopMicTranscript(self, stop_pipeline: bool = True):
         self.ensure_initialized()
+        self._ensureTranscriptionLifecycleState()
         stop_event = self.mic_transcript_stop_event
         if hasattr(stop_event, "set"):
             stop_event.set()
+        detached_pipeline = (None, None)
+        if stop_pipeline:
+            # Invalidate output admission immediately; worker joins still follow
+            # recorder/queue order below.
+            detached_pipeline = self._detachSourcePipeline(PipelineSource.MIC)
 
         recorder = self.mic_audio_recorder
         self.mic_audio_recorder = None
         self._requestRecorderStop(recorder, resume_first=True)
+
+        audio_queue = self.mic_audio_queue
+        if hasattr(audio_queue, "close"):
+            audio_queue.close()
 
         thread = self.mic_print_transcript
         self._requestTranscriptThreadStop(thread)
@@ -1319,7 +1698,7 @@ class Model:
             self.mic_print_transcript = None
 
         if stop_pipeline:
-            self.stopSourcePipeline(PipelineSource.MIC)
+            self._stopDetachedSourcePipeline(*detached_pipeline)
 
         whisper_runtime_lease = self.mic_whisper_runtime_lease
         close_error = None
@@ -1331,6 +1710,19 @@ class Model:
             if self.mic_whisper_runtime_lease is whisper_runtime_lease:
                 self.mic_whisper_runtime_lease = None
         finally:
+            with self._source_session_lock:
+                session = self._source_transcription_sessions.get(
+                    PipelineSource.MIC
+                )
+                if session is not None and session.get("worker") is thread:
+                    self._source_transcription_sessions.pop(
+                        PipelineSource.MIC,
+                        None,
+                    )
+                    self._source_heartbeat_timestamps.pop(
+                        PipelineSource.MIC,
+                        None,
+                    )
             self.mic_transcriber = None
             self.mic_audio_queue = None
             self.mic_transcript_stop_event = None
@@ -1383,7 +1775,11 @@ class Model:
             self.mic_energy_recorder.stop()
             self.mic_energy_recorder = None
 
-    def startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> bool:
+    def startSpeakerTranscript(
+        self,
+        fnc: Optional[Callable[[dict], None]] = None,
+        generation: Optional[int] = None,
+    ) -> bool:
         self.ensure_initialized()
         if (
             isinstance(self.speaker_print_transcript, threadFnc)
@@ -1395,15 +1791,23 @@ class Model:
         ):
             self.stopSpeakerTranscript(stop_pipeline=False)
         try:
-            return self._startSpeakerTranscript(fnc)
+            return self._startSpeakerTranscript(fnc, generation=generation)
         except Exception:
             self.stopSpeakerTranscript(stop_pipeline=False)
             raise
 
-    def _startSpeakerTranscript(self, fnc:Optional[Callable[[dict], None]]=None) -> bool:
+    def _startSpeakerTranscript(
+        self,
+        fnc: Optional[Callable[[dict], None]] = None,
+        generation: Optional[int] = None,
+    ) -> bool:
         self.ensure_initialized()
         if config.ENABLE_TRANSCRIPTION_RECEIVE is False:
             return False
+        if generation is None:
+            generation = self.getSourcePipelineGeneration(PipelineSource.SPEAKER)
+        if generation is None:
+            generation = self.nextSourcePipelineGeneration(PipelineSource.SPEAKER)
         speaker_device_name = config.SELECTED_SPEAKER_DEVICE
 
         speaker_device_list = device_manager.getSpeakerDevices()
@@ -1415,7 +1819,10 @@ class Model:
                 fnc({"text": False, "language": None})
             return False
         else:
-            speaker_audio_queue: Queue = Queue()
+            speaker_audio_queue = _MetricAudioQueue(
+                PipelineSource.SPEAKER,
+                self._emitTranscriptionLifecycleMetric,
+            )
             self.speaker_audio_queue = speaker_audio_queue
             speaker_device = selected_speaker_device[0]
             record_timeout = config.SPEAKER_RECORD_TIMEOUT
@@ -1423,16 +1830,38 @@ class Model:
             if record_timeout > phrase_timeout:
                 record_timeout = phrase_timeout
 
-            self.speaker_audio_recorder = SelectedSpeakerEnergyAndAudioRecorder(
-                device=speaker_device,
-                energy_threshold=config.SPEAKER_THRESHOLD,
-                dynamic_energy_threshold=config.SPEAKER_AUTOMATIC_THRESHOLD,
-                phrase_time_limit=record_timeout,
-                phrase_timeout=phrase_timeout,
-                record_timeout=record_timeout,
-            )
+            def recorder_factory():
+                return SelectedSpeakerEnergyAndAudioRecorder(
+                    device=speaker_device,
+                    energy_threshold=config.SPEAKER_THRESHOLD,
+                    dynamic_energy_threshold=config.SPEAKER_AUTOMATIC_THRESHOLD,
+                    phrase_time_limit=record_timeout,
+                    phrase_timeout=phrase_timeout,
+                    record_timeout=record_timeout,
+                )
+
+            try:
+                self.speaker_audio_recorder = recorder_factory()
+            except Exception:
+                self._emitTranscriptionLifecycleMetric(
+                    PipelineSource.SPEAKER,
+                    stage="capture",
+                    outcome="error",
+                    error_code="recorder_construction_failed",
+                )
+                raise
             # self.speaker_audio_recorder.recordIntoQueue(speaker_audio_queue, speaker_energy_queue)
-            self.speaker_audio_recorder.recordIntoQueue(speaker_audio_queue, None)
+            self._recordIntoTranscriptionQueue(
+                self.speaker_audio_recorder,
+                PipelineSource.SPEAKER,
+                generation,
+                speaker_audio_queue,
+            )
+            self._emitTranscriptionLifecycleMetric(
+                PipelineSource.SPEAKER,
+                stage="capture",
+                outcome="running",
+            )
             whisper_runtime_lease = None
             try:
                 whisper_runtime_lease = self._acquireWhisperRuntimeLease()
@@ -1454,6 +1883,7 @@ class Model:
                     pipeline_context=self._makeTranscriberPipelineContext(
                         PipelineSource.SPEAKER,
                         whisper_runtime_lease,
+                        generation,
                     ),
                 )
             except Exception:
@@ -1467,7 +1897,21 @@ class Model:
             stop_event = Event()
             self.speaker_transcript_stop_event = stop_event
             idle_state = {"last_refresh_at": monotonic()}
-            activity_state = {"busy_since": None}
+            heartbeat_at = monotonic()
+            with self._source_session_lock:
+                self._source_heartbeat_timestamps[PipelineSource.SPEAKER] = heartbeat_at
+                self._source_transcription_sessions[PipelineSource.SPEAKER] = {
+                    "generation": generation,
+                    "callback": fnc,
+                    "audio_queue": speaker_audio_queue,
+                    "recorder": self.speaker_audio_recorder,
+                    "recorder_factory": recorder_factory,
+                    "transcriber": transcriber,
+                    "worker": None,
+                    "lease": whisper_runtime_lease,
+                    "stop_event": stop_event,
+                    "heartbeat_at": heartbeat_at,
+                }
             stall_seconds = max(
                 TRANSCRIPT_STALL_RESTART_SECONDS,
                 float(record_timeout) * 4.0,
@@ -1483,22 +1927,7 @@ class Model:
                     return
                 idle_state["last_refresh_at"] = now
                 try:
-                    old_recorder = self.speaker_audio_recorder
-                    self._requestRecorderStop(old_recorder, resume_first=True)
-                    if stop_event.is_set() or config.ENABLE_TRANSCRIPTION_RECEIVE is False:
-                        return
-                    new_recorder = SelectedSpeakerEnergyAndAudioRecorder(
-                        device=speaker_device,
-                        energy_threshold=config.SPEAKER_THRESHOLD,
-                        dynamic_energy_threshold=config.SPEAKER_AUTOMATIC_THRESHOLD,
-                        phrase_time_limit=record_timeout,
-                        phrase_timeout=phrase_timeout,
-                        record_timeout=record_timeout,
-                    )
-                    new_recorder.recordIntoQueue(speaker_audio_queue, None)
-                    self.speaker_audio_recorder = new_recorder
-                    if isinstance(transcriber, AudioTranscriber):
-                        transcriber.resetAudioSource(new_recorder.source)
+                    self.restartRecorder(PipelineSource.SPEAKER, generation)
                 except Exception:
                     errorLogging()
 
@@ -1511,21 +1940,24 @@ class Model:
                     languages = [data["language"] for data in selected_target_languages.values() if data["enable"] is True]
                     countries = [data["country"] for data in selected_target_languages.values() if data["enable"] is True]
                     if isinstance(transcriber, AudioTranscriber) is True:
-                        activity_state["busy_since"] = monotonic()
-                        try:
-                            res = transcriber.transcribeAudioQueue(
-                                speaker_audio_queue,
-                                languages,
-                                countries,
-                                config.SPEAKER_AVG_LOGPROB,
-                                config.SPEAKER_NO_SPEECH_PROB,
-                                config.SPEAKER_NO_REPEAT_NGRAM_SIZE,
-                                config.SPEAKER_VAD_FILTER,
-                                config.SPEAKER_VAD_PARAMETERS,
+                        res = transcriber.transcribeAudioQueue(
+                            speaker_audio_queue,
+                            languages,
+                            countries,
+                            config.SPEAKER_AVG_LOGPROB,
+                            config.SPEAKER_NO_SPEECH_PROB,
+                            config.SPEAKER_NO_REPEAT_NGRAM_SIZE,
+                            config.SPEAKER_VAD_FILTER,
+                            config.SPEAKER_VAD_PARAMETERS,
+                        )
+                        if (
+                            res
+                            and not stop_event.is_set()
+                            and self.isSourcePipelineGenerationCurrent(
+                                PipelineSource.SPEAKER,
+                                generation,
                             )
-                        finally:
-                            activity_state["busy_since"] = None
-                        if res and not stop_event.is_set():
+                        ):
                             result = transcriber.getTranscript()
                             if callable(fnc):
                                 fnc(result)
@@ -1534,8 +1966,7 @@ class Model:
 
             def endSpeakerTranscript():
                 stop_event.set()
-                while not speaker_audio_queue.empty():
-                    speaker_audio_queue.get()
+                speaker_audio_queue.drain()
                 # while not speaker_energy_queue.empty():
                 #     speaker_energy_queue.get()
                 if self.speaker_audio_queue is speaker_audio_queue:
@@ -1559,20 +1990,25 @@ class Model:
             self.speaker_print_transcript = threadFnc(sendSpeakerTranscript, end_fnc=endSpeakerTranscript)
             self.speaker_print_transcript.daemon = True
             self.speaker_print_transcript.start()
-
-            def restartSpeakerTranscriptAfterStall():
-                self._requestRecorderStop(self.speaker_audio_recorder, resume_first=True)
-                if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
-                    restart_thread = Thread(target=lambda: self.startSpeakerTranscript(fnc))
-                    restart_thread.daemon = True
-                    restart_thread.start()
+            with self._source_session_lock:
+                session = self._source_transcription_sessions.get(
+                    PipelineSource.SPEAKER
+                )
+                if session is not None and session["generation"] == generation:
+                    session["worker"] = self.speaker_print_transcript
 
             self._startTranscriptStallWatchdog(
                 "Speaker",
                 stop_event,
-                activity_state,
+                {
+                    "source": PipelineSource.SPEAKER,
+                    "generation": generation,
+                },
                 stall_seconds,
-                restartSpeakerTranscriptAfterStall,
+                lambda: self.restartRecorder(
+                    PipelineSource.SPEAKER,
+                    generation,
+                ),
             )
 
             # self.speaker_get_energy = threadFnc(sendSpeakerEnergy)
@@ -1582,13 +2018,23 @@ class Model:
 
     def stopSpeakerTranscript(self, stop_pipeline: bool = True):
         self.ensure_initialized()
+        self._ensureTranscriptionLifecycleState()
         stop_event = self.speaker_transcript_stop_event
         if hasattr(stop_event, "set"):
             stop_event.set()
+        detached_pipeline = (None, None)
+        if stop_pipeline:
+            detached_pipeline = self._detachSourcePipeline(
+                PipelineSource.SPEAKER
+            )
 
         recorder = self.speaker_audio_recorder
         self.speaker_audio_recorder = None
         self._requestRecorderStop(recorder, resume_first=True)
+
+        audio_queue = self.speaker_audio_queue
+        if hasattr(audio_queue, "close"):
+            audio_queue.close()
 
         thread = self.speaker_print_transcript
         self._requestTranscriptThreadStop(thread)
@@ -1596,7 +2042,7 @@ class Model:
             self.speaker_print_transcript = None
 
         if stop_pipeline:
-            self.stopSourcePipeline(PipelineSource.SPEAKER)
+            self._stopDetachedSourcePipeline(*detached_pipeline)
 
         whisper_runtime_lease = self.speaker_whisper_runtime_lease
         close_error = None
@@ -1608,6 +2054,19 @@ class Model:
             if self.speaker_whisper_runtime_lease is whisper_runtime_lease:
                 self.speaker_whisper_runtime_lease = None
         finally:
+            with self._source_session_lock:
+                session = self._source_transcription_sessions.get(
+                    PipelineSource.SPEAKER
+                )
+                if session is not None and session.get("worker") is thread:
+                    self._source_transcription_sessions.pop(
+                        PipelineSource.SPEAKER,
+                        None,
+                    )
+                    self._source_heartbeat_timestamps.pop(
+                        PipelineSource.SPEAKER,
+                        None,
+                    )
             self.speaker_transcriber = None
             self.speaker_audio_queue = None
             self.speaker_transcript_stop_event = None
@@ -1945,6 +2404,32 @@ class Model:
     def telemetryInit(self, enabled: bool, app_version: str):
         """Model 内で Telemetry を初期化"""
         self.telemetry.init(enabled=enabled, app_version=app_version)
+
+    def shutdownTranscriptionPipelines(self) -> None:
+        """Stop both source pipelines, then retire the one shared runtime.
+
+        Recorder and pipeline callbacks already executing are cooperative
+        boundaries: they cannot be force-cancelled, so shutdown waits for them.
+        Google recognition itself is bounded by its configured operation timeout.
+        """
+        if not getattr(self, "_inited", False):
+            return
+        first_error = None
+        for stop in (self.stopMicTranscript, self.stopSpeakerTranscript):
+            try:
+                stop()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+                errorLogging()
+        try:
+            self.whisper_runtime_manager.shutdown()
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+            errorLogging()
+        if first_error is not None:
+            raise first_error
 
     def telemetryShutdown(self):
         """Model cleanup on application shutdown."""

@@ -1,8 +1,9 @@
 from typing import Callable, Any, List, Optional
 from copy import deepcopy
 from time import monotonic, sleep
+from queue import Empty
 from subprocess import Popen
-from threading import Thread
+from threading import Event, RLock, Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import uuid
@@ -55,6 +56,7 @@ from models.pipeline.pipeline_types import (
     TranslationTarget,
     TranslationUpdate,
 )
+from models.pipeline.latest_queue import LatestQueue, QueueClosed
 from resource_usage import collect_resource_usage
 
 class Controller:
@@ -67,6 +69,71 @@ class Controller:
             return None
         self.run: Callable[[int, str, Any], None] = _noop_run
         self.device_access_status: bool = True
+        self._transcription_restart_lock = RLock()
+        self._transcription_recovery_queue = LatestQueue(4)
+        self._transcription_recovery_stop_event = Event()
+        self._transcription_recovery_thread = Thread(
+            target=self._coordinateTranscriptionRecovery,
+            name="transcription-recovery-coordinator",
+            daemon=True,
+        )
+        register_recovery = getattr(
+            model,
+            "setTranscriptionRecoveryCallback",
+            None,
+        )
+        if callable(register_recovery):
+            register_recovery(self._offerTranscriptionRecoveryRequest)
+        self._transcription_recovery_thread.start()
+
+    def _offerTranscriptionRecoveryRequest(
+        self,
+        source: PipelineSource,
+        generation: int,
+        error_code: str,
+        safe_to_restart: Event,
+    ) -> None:
+        # This is called from inference cleanup and must never block that worker.
+        self._transcription_recovery_queue.offer(
+            (source, generation, error_code, safe_to_restart)
+        )
+
+    def _coordinateTranscriptionRecovery(self) -> None:
+        while not self._transcription_recovery_stop_event.is_set():
+            try:
+                request = self._transcription_recovery_queue.get(timeout=0.1)
+            except Empty:
+                continue
+            except QueueClosed:
+                break
+
+            # Coalesce a burst and act on its newest request first.
+            pending = self._transcription_recovery_queue.drain()
+            if pending:
+                request = pending[-1]
+            while True:
+                source, generation, error_code, safe_to_restart = request
+                if not model.isSourcePipelineGenerationCurrent(
+                    source,
+                    generation,
+                ):
+                    break
+                if safe_to_restart.wait(0.1):
+                    if (
+                        not self._transcription_recovery_stop_event.is_set()
+                        and model.isSourcePipelineGenerationCurrent(
+                            source,
+                            generation,
+                        )
+                    ):
+                        self._requestCoordinatedTranscriptionRestart(error_code)
+                        model.recordTranscriptionRecovery(source, error_code)
+                    break
+                if self._transcription_recovery_stop_event.is_set():
+                    return
+                pending = self._transcription_recovery_queue.drain()
+                if pending:
+                    request = pending[-1]
 
     @staticmethod
     def _translationResultViews(
@@ -385,10 +452,8 @@ class Controller:
         )
 
     @staticmethod
-    def _sourcePipelineGeneration() -> int:
-        # Task 9 replaces this runnable Task 8 generation with coordinated
-        # per-source generation counters.
-        return 0
+    def _sourcePipelineGeneration(source: PipelineSource) -> int:
+        return model.nextSourcePipelineGeneration(source)
 
     def _sourcePipelineCallbacks(self, source: PipelineSource) -> dict[str, Callable]:
         return {
@@ -1116,7 +1181,28 @@ class Controller:
             dict with status 200 and result True on success.
         """
         try:
-            model.telemetryShutdown()
+            self._transcription_recovery_stop_event.set()
+            self._transcription_recovery_queue.close()
+            recovery_thread = self._transcription_recovery_thread
+            if recovery_thread.is_alive():
+                recovery_thread.join()
+            register_recovery = getattr(
+                model,
+                "setTranscriptionRecoveryCallback",
+                None,
+            )
+            if callable(register_recovery):
+                register_recovery(None)
+            shutdown_pipelines = getattr(
+                model,
+                "shutdownTranscriptionPipelines",
+                None,
+            )
+            if callable(shutdown_pipelines):
+                shutdown_pipelines()
+            telemetry_shutdown = getattr(model, "telemetryShutdown", None)
+            if callable(telemetry_shutdown):
+                telemetry_shutdown()
             return {"status": 200, "result": True}
         except Exception:
             errorLogging()
@@ -1715,6 +1801,7 @@ class Controller:
         config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = "auto"
         self.run(200, self.run_mapping["selected_transcription_compute_type"], config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE)
         self._normalizeTranscriptionRuntimeSelection(notify=True)
+        self._requestCoordinatedTranscriptionRestart()
         return {"status":200,"result":config.SELECTED_TRANSCRIPTION_COMPUTE_DEVICE}
 
     @staticmethod
@@ -1919,6 +2006,7 @@ class Controller:
         config.SELECTED_TRANSCRIPTION_ENGINE = str(data)
         self._normalizeTranscriptionRuntimeSelection(notify=True)
         self._normalizeSelectedYourLanguageForTranscription()
+        self._requestCoordinatedTranscriptionRestart()
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_ENGINE}
 
     @staticmethod
@@ -3193,9 +3281,9 @@ class Controller:
     def getWhisperWeightType(*args, **kwargs) -> dict:
         return {"status":200, "result":config.WHISPER_WEIGHT_TYPE}
 
-    @staticmethod
-    def setWhisperWeightType(data, *args, **kwargs) -> dict:
+    def setWhisperWeightType(self, data, *args, **kwargs) -> dict:
         config.WHISPER_WEIGHT_TYPE = str(data)
+        self._requestCoordinatedTranscriptionRestart()
         return {"status":200, "result": config.WHISPER_WEIGHT_TYPE}
 
     @staticmethod
@@ -3214,6 +3302,7 @@ class Controller:
     def setVoskWeightType(self, data, *args, **kwargs) -> dict:
         config.VOSK_WEIGHT_TYPE = str(data)
         self._normalizeSelectedYourLanguageForTranscription()
+        self._requestCoordinatedTranscriptionRestart()
         return {"status":200, "result": config.VOSK_WEIGHT_TYPE}
 
     @staticmethod
@@ -3224,6 +3313,7 @@ class Controller:
         config.PARAKEET_WEIGHT_TYPE = str(data)
         self._normalizeTranscriptionRuntimeSelection(notify=True)
         self._normalizeSelectedYourLanguageForTranscription()
+        self._requestCoordinatedTranscriptionRestart()
         return {"status":200, "result": config.PARAKEET_WEIGHT_TYPE}
 
     @staticmethod
@@ -3234,6 +3324,7 @@ class Controller:
         config.SENSEVOICE_WEIGHT_TYPE = str(data)
         self._normalizeTranscriptionRuntimeSelection(notify=True)
         self._normalizeSelectedYourLanguageForTranscription()
+        self._requestCoordinatedTranscriptionRestart()
         return {"status":200, "result": config.SENSEVOICE_WEIGHT_TYPE}
 
     @staticmethod
@@ -3243,6 +3334,7 @@ class Controller:
     def setSelectedTranscriptionComputeType(self, data, *args, **kwargs) -> dict:
         config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE = str(data)
         self._normalizeTranscriptionRuntimeSelection(notify=True)
+        self._requestCoordinatedTranscriptionRestart()
         return {"status":200, "result":config.SELECTED_TRANSCRIPTION_COMPUTE_TYPE}
 
     @staticmethod
@@ -3559,20 +3651,30 @@ class Controller:
         the transcription models are re-initialized with the updated config, matching
         the dynamic behavior of Google/Whisper engines.
         """
-        needs_mic = config.ENABLE_TRANSCRIPTION_SEND
-        needs_speaker = config.ENABLE_TRANSCRIPTION_RECEIVE
+        self._requestCoordinatedTranscriptionRestart()
 
-        if needs_mic:
-            self.stopTranscriptionSendMessage()
-        if needs_speaker:
-            self.stopTranscriptionReceiveMessage()
-        if needs_mic:
-            self.startTranscriptionSendMessage()
-        if needs_speaker:
-            self.startTranscriptionReceiveMessage()
-
-    def _requestCoordinatedTranscriptionRestart(self) -> None:
-        self._restartActiveTranscription()
+    def _requestCoordinatedTranscriptionRestart(
+        self,
+        reason: str = "configuration_changed",
+    ) -> None:
+        """Stop all active generations before any replacement runtime loads."""
+        del reason  # The reason is carried by recovery metrics at the caller.
+        with self._transcription_restart_lock:
+            is_active = getattr(model, "isTranscriptionSourceActive", None)
+            if callable(is_active):
+                active_mic = is_active(PipelineSource.MIC)
+                active_speaker = is_active(PipelineSource.SPEAKER)
+            else:
+                active_mic = config.ENABLE_TRANSCRIPTION_SEND is True
+                active_speaker = config.ENABLE_TRANSCRIPTION_RECEIVE is True
+            if active_mic:
+                self.stopTranscriptionSendMessage()
+            if active_speaker:
+                self.stopTranscriptionReceiveMessage()
+            if active_mic:
+                self.startTranscriptionSendMessage()
+            if active_speaker:
+                self.startTranscriptionReceiveMessage()
 
     def swapYourLanguageAndTargetLanguage(self, *args, **kwargs) -> dict:
         your_languages = config.SELECTED_YOUR_LANGUAGES
@@ -3713,6 +3815,10 @@ class Controller:
         self.run(200, self.run_mapping["translation_engines"], selectable_engines)
 
     def startTranscriptionSendMessage(self) -> None:
+        with self._transcription_restart_lock:
+            self._startTranscriptionSendMessageUnlocked()
+
+    def _startTranscriptionSendMessageUnlocked(self) -> None:
         while self.device_access_status is False:
             sleep(1)
         self.device_access_status = False
@@ -3721,7 +3827,7 @@ class Controller:
             model.ensureSourcePipeline(
                 PipelineSource.MIC,
                 self._sourcePipelineCallbacks(PipelineSource.MIC),
-                self._sourcePipelineGeneration(),
+                self._sourcePipelineGeneration(PipelineSource.MIC),
             )
             pipeline_ensured = True
             session_established = model.startMicTranscript(self.micMessage)
@@ -3767,9 +3873,9 @@ class Controller:
         finally:
             self.device_access_status = True
 
-    @staticmethod
-    def stopTranscriptionSendMessage() -> None:
-        model.stopMicTranscript()
+    def stopTranscriptionSendMessage(self) -> None:
+        with self._transcription_restart_lock:
+            model.stopMicTranscript()
 
     def startThreadingTranscriptionSendMessage(self) -> None:
         th_startTranscriptionSendMessage = Thread(target=self.startTranscriptionSendMessage)
@@ -3783,6 +3889,10 @@ class Controller:
         th_stopTranscriptionSendMessage.join()
 
     def startTranscriptionReceiveMessage(self) -> None:
+        with self._transcription_restart_lock:
+            self._startTranscriptionReceiveMessageUnlocked()
+
+    def _startTranscriptionReceiveMessageUnlocked(self) -> None:
         while self.device_access_status is False:
             sleep(1)
         self.device_access_status = False
@@ -3791,7 +3901,7 @@ class Controller:
             model.ensureSourcePipeline(
                 PipelineSource.SPEAKER,
                 self._sourcePipelineCallbacks(PipelineSource.SPEAKER),
-                self._sourcePipelineGeneration(),
+                self._sourcePipelineGeneration(PipelineSource.SPEAKER),
             )
             pipeline_ensured = True
             session_established = model.startSpeakerTranscript(self.speakerMessage)
@@ -3837,9 +3947,9 @@ class Controller:
         finally:
             self.device_access_status = True
 
-    @staticmethod
-    def stopTranscriptionReceiveMessage() -> None:
-        model.stopSpeakerTranscript()
+    def stopTranscriptionReceiveMessage(self) -> None:
+        with self._transcription_restart_lock:
+            model.stopSpeakerTranscript()
 
     def startThreadingTranscriptionReceiveMessage(self) -> None:
         th_startTranscriptionReceiveMessage = Thread(target=self.startTranscriptionReceiveMessage)

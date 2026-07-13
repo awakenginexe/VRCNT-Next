@@ -469,6 +469,7 @@ class Main:
         self.mapping = mapping_data
         self._threads: list[Thread] = []
         self._worker_count = worker_count
+        self._shutdown_lock = Lock()
 
         # エンドポイントごとの排他制御用 Lock を作成
         # enable/disable ペアは同じロックキーに正規化する
@@ -620,13 +621,18 @@ class Main:
         Args:
             wait: maximum seconds to wait for threads to join.
         """
-        # Controller 経由でシャットダウン（model.shutdown() → telemetry.shutdown() が呼ばれる）
-        try:
-            self.controller.shutdown()
-        except Exception:
-            errorLogging()
-        
-        self._stop_event.set()
+        with self._shutdown_lock:
+            if self._stop_event.is_set():
+                return
+            # Controller first drains transcription/translation/output workers
+            # and releases the shared runtime before process workers are told
+            # to exit.
+            try:
+                self.controller.shutdown()
+            except Exception:
+                errorLogging()
+            finally:
+                self._stop_event.set()
         # give threads a chance to exit
         start = time.time()
         for th in self._threads:
