@@ -57,7 +57,7 @@ test("normalizes legacy translations with stable string target slots", () => {
         target_slot: "1",
         message: "hola",
         transliteration: [],
-        status: "success",
+        status: null,
         engine: null,
         previous_engine: null,
         duration_ms: null,

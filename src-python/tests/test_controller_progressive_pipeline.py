@@ -644,6 +644,7 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
         )
         overlay_args = fake_model.createOverlayImageLargeLog.call_args.args
         self.assertEqual(overlay_args[3], ["deux"])
+        self.assertEqual(overlay_args[7], ["2"])
         self.assertEqual(
             overlay_args[4],
             {
@@ -662,6 +663,7 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
         )
         self.assertEqual(websocket_payload["dst_languages"], overlay_args[4])
         self.assertEqual(websocket_payload["translation"], ["deux"])
+        self.assertEqual(websocket_payload["translation_target_slots"], ["2"])
         self.assertEqual(
             [call.args[0] for call in fake_model.telemetryTrackCoreFeature.call_args_list],
             ["mic_speech_to_text", "translation"],
@@ -731,13 +733,16 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
         self.assertEqual(small_overlay_args[2], ["deux"])
         self.assertEqual(small_overlay_args[3], complete_destinations)
         self.assertEqual(small_overlay_args[5], [list(transliteration)])
+        self.assertEqual(small_overlay_args[6], ["2"])
         large_overlay_args = fake_model.createOverlayImageLargeLog.call_args.args
         self.assertEqual(large_overlay_args[3], ["deux"])
         self.assertEqual(large_overlay_args[4], complete_destinations)
         self.assertEqual(large_overlay_args[6], [list(transliteration)])
+        self.assertEqual(large_overlay_args[7], ["2"])
         websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
         self.assertEqual(websocket_payload["dst_languages"], complete_destinations)
         self.assertEqual(websocket_payload["translation"], ["deux"])
+        self.assertEqual(websocket_payload["translation_target_slots"], ["2"])
         self.assertEqual(
             websocket_payload["transliteration"],
             [list(transliteration)],
@@ -746,6 +751,43 @@ class ControllerProgressivePipelineTests(unittest.TestCase):
             websocket_payload["src_languages"]["3"],
             {"language": "Thai", "country": "Thailand", "enable": False},
         )
+
+    def test_overlay_adapters_pair_compact_translations_with_explicit_target_slots(self):
+        instance = object.__new__(model_module.Model)
+        instance._inited = True
+        instance.overlay_image = Mock()
+        destinations = {
+            "1": {"language": "Japanese", "country": "Japan", "enable": True},
+            "2": {"language": "French", "country": "France", "enable": True},
+            "3": {"language": "Thai", "country": "Thailand", "enable": False},
+        }
+
+        instance.createOverlayImageSmallLog(
+            "heard",
+            "English",
+            ["deux"],
+            destinations,
+            [],
+            [[]],
+            ["2"],
+        )
+        small_args = instance.overlay_image.createOverlayImageSmallLog.call_args.args
+        self.assertEqual(small_args[2], ["deux"])
+        self.assertEqual(small_args[3], ["French"])
+
+        instance.createOverlayImageLargeLog(
+            "receive",
+            "heard",
+            "English",
+            ["deux"],
+            destinations,
+            [],
+            [[]],
+            ["2"],
+        )
+        large_args = instance.overlay_image.createOverlayImageLargeLog.call_args.args
+        self.assertEqual(large_args[3], ["deux"])
+        self.assertEqual(large_args[4], ["French"])
 
     def test_speaker_failure_keeps_original_only_metadata_without_translated_effects(self):
         controller = controller_module.Controller()

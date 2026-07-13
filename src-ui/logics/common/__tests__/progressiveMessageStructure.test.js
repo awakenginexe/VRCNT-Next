@@ -65,6 +65,24 @@ test("translation state changes use a stable polite region without announcing ti
     );
 });
 
+test("legacy translation text renders without fabricated status metadata", () => {
+    const source = readSource(
+        `${componentRoot}/translation_entry/TranslationEntry.jsx`,
+    );
+
+    assert.match(source, /const hasStatus = entry\?\.status != null/);
+    assert.match(
+        source,
+        /\{hasStatus\s*&&\s*\([\s\S]*?className=\{styles\.status\}/,
+        "visible status metadata must be conditional",
+    );
+    assert.match(
+        source,
+        /\{hasStatus\s*&&\s*\([\s\S]*?role="status"/,
+        "the live status announcement must be absent for legacy rows",
+    );
+});
+
 test("message text defensively preserves ruby and Hepburn rendering", () => {
     const relativePath = `${componentRoot}/MessageText.jsx`;
     assert.equal(

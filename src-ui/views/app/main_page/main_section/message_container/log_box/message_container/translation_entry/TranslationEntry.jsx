@@ -9,6 +9,7 @@ import styles from "./TranslationEntry.module.scss";
 
 export const TranslationEntry = ({ entry }) => {
     const { t } = useI18n();
+    const hasStatus = entry?.status != null;
     const isActive = TRANSLATION_ACTIVE_STATUSES.has(entry?.status);
     const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -23,8 +24,11 @@ export const TranslationEntry = ({ entry }) => {
         return () => clearInterval(intervalId);
     }, [entry?.status, entry?.status_changed_at_ms, isActive]);
 
-    const presentation = getTranslationPresentation(entry, nowMs);
+    const presentation = hasStatus
+        ? getTranslationPresentation(entry, nowMs)
+        : null;
     const announcement = useMemo(() => {
+        if (!hasStatus) return "";
         const statusChangedAt = Number(entry?.status_changed_at_ms);
         const stableNowMs = Number.isFinite(statusChangedAt) ? statusChangedAt : 0;
         const stablePresentation = getTranslationPresentation(entry, stableNowMs);
@@ -48,34 +52,39 @@ export const TranslationEntry = ({ entry }) => {
         entry?.queue_position,
         entry?.status,
         entry?.status_changed_at_ms,
+        hasStatus,
         t,
     ]);
 
     return (
         <div className={styles.container}>
             {entry?.message != null && <MessageText item={entry} />}
-            <p className={styles.status} aria-hidden="true">
-                <span className={styles[presentation.tone]}>
-                    <span>{t(presentation.textKey, presentation.textValues)}</span>
-                    {presentation.showQueuePosition && (
-                        <>
-                            <span> · </span>
-                            <span>
-                                {t(
-                                    "main_page.message_log.translation_status.queue_position",
-                                    { position: entry?.queue_position },
-                                )}
-                            </span>
-                        </>
-                    )}
-                </span>
-            </p>
-            <span
-                className={styles.sr_only}
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-            >{announcement}</span>
+            {hasStatus && (
+                <p className={styles.status} aria-hidden="true">
+                    <span className={styles[presentation.tone]}>
+                        <span>{t(presentation.textKey, presentation.textValues)}</span>
+                        {presentation.showQueuePosition && (
+                            <>
+                                <span> · </span>
+                                <span>
+                                    {t(
+                                        "main_page.message_log.translation_status.queue_position",
+                                        { position: entry?.queue_position },
+                                    )}
+                                </span>
+                            </>
+                        )}
+                    </span>
+                </p>
+            )}
+            {hasStatus && (
+                <span
+                    className={styles.sr_only}
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                >{announcement}</span>
+            )}
         </div>
     );
 };

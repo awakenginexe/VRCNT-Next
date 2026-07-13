@@ -526,7 +526,12 @@ class Controller:
     def _successfulOutputViews(
         task: FinalOutputTask,
         language_snapshots: tuple[LanguageSlotSnapshot, ...],
-    ) -> tuple[list[str], dict[str, dict[str, object]], list[list[dict[str, str]]]]:
+    ) -> tuple[
+        list[str],
+        dict[str, dict[str, object]],
+        list[list[dict[str, str]]],
+        list[str],
+    ]:
         target_by_slot = {target.target_slot: target for target in task.targets}
         successful_pairs = [
             (target_by_slot[update.target_slot], update)
@@ -543,10 +548,14 @@ class Controller:
         successful_transliterations = [
             list(update.transliteration) for _, update in successful_pairs
         ]
+        successful_target_slots = [
+            target.target_slot for target, _ in successful_pairs
+        ]
         return (
             successful_translations,
             destination_languages,
             successful_transliterations,
+            successful_target_slots,
         )
 
     @staticmethod
@@ -637,6 +646,7 @@ class Controller:
             successful_translations,
             destination_languages,
             successful_transliterations,
+            successful_target_slots,
         ) = self._successfulOutputViews(task, output_config.target_languages)
         original_transliteration = list(task.original_transliteration)
         failures: list[str] = []
@@ -723,6 +733,7 @@ class Controller:
                         destination_languages,
                         original_transliteration,
                         successful_transliterations,
+                        successful_target_slots,
                     )
                 else:
                     overlay_image = model.createOverlayImageLargeLog(
@@ -733,6 +744,7 @@ class Controller:
                         destination_languages,
                         original_transliteration,
                         successful_transliterations,
+                        successful_target_slots,
                     )
                 if self._generationCurrent(task):
                     model.updateOverlayLargeLog(overlay_image)
@@ -777,6 +789,7 @@ class Controller:
                             "dst_languages": destination_languages,
                             "message": task.original_message,
                             "translation": successful_translations,
+                            "translation_target_slots": successful_target_slots,
                             "transliteration": successful_transliterations,
                         }
                     )
@@ -820,6 +833,7 @@ class Controller:
             successful_translations,
             destination_languages,
             successful_transliterations,
+            successful_target_slots,
         ) = self._successfulOutputViews(
             task,
             output_config.your_translation_languages,
@@ -870,6 +884,7 @@ class Controller:
                         destination_languages,
                         original_transliteration,
                         successful_transliterations,
+                        successful_target_slots,
                     )
                 else:
                     overlay_image = model.createOverlayImageSmallLog(
@@ -879,6 +894,7 @@ class Controller:
                         destination_languages,
                         original_transliteration,
                         successful_transliterations,
+                        successful_target_slots,
                     )
                 if self._generationCurrent(task):
                     model.updateOverlaySmallLog(overlay_image)
@@ -911,6 +927,7 @@ class Controller:
                         destination_languages,
                         original_transliteration,
                         successful_transliterations,
+                        successful_target_slots,
                     )
                 else:
                     overlay_image = model.createOverlayImageLargeLog(
@@ -921,6 +938,7 @@ class Controller:
                         destination_languages,
                         original_transliteration,
                         successful_transliterations,
+                        successful_target_slots,
                     )
                 if self._generationCurrent(task):
                     model.updateOverlayLargeLog(overlay_image)
@@ -985,6 +1003,7 @@ class Controller:
                             "dst_languages": destination_languages,
                             "message": task.original_message,
                             "translation": successful_translations,
+                            "translation_target_slots": successful_target_slots,
                             "transliteration": successful_transliterations,
                         }
                     )

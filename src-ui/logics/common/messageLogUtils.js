@@ -32,7 +32,7 @@ const normalizeTranslation = (entry, index, nowMs) => ({
     target_slot: String(entry.target_slot ?? index + 1),
     message: entry.message ?? null,
     transliteration: entry.transliteration ?? [],
-    status: entry.status ?? (entry.message ? "success" : null),
+    status: entry.status ?? null,
     engine: entry.engine ?? null,
     previous_engine: null,
     duration_ms: entry.duration_ms ?? null,

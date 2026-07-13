@@ -1448,11 +1448,13 @@ class Model:
                     continue
                 if heartbeat_at == last_recovery_heartbeat:
                     continue
-                last_recovery_heartbeat = heartbeat_at
                 try:
-                    self.restartRecorder(source, generation)
+                    recovered = self.restartRecorder(source, generation)
                 except Exception:
                     errorLogging()
+                    recovered = False
+                if recovered is True:
+                    last_recovery_heartbeat = heartbeat_at
 
         watchdog_thread = Thread(
             target=watchCaptureHeartbeat,
@@ -2332,12 +2334,40 @@ class Model:
         if first_error is not None:
             raise first_error
 
-    def createOverlayImageSmallLog(self, message:Optional[str], your_language:Optional[str], translation:list, target_language:Optional[dict], transliteration_message:Optional[dict] = None, transliteration_translation:Optional[list] = None) -> object:
+    @staticmethod
+    def _overlayTargetLanguageList(
+        target_language: Optional[dict],
+        translation_target_slots: Optional[list[str]] = None,
+    ) -> list:
+        if not isinstance(target_language, dict):
+            return []
+        if translation_target_slots is not None:
+            target_items = (
+                target_language.get(str(slot)) for slot in translation_target_slots
+            )
+        else:
+            target_items = target_language.values()
+        return [
+            data.get("language")
+            for data in target_items
+            if isinstance(data, dict) and data.get("enable") is True
+        ]
+
+    def createOverlayImageSmallLog(
+        self,
+        message: Optional[str],
+        your_language: Optional[str],
+        translation: list,
+        target_language: Optional[dict],
+        transliteration_message: Optional[dict] = None,
+        transliteration_translation: Optional[list] = None,
+        translation_target_slots: Optional[list[str]] = None,
+    ) -> object:
         self.ensure_initialized()
-        # Normalize target_language dict -> list
-        target_language_list = []
-        if isinstance(target_language, dict):
-            target_language_list = [data["language"] for data in target_language.values() if data.get("enable") is True]
+        target_language_list = self._overlayTargetLanguageList(
+            target_language,
+            translation_target_slots,
+        )
 
         # 翻訳行ルビ (任意) が指定されていれば渡す。後方互換のため None / 不正型は空リストに。
         if not isinstance(transliteration_message, list):
@@ -2412,12 +2442,22 @@ class Model:
         if (self.overlay.settings[size]["ui_scaling"] != config.OVERLAY_SMALL_LOG_SETTINGS["ui_scaling"]):
             self.overlay.updateUiScaling(config.OVERLAY_SMALL_LOG_SETTINGS["ui_scaling"], size)
 
-    def createOverlayImageLargeLog(self, message_type:str, message:Optional[str], your_language:Optional[str],  translation:list, target_language:Optional[dict]=None, transliteration_message:Optional[list]=None, transliteration_translation:Optional[list]=None) -> object:
+    def createOverlayImageLargeLog(
+        self,
+        message_type: str,
+        message: Optional[str],
+        your_language: Optional[str],
+        translation: list,
+        target_language: Optional[dict] = None,
+        transliteration_message: Optional[list] = None,
+        transliteration_translation: Optional[list] = None,
+        translation_target_slots: Optional[list[str]] = None,
+    ) -> object:
         self.ensure_initialized()
-        # normalize target_language dict -> list of language strings
-        target_language_list = []
-        if isinstance(target_language, dict):
-            target_language_list = [data["language"] for data in target_language.values() if data.get("enable") is True]
+        target_language_list = self._overlayTargetLanguageList(
+            target_language,
+            translation_target_slots,
+        )
         newest_first = config.OVERLAY_LARGE_LOG_SETTINGS.get("log_order") == "newest_first"
         return self.overlay_image.createOverlayImageLargeLog(
             message_type,

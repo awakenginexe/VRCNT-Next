@@ -345,6 +345,51 @@ class PipelineLifecycleTests(unittest.TestCase):
 
                 instance.restartRecorder.assert_not_called()
 
+    def test_capture_watchdog_retries_an_unchanged_heartbeat_after_reopen_failure(self):
+        class ImmediateThread:
+            def __init__(self, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        class ScriptedStopEvent:
+            def __init__(self):
+                self.outcomes = iter((False, False, True))
+
+            def wait(self, _timeout):
+                return next(self.outcomes, True)
+
+        source = PipelineSource.MIC
+        generation = 41
+        stop_event = ScriptedStopEvent()
+        instance = object.__new__(Model)
+        instance._inited = True
+        instance._ensureTranscriptionLifecycleState()
+        instance._source_pipeline_generations = {source: generation}
+        instance.mic_source_pipeline = object()
+        instance.speaker_source_pipeline = None
+        instance._source_heartbeat_timestamps[source] = 0.0
+        instance._source_transcription_sessions[source] = {
+            "generation": generation,
+            "stop_event": stop_event,
+        }
+        instance.restartRecorder = Mock(side_effect=(False, True))
+
+        with (
+            patch.object(model_module, "Thread", ImmediateThread),
+            patch.object(model_module, "monotonic", side_effect=(100.0, 101.0)),
+        ):
+            instance._startCaptureHeartbeatWatchdog(
+                source,
+                generation,
+                stop_event,
+                stall_seconds=90.0,
+            )
+
+        self.assertEqual(instance.restartRecorder.call_count, 2)
+        instance.restartRecorder.assert_called_with(source, generation)
+
     def test_mainloop_stop_route_returns_after_translation_and_output_workers_exit(self):
         from mainloop import Main
         transcription_release = threading.Event()
