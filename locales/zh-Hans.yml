@@ -89,6 +89,24 @@ main_page:
         auto: "Auto"
         auto_gpu: "Auto GPU {{index}}"
 
+    pipeline_status:
+        source: "来源"
+        listening: "正在聆听"
+        speaking: "正在说话"
+        transcription: "转写"
+        cloud: "云端"
+        queue: "队列"
+        total: "总计"
+        healthy: "正常"
+        slow: "缓慢"
+        error: "错误"
+        waiting: "等待中"
+        unavailable: "不可用"
+        timeout_announcement: "{{engine}} 翻译超时"
+        overload_announcement: "翻译队列过载"
+        error_announcement: "{{stage}} 失败"
+        recovered_announcement: "{{stage}} 已恢复"
+
     translator_selector:
         is_selected_same_language: "「{{your_language}}」和「{{target_language}}」选择了相同的语言，因此只能使用「{{ctranslate2}}」。"
         use_parallel_service: "使用并行服务"

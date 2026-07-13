@@ -12,6 +12,7 @@ export const STATIC_ROUTE_META_LIST = [
     { endpoint: "/run/enable_ai_models", ns: common, hook_name: "useIsVrctAvailable", method_name: "handleAiModelsAvailability" },
     { endpoint: "/get/data/compute_mode", ns: common, hook_name: "useComputeMode", method_name: "updateComputeMode" },
     { endpoint: "/get/data/resource_usage", ns: common, hook_name: "useResourceUsage", method_name: "updateResourceUsage" },
+    { endpoint: "/run/pipeline_status", ns: common, hook_name: "usePipelineStatus", method_name: "updatePipelineStatus" },
 
     { endpoint: "/run/update_software", ns: null, hook_name: null, method_name: null },
 

@@ -89,6 +89,24 @@ main_page:
         auto: "อัตโนมัติ"
         auto_gpu: "อัตโนมัติ GPU {{index}}"
 
+    pipeline_status:
+        source: "แหล่งเสียง"
+        listening: "กำลังฟัง"
+        speaking: "กำลังพูด"
+        transcription: "ถอดเสียง"
+        cloud: "คลาวด์"
+        queue: "คิว"
+        total: "รวม"
+        healthy: "ปกติ"
+        slow: "ช้า"
+        error: "ข้อผิดพลาด"
+        waiting: "กำลังรอ"
+        unavailable: "ไม่พร้อมใช้งาน"
+        timeout_announcement: "การแปลด้วย {{engine}} หมดเวลา"
+        overload_announcement: "คิวการแปลทำงานหนักเกินไป"
+        error_announcement: "{{stage}} ล้มเหลว"
+        recovered_announcement: "{{stage}} กลับมาทำงานแล้ว"
+
     translator_selector:
         is_selected_same_language: "คุณกำลังเลือกภาษาเดียวกันสำหรับ '{{your_language}}' และ '{{target_language}}' จึงใช้ได้เฉพาะ '{{ctranslate2}}'"
         use_parallel_service: "ใช้บริการแบบขนาน"

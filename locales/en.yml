@@ -89,6 +89,24 @@ main_page:
         auto: "Auto"
         auto_gpu: "Auto GPU {{index}}"
 
+    pipeline_status:
+        source: "Source"
+        listening: "Listening"
+        speaking: "Speaking"
+        transcription: "Transcription"
+        cloud: "Cloud"
+        queue: "Queue"
+        total: "Total"
+        healthy: "Healthy"
+        slow: "Slow"
+        error: "Error"
+        waiting: "Waiting"
+        unavailable: "Unavailable"
+        timeout_announcement: "{{engine}} translation timed out"
+        overload_announcement: "Translation queue overloaded"
+        error_announcement: "{{stage}} failed"
+        recovered_announcement: "{{stage}} recovered"
+
     translator_selector:
         is_selected_same_language: "You are selecting the same language for '{{your_language}}' and '{{target_language}}' so only '{{ctranslate2}}' is available."
         use_parallel_service: "Use parallel service"

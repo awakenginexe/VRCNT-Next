@@ -1,6 +1,7 @@
 export { useSoftwareVersion } from "./useSoftwareVersion";
 export { useComputeMode } from "./useComputeMode";
 export { useResourceUsage } from "./useResourceUsage";
+export { usePipelineStatus } from "./usePipelineStatus";
 export { useInitProgress } from "./useInitProgress";
 export { useInitStatus } from "./useInitStatus";
 export { useIsBackendReady } from "./useIsBackendReady";

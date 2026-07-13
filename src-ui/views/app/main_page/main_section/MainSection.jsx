@@ -5,6 +5,7 @@ import { TopBar } from "./top_bar/TopBar";
 import { MessageContainer } from "./message_container/MessageContainer";
 import { LanguageSelector } from "./language_selector/LanguageSelector";
 import { ResourceMonitor } from "./resource_monitor/ResourceMonitor";
+import { PipelineStatus } from "./pipeline_status/PipelineStatus";
 import { LanguageSettings } from "../sidebar_section/language_settings/LanguageSettings";
 
 import { useStore_IsOpenedLanguageSelector } from "@store";
@@ -21,6 +22,7 @@ export const MainSection = () => {
                 </aside>
                 <section className={styles.chat_panel}>
                     <ResourceMonitor />
+                    <PipelineStatus />
                     <MessageContainer />
                 </section>
             </div>

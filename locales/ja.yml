@@ -89,6 +89,24 @@ main_page:
         auto: "Auto"
         auto_gpu: "Auto GPU {{index}}"
 
+    pipeline_status:
+        source: "入力"
+        listening: "リスニング"
+        speaking: "スピーキング"
+        transcription: "文字起こし"
+        cloud: "クラウド"
+        queue: "キュー"
+        total: "合計"
+        healthy: "正常"
+        slow: "低速"
+        error: "エラー"
+        waiting: "待機中"
+        unavailable: "利用不可"
+        timeout_announcement: "{{engine}} の翻訳がタイムアウトしました"
+        overload_announcement: "翻訳キューが過負荷です"
+        error_announcement: "{{stage}} が失敗しました"
+        recovered_announcement: "{{stage}} が復旧しました"
+
     translator_selector:
         is_selected_same_language: "「{{your_language}}」と「{{target_language}}」に同じ言語が選択がされているため、「{{ctranslate2}}」のみが使用できます。"
         use_parallel_service: "並列サービスを使用"

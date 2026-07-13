@@ -89,6 +89,24 @@ main_page:
         auto: "Auto"
         auto_gpu: "Auto GPU {{index}}"
 
+    pipeline_status:
+        source: "소스"
+        listening: "듣기"
+        speaking: "말하기"
+        transcription: "음성 인식"
+        cloud: "클라우드"
+        queue: "대기열"
+        total: "전체"
+        healthy: "정상"
+        slow: "느림"
+        error: "오류"
+        waiting: "대기 중"
+        unavailable: "사용 불가"
+        timeout_announcement: "{{engine}} 번역 시간 초과"
+        overload_announcement: "번역 대기열 과부하"
+        error_announcement: "{{stage}} 실패"
+        recovered_announcement: "{{stage}} 복구됨"
+
     translator_selector:
         is_selected_same_language: "'{{your_language}}'와 '{{target_language}}'에 동일한 언어가 선택되어 있으므로, 「{{ctranslate2}}」만 사용할 수 있습니다."
         use_parallel_service: "병렬 서비스 사용"

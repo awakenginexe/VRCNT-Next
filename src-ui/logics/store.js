@@ -13,6 +13,7 @@ import {
 } from "@ui_configs";
 
 import { EMPTY_RESOURCE_USAGE } from "./common/resourceUsageUtils.js";
+import { createEmptyPipelineStatusState } from "./common/pipelineStatusUtils.js";
 import { isTauriRuntime } from "./common/tauriRuntime.js";
 
 const IS_TAURI_RUNTIME = isTauriRuntime();
@@ -275,6 +276,11 @@ export const { atomInstance: Atom_ComputeMode, useHook: useStore_ComputeMode } =
 export const { atomInstance: Atom_ResourceUsage, useHook: useStore_ResourceUsage } = createAtomWithHook(
     IS_TAURI_RUNTIME ? EMPTY_RESOURCE_USAGE : PREVIEW_RESOURCE_USAGE,
     "ResourceUsage",
+    {is_state_ok: true}
+);
+export const { atomInstance: Atom_PipelineStatus, useHook: useStore_PipelineStatus } = createAtomWithHook(
+    createEmptyPipelineStatusState(),
+    "PipelineStatus",
     {is_state_ok: true}
 );
 export const { atomInstance: Atom_IsOpenedConfigPage, useHook: useStore_IsOpenedConfigPage } = createAtomWithHook(false, "IsOpenedConfigPage");
