@@ -611,6 +611,14 @@ class SourcePipeline:
             if not self._job_is_current(record, job):
                 self._remove_record(job.trace_id, record)
                 return
+            self._emit_translation_metric(
+                job,
+                sending,
+                queue_depth=self._translation_queue.qsize(),
+            )
+            if not self._job_is_current(record, job):
+                self._remove_record(job.trace_id, record)
+                return
             try:
                 attempt = self._translator.translateAttempt(
                     translator_name=provider,
@@ -711,6 +719,14 @@ class SourcePipeline:
                 error_code=None,
             )
             self._publish_update(record, fallback)
+            if not self._job_is_current(record, job):
+                self._remove_record(job.trace_id, record)
+                return
+            self._emit_translation_metric(
+                job,
+                fallback,
+                queue_depth=self._translation_queue.qsize(),
+            )
             if not self._job_is_current(record, job):
                 self._remove_record(job.trace_id, record)
                 return

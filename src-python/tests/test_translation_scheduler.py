@@ -887,6 +887,44 @@ class TranslationSchedulerTests(unittest.TestCase):
         )
         self.assertEqual(recorder.finals, [])
 
+    def test_stop_from_sending_metric_prevents_provider_call(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator()
+        pipeline_holder = {}
+        metric_stop_returned = threading.Event()
+
+        def stopping_metric(metric):
+            recorder.emit_metric(metric)
+            if metric.stage == "translation" and metric.outcome == "sending":
+                pipeline_holder["pipeline"].stop(7, discard_pending=True)
+                metric_stop_returned.set()
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            translator,
+            lambda *_: (),
+            recorder.emit_initial,
+            recorder.emit_update,
+            stopping_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+        pipeline_holder["pipeline"] = pipeline
+        pipeline.start(7)
+        self.addCleanup(lambda: pipeline.stop(7, discard_pending=True))
+        pipeline.submit_trace(make_trace("sending-metric-stop"))
+
+        self.assertTrue(metric_stop_returned.wait(timeout=1.0))
+        with pipeline._lifecycle_condition:
+            deadline = time.monotonic() + 1.0
+            while pipeline._lifecycle_state.value != "stopped":
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0)
+                pipeline._lifecycle_condition.wait(remaining)
+
+        self.assertEqual(translator.calls, [])
+        self.assertEqual(recorder.finals, [])
+
     def test_stop_from_fallback_update_prevents_alternate_provider(self):
         recorder = Recorder()
         translator = ScriptedTranslator(
@@ -933,6 +971,59 @@ class TranslationSchedulerTests(unittest.TestCase):
             [call["translator_name"] for call in translator.calls],
             ["one"],
         )
+
+    def test_stop_from_fallback_metric_prevents_alternate_provider(self):
+        recorder = Recorder()
+        translator = ScriptedTranslator(
+            [
+                TranslationAttempt(
+                    TranslationStatus.ERROR,
+                    "one",
+                    None,
+                    1,
+                    "provider_error",
+                )
+            ]
+        )
+        pipeline_holder = {}
+        metric_stop_returned = threading.Event()
+
+        def stopping_metric(metric):
+            recorder.emit_metric(metric)
+            if metric.stage == "translation" and metric.outcome == "fallback":
+                pipeline_holder["pipeline"].stop(7, discard_pending=True)
+                metric_stop_returned.set()
+
+        pipeline = SourcePipeline(
+            PipelineSource.MIC,
+            translator,
+            lambda *_: (),
+            recorder.emit_initial,
+            recorder.emit_update,
+            stopping_metric,
+            recorder.emit_final,
+            lambda generation: generation == 7,
+        )
+        pipeline_holder["pipeline"] = pipeline
+        pipeline.start(7)
+        self.addCleanup(lambda: pipeline.stop(7, discard_pending=True))
+        pipeline.submit_trace(
+            make_trace("fallback-metric-stop", providers=("one", "two"))
+        )
+
+        self.assertTrue(metric_stop_returned.wait(timeout=1.0))
+        with pipeline._lifecycle_condition:
+            deadline = time.monotonic() + 1.0
+            while pipeline._lifecycle_state.value != "stopped":
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0)
+                pipeline._lifecycle_condition.wait(remaining)
+
+        self.assertEqual(
+            [call["translator_name"] for call in translator.calls],
+            ["one"],
+        )
+        self.assertEqual(recorder.finals, [])
 
     def test_stop_during_no_provider_slot_publication_cancels_remaining_slots(self):
         recorder = Recorder()
@@ -1135,6 +1226,32 @@ class TranslationSchedulerTests(unittest.TestCase):
         self.assertEqual(primary_failure.target_slot, "target-1")
         self.assertEqual(primary_failure.duration_ms, 9)
         self.assertEqual(primary_failure.error_code, "provider_timeout")
+        translation_metrics = [
+            item for item in recorder.metrics
+            if item.stage == "translation" and item.trace_id == "trace-1"
+        ]
+        self.assertEqual(
+            [item.outcome for item in translation_metrics],
+            ["sending", "timeout", "fallback", "sending", "success"],
+        )
+        self.assertEqual(
+            [item.engine for item in translation_metrics],
+            ["primary", "primary", "alternate", "alternate", "alternate"],
+        )
+        active_metrics = [
+            item for item in translation_metrics
+            if item.outcome in ("sending", "fallback")
+        ]
+        self.assertEqual(len(active_metrics), 3)
+        for metric in active_metrics:
+            self.assertEqual(metric.source, PipelineSource.MIC)
+            self.assertEqual(metric.trace_id, "trace-1")
+            self.assertEqual(metric.target_slot, "target-1")
+            self.assertIsInstance(metric.queue_age_ms, int)
+            self.assertGreaterEqual(metric.queue_age_ms, 0)
+            self.assertEqual(metric.queue_depth, 0)
+            self.assertIsNone(metric.duration_ms)
+            self.assertIsNone(metric.error_code)
         timeout_metric_index = next(
             index for index, (kind, item) in enumerate(recorder.timeline)
             if kind == "metric" and item.stage == "translation" and item.outcome == "timeout"
