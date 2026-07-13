@@ -4307,15 +4307,6 @@ class Controller:
             osc_message = message_part
         return osc_message
 
-    def changeToCTranslate2Process(self) -> None:
-        selected_engines = config.SELECTED_TRANSLATION_ENGINES[config.SELECTED_TAB_NO]
-        for selected_engine in normalizeTranslationEngineSelection(selected_engines):
-            config.SELECTABLE_TRANSLATION_ENGINE_STATUS[selected_engine] = False
-        config.SELECTED_TRANSLATION_ENGINES[config.SELECTED_TAB_NO] = "CTranslate2"
-        selectable_engines = self.getTranslationEngines()["result"]
-        self.run(200, self.run_mapping["selected_translation_engines"], config.SELECTED_TRANSLATION_ENGINES)
-        self.run(200, self.run_mapping["translation_engines"], selectable_engines)
-
     def startTranscriptionSendMessage(self) -> bool:
         with self._transcription_restart_lock:
             if (

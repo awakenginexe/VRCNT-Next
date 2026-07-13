@@ -164,7 +164,7 @@ ERROR_METADATA: Dict[ErrorCode, Dict[str, Any]] = {
         "message": "Translation engine limit error",
         "severity": "warning",
         "user_action_required": False,
-        "auto_fallback": True,
+        "auto_fallback": False,
     },
     ErrorCode.TRANSLATION_VRAM_CHAT: {
         "category": ErrorCategory.TRANSLATION,

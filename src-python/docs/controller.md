@@ -446,14 +446,8 @@ except Exception as e:
 
 **責務:** 翻訳機能の無効化（メモリ解放）
 
-#### `changeToCTranslate2Process() -> None`
-
-**責務:** 外部翻訳APIエラー時に CTranslate2 へ切り替え
-
-**処理:**
-1. 現在の翻訳エンジンを無効化
-2. CTranslate2 に切り替え
-3. フロントエンドに通知
+外部翻訳APIの失敗や利用制限では、CTranslate2へ自動的に切り替えません。
+CTranslate2はユーザーがプライマリ翻訳エンジンとして明示的に選択した場合のみ使用します。
 
 ---
 
@@ -1101,7 +1095,7 @@ self.startWatchdog()  # 監視開始
 - モデルウェイトのダウンロード時
 
 **処理:**
-1. 外部API エラー: `changeToCTranslate2Process()` で CTranslate2 に切り替え
+1. 外部API エラー: 選択済みのオンライン・セカンダリがあれば試行し、CTranslate2には自動切り替えしない
 2. ダウンロードエラー: エラー通知を送信、AI機能を無効化
 
 ### 4. 設定バリデーションエラー
