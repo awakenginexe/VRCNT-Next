@@ -1831,22 +1831,26 @@ class Model:
 
             mic_energy_queue: Queue = Queue()
             mic_device = selected_mic_device[0]
-            self.mic_energy_recorder = SelectedMicEnergyRecorder(mic_device)
-            self.mic_energy_recorder.recordIntoQueue(mic_energy_queue)
-            self.mic_energy_plot_progressbar = threadFnc(sendMicEnergy)
-            self.mic_energy_plot_progressbar.daemon = True
-            self.mic_energy_plot_progressbar.start()
+            try:
+                self.mic_energy_recorder = SelectedMicEnergyRecorder(mic_device)
+                self.mic_energy_recorder.recordIntoQueue(mic_energy_queue)
+                self.mic_energy_plot_progressbar = threadFnc(sendMicEnergy)
+                self.mic_energy_plot_progressbar.daemon = True
+                self.mic_energy_plot_progressbar.start()
+            except Exception:
+                try:
+                    self.stopCheckMicEnergy()
+                except Exception:
+                    errorLogging()
+                raise
 
     def stopCheckMicEnergy(self):
         self.ensure_initialized()
-        if isinstance(self.mic_energy_plot_progressbar, threadFnc):
-            self.mic_energy_plot_progressbar.stop()
-            self.mic_energy_plot_progressbar.join()
-            self.mic_energy_plot_progressbar = None
-        if isinstance(self.mic_energy_recorder, SelectedMicEnergyRecorder):
-            self.mic_energy_recorder.resume()
-            self.mic_energy_recorder.stop()
-            self.mic_energy_recorder = None
+        self._stopEnergyCheckResources(
+            "mic_energy_plot_progressbar",
+            "mic_energy_recorder",
+            SelectedMicEnergyRecorder,
+        )
 
     def startSpeakerTranscript(
         self,
@@ -2184,22 +2188,65 @@ class Model:
 
             speaker_energy_queue: Queue = Queue()
             speaker_device = selected_speaker_device[0]
-            self.speaker_energy_recorder = SelectedSpeakerEnergyRecorder(speaker_device)
-            self.speaker_energy_recorder.recordIntoQueue(speaker_energy_queue)
-            self.speaker_energy_plot_progressbar = threadFnc(sendSpeakerEnergy)
-            self.speaker_energy_plot_progressbar.daemon = True
-            self.speaker_energy_plot_progressbar.start()
+            try:
+                self.speaker_energy_recorder = SelectedSpeakerEnergyRecorder(speaker_device)
+                self.speaker_energy_recorder.recordIntoQueue(speaker_energy_queue)
+                self.speaker_energy_plot_progressbar = threadFnc(sendSpeakerEnergy)
+                self.speaker_energy_plot_progressbar.daemon = True
+                self.speaker_energy_plot_progressbar.start()
+            except Exception:
+                try:
+                    self.stopCheckSpeakerEnergy()
+                except Exception:
+                    errorLogging()
+                raise
 
     def stopCheckSpeakerEnergy(self):
         self.ensure_initialized()
-        if isinstance(self.speaker_energy_plot_progressbar, threadFnc):
-            self.speaker_energy_plot_progressbar.stop()
-            self.speaker_energy_plot_progressbar.join()
-            self.speaker_energy_plot_progressbar = None
-        if isinstance(self.speaker_energy_recorder, SelectedSpeakerEnergyRecorder):
-            self.speaker_energy_recorder.resume()
-            self.speaker_energy_recorder.stop()
-            self.speaker_energy_recorder = None
+        self._stopEnergyCheckResources(
+            "speaker_energy_plot_progressbar",
+            "speaker_energy_recorder",
+            SelectedSpeakerEnergyRecorder,
+        )
+
+    def _stopEnergyCheckResources(
+        self,
+        thread_attribute: str,
+        recorder_attribute: str,
+        recorder_type,
+    ) -> None:
+        """Detach and stop one energy monitor, preserving the first error."""
+        progress_thread = getattr(self, thread_attribute, None)
+        recorder = getattr(self, recorder_attribute, None)
+        setattr(self, thread_attribute, None)
+        setattr(self, recorder_attribute, None)
+
+        first_error = None
+        if isinstance(progress_thread, threadFnc):
+            try:
+                progress_thread.stop()
+            except Exception as error:
+                first_error = error
+            try:
+                progress_thread.join()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+
+        if isinstance(recorder, recorder_type):
+            try:
+                recorder.resume()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+            try:
+                recorder.stop()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+
+        if first_error is not None:
+            raise first_error
 
     def createOverlayImageSmallLog(self, message:Optional[str], your_language:Optional[str], translation:list, target_language:Optional[dict], transliteration_message:Optional[dict] = None, transliteration_translation:Optional[list] = None) -> object:
         self.ensure_initialized()
@@ -2499,7 +2546,12 @@ class Model:
         if not getattr(self, "_inited", False):
             return
         first_error = None
-        for stop in (self.stopMicTranscript, self.stopSpeakerTranscript):
+        for stop in (
+            self.stopCheckMicEnergy,
+            self.stopCheckSpeakerEnergy,
+            self.stopMicTranscript,
+            self.stopSpeakerTranscript,
+        ):
             try:
                 stop()
             except Exception as error:
