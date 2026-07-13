@@ -28,12 +28,16 @@ class Controller:
         self.device_access_status: bool = True
 
     @staticmethod
-    def _translationResultViews(translation, success) -> tuple[list[str], list[str]]:
+    def _translationResultViews(
+        translation,
+        success,
+    ) -> tuple[list[str], list[str], list[int]]:
         """Build string response slots and a compact successful-output view."""
         translation_values = translation if isinstance(translation, (list, tuple)) else []
         success_values = success if isinstance(success, (list, tuple)) else []
         slots = []
         successful = []
+        successful_indices = []
         for index, value in enumerate(translation_values):
             is_success = (
                 index < len(success_values)
@@ -45,7 +49,31 @@ class Controller:
             slots.append(slot)
             if slot:
                 successful.append(slot)
-        return slots, successful
+                successful_indices.append(index)
+        return slots, successful, successful_indices
+
+    @staticmethod
+    def _translationTargetItems(target_languages) -> list[tuple[Any, dict]]:
+        if not isinstance(target_languages, dict):
+            return []
+        return [
+            (key, value)
+            for key, value in target_languages.items()
+            if (
+                isinstance(value, dict)
+                and value.get("enable", True) is True
+                and (value.get("language") is not None or value.get("country") is not None)
+            )
+        ]
+
+    @classmethod
+    def _successfulTargetMetadata(cls, target_languages, successful_indices: list[int]) -> dict:
+        target_items = cls._translationTargetItems(target_languages)
+        return {
+            key: value
+            for index, (key, value) in enumerate(target_items)
+            if index in successful_indices
+        }
 
     @staticmethod
     def _successfulTransliterationView(
@@ -668,7 +696,16 @@ class Controller:
                         # その他のエラーは通常通り処理
                         raise
 
-            translation_slots, successful_translations = self._translationResultViews(translation, success)
+            translation_slots, successful_translations, successful_indices = self._translationResultViews(
+                translation,
+                success,
+            )
+            target_languages = config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO]
+            target_items = self._translationTargetItems(target_languages)
+            successful_target_languages = self._successfulTargetMetadata(
+                target_languages,
+                successful_indices,
+            )
             if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
                 if config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese":
                     transliteration_message = model.convertMessageToTransliteration(
@@ -678,15 +715,13 @@ class Controller:
                     )
 
                 transliteration_translation = [[] for _ in translation_slots]
-                target_numbers = config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST
                 for i, translation_message in enumerate(translation_slots):
-                    if i >= len(target_numbers):
+                    if i >= len(target_items):
                         continue
-                    no = target_numbers[i]
+                    target_language = target_items[i][1]
                     if (translation_message and
                         config.ENABLE_TRANSLATION is True and
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["language"] == "Japanese" and
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["enable"] is True
+                        target_language["language"] == "Japanese"
                         ):
                         transliteration_translation[i] = model.convertMessageToTransliteration(
                             translation_message,
@@ -737,7 +772,7 @@ class Controller:
                                 None,
                                 None,
                                 successful_translations,
-                                config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                                successful_target_languages,
                                 transliteration_message,
                                 successful_transliterations
                             )
@@ -748,7 +783,7 @@ class Controller:
                             message,
                             config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"],
                             successful_translations,
-                            config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                            successful_target_languages,
                             transliteration_message,
                             successful_transliterations
                         )
@@ -763,7 +798,7 @@ class Controller:
                         {
                             "type":"SENT",
                             "src_languages":config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
-                            "dst_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                            "dst_languages":successful_target_languages,
                             "message":message,
                             "translation":successful_translations,
                             "transliteration":successful_transliterations
@@ -852,7 +887,16 @@ class Controller:
                         # その他のエラーは通常通り処理
                         raise
 
-            translation_slots, successful_translations = self._translationResultViews(translation, success)
+            translation_slots, successful_translations, successful_indices = self._translationResultViews(
+                translation,
+                success,
+            )
+            target_languages = config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO]
+            target_items = self._translationTargetItems(target_languages)
+            successful_target_languages = self._successfulTargetMetadata(
+                target_languages,
+                successful_indices,
+            )
             if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
                 if language == "Japanese":
                     transliteration_message = model.convertMessageToTransliteration(
@@ -861,19 +905,21 @@ class Controller:
                         romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                     )
 
-                if (successful_translations and
-                    config.ENABLE_TRANSLATION is True and
-                    config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese"
+                transliteration_translation = [[] for _ in translation_slots]
+                for i, translation_message in enumerate(translation_slots):
+                    if i >= len(target_items):
+                        continue
+                    target_language = target_items[i][1]
+                    if (
+                        translation_message
+                        and config.ENABLE_TRANSLATION is True
+                        and target_language["language"] == "Japanese"
                     ):
-                    transliteration_translation.append(
-                        model.convertMessageToTransliteration(
-                            successful_translations[0],
+                        transliteration_translation[i] = model.convertMessageToTransliteration(
+                            translation_message,
                             hiragana=config.CONVERT_MESSAGE_TO_HIRAGANA,
                             romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                         )
-                    )
-                else:
-                    transliteration_translation.append([])
             else:
                 transliteration_translation = [[] for _ in translation_slots]
             successful_transliterations = self._successfulTransliterationView(
@@ -889,7 +935,7 @@ class Controller:
                                 None,
                                 None,
                                 successful_translations,
-                                config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
+                                successful_target_languages,
                                 transliteration_message,
                                 successful_transliterations
                             )
@@ -899,7 +945,7 @@ class Controller:
                             message,
                             language,
                             successful_translations,
-                            config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
+                            successful_target_languages,
                             transliteration_message,
                             successful_transliterations
                         )
@@ -913,7 +959,7 @@ class Controller:
                                 None,
                                 None,
                                 successful_translations,
-                                config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
+                                successful_target_languages,
                                 transliteration_message,
                                 successful_transliterations
                             )
@@ -924,7 +970,7 @@ class Controller:
                             message,
                             language,
                             successful_translations,
-                            config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
+                            successful_target_languages,
                             transliteration_message,
                             successful_transliterations
                         )
@@ -964,7 +1010,7 @@ class Controller:
                         {
                             "type":"RECEIVED",
                             "src_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
-                            "dst_languages":config.SELECTED_YOUR_TRANSLATION_LANGUAGES[config.SELECTED_TAB_NO],
+                            "dst_languages":successful_target_languages,
                             "message":message,
                             "translation":successful_translations,
                             "transliteration":successful_transliterations
@@ -1065,7 +1111,16 @@ class Controller:
                         # その他のエラーは通常通り処理
                         raise
 
-            translation_slots, successful_translations = self._translationResultViews(translation, success)
+            translation_slots, successful_translations, successful_indices = self._translationResultViews(
+                translation,
+                success,
+            )
+            target_languages = config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO]
+            target_items = self._translationTargetItems(target_languages)
+            successful_target_languages = self._successfulTargetMetadata(
+                target_languages,
+                successful_indices,
+            )
             if config.CONVERT_MESSAGE_TO_HIRAGANA is True or config.CONVERT_MESSAGE_TO_ROMAJI is True:
                 if config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"] == "Japanese":
                     transliteration_message = model.convertMessageToTransliteration(
@@ -1074,15 +1129,13 @@ class Controller:
                         romaji=config.CONVERT_MESSAGE_TO_ROMAJI
                     )
                 transliteration_translation = [[] for _ in translation_slots]
-                target_numbers = config.SELECTED_TAB_TARGET_LANGUAGES_NO_LIST
                 for i, translation_message in enumerate(translation_slots):
-                    if i >= len(target_numbers):
+                    if i >= len(target_items):
                         continue
-                    no = target_numbers[i]
+                    target_language = target_items[i][1]
                     if (translation_message and
                         config.ENABLE_TRANSLATION is True and
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["language"] == "Japanese" and
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO][no]["enable"] is True
+                        target_language["language"] == "Japanese"
                         ):
                         transliteration_translation[i] = model.convertMessageToTransliteration(
                             translation_message,
@@ -1117,7 +1170,7 @@ class Controller:
                             None,
                             None,
                             successful_translations,
-                            config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                            successful_target_languages,
                             transliteration_message,
                             successful_transliterations
                         )
@@ -1128,7 +1181,7 @@ class Controller:
                         message,
                         config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO]["1"]["language"],
                         successful_translations,
-                        config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                        successful_target_languages,
                         transliteration_message,
                         successful_transliterations
                     )
@@ -1139,7 +1192,7 @@ class Controller:
                     {
                         "type":"CHAT",
                         "src_languages":config.SELECTED_YOUR_LANGUAGES[config.SELECTED_TAB_NO],
-                        "dst_languages":config.SELECTED_TARGET_LANGUAGES[config.SELECTED_TAB_NO],
+                        "dst_languages":successful_target_languages,
                         "message":message,
                         "translation":successful_translations,
                         "transliteration":successful_transliterations

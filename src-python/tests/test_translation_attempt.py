@@ -468,7 +468,10 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
                 }
             },
             _SELECTED_YOUR_TRANSLATION_LANGUAGES={
-                "1": {"1": {"enable": True, "language": "Japanese", "country": "Japan"}}
+                "1": {
+                    "1": {"enable": True, "language": "Japanese", "country": "Japan"},
+                    "2": {"enable": True, "language": "French", "country": "France"},
+                }
             },
             _SEND_MESSAGE_TO_VRC=True,
             _SEND_ONLY_TRANSLATED_MESSAGES=send_only_translated,
@@ -531,9 +534,15 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
             [item["message"] for item in result["result"]["translations"]],
             ["translated", ""],
         )
+        expected_target = {
+            "1": {"enable": True, "language": "Japanese", "country": "Japan"}
+        }
         self.assertEqual(controller.messageFormatter.call_args.args[1], ["translated"])
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["translated"])
-        self.assertEqual(fake_model.websocketSendMessage.call_args.args[0]["translation"], ["translated"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[4], expected_target)
+        websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
+        self.assertEqual(websocket_payload["translation"], ["translated"])
+        self.assertEqual(websocket_payload["dst_languages"], expected_target)
         fake_model.logger.info.assert_called_once_with("[CHAT] hello (translated)")
         self.assertEqual(current_selection, {"1": ["Google", "Bing"]})
         controller.changeToCTranslate2Process.assert_not_called()
@@ -560,6 +569,28 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
         self.assertEqual(fake_model.websocketSendMessage.call_args.args[0]["translation"], [])
         fake_model.logger.info.assert_called_once_with("[CHAT] hello")
 
+    def test_chat_reversed_partial_failure_keeps_target_two_metadata_aligned(self):
+        fake_model = self._fake_model()
+        fake_model.getInputTranslate.return_value = ([False, "deux"], [False, True])
+        controller = self._controller()
+
+        with patch.object(controller_module, "model", fake_model), self._config_patch():
+            result = controller.chatMessage({"id": "chat-3", "message": "hello"})
+
+        expected_target = {
+            "2": {"enable": True, "language": "French", "country": "France"}
+        }
+        self.assertEqual(
+            [item["message"] for item in result["result"]["translations"]],
+            ["", "deux"],
+        )
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["deux"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[4], expected_target)
+        websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
+        self.assertEqual(websocket_payload["translation"], ["deux"])
+        self.assertEqual(websocket_payload["dst_languages"], expected_target)
+        fake_model.convertMessageToTransliteration.assert_not_called()
+
     def test_mic_partial_failure_sanitizes_all_outputs_without_engine_mutation(self):
         fake_model = self._fake_model()
         fake_model.getInputTranslate.return_value = (["translated", False], [True, False])
@@ -571,14 +602,40 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
 
         payload = self._run_payload(controller, "/transcription/mic")
         self.assertEqual([item["message"] for item in payload["translations"]], ["translated", ""])
+        expected_target = {
+            "1": {"enable": True, "language": "Japanese", "country": "Japan"}
+        }
         self.assertTrue(controller.messageFormatter.call_args_list)
         for formatter_call in controller.messageFormatter.call_args_list:
             self.assertEqual(formatter_call.args[1], ["translated"])
         self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["translated"])
-        self.assertEqual(fake_model.websocketSendMessage.call_args.args[0]["translation"], ["translated"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[4], expected_target)
+        websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
+        self.assertEqual(websocket_payload["translation"], ["translated"])
+        self.assertEqual(websocket_payload["dst_languages"], expected_target)
         fake_model.logger.info.assert_called_once_with("[SENT] spoken (translated)")
         self.assertEqual(current_selection, {"1": ["Google", "Bing"]})
         controller.changeToCTranslate2Process.assert_not_called()
+
+    def test_mic_reversed_partial_failure_keeps_target_two_metadata_aligned(self):
+        fake_model = self._fake_model()
+        fake_model.getInputTranslate.return_value = ([False, "deux"], [False, True])
+        controller = self._controller()
+
+        with patch.object(controller_module, "model", fake_model), self._config_patch():
+            controller.micMessage({"text": "spoken", "language": "English"})
+
+        expected_target = {
+            "2": {"enable": True, "language": "French", "country": "France"}
+        }
+        payload = self._run_payload(controller, "/transcription/mic")
+        self.assertEqual([item["message"] for item in payload["translations"]], ["", "deux"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["deux"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[4], expected_target)
+        websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
+        self.assertEqual(websocket_payload["translation"], ["deux"])
+        self.assertEqual(websocket_payload["dst_languages"], expected_target)
+        fake_model.convertMessageToTransliteration.assert_not_called()
 
     def test_speaker_total_failure_uses_original_only_and_string_response_slot(self):
         fake_model = self._fake_model()
@@ -600,6 +657,50 @@ class ControllerTranslationSanitizationTests(unittest.TestCase):
         fake_model.logger.info.assert_called_once_with("[RECEIVED] heard")
         self.assertEqual(current_selection, {"1": ["Google", "Bing"]})
         controller.changeToCTranslate2Process.assert_not_called()
+
+    def test_speaker_first_success_keeps_target_one_metadata_aligned(self):
+        fake_model = self._fake_model()
+        fake_model.getOutputTranslate.return_value = (["ichi", False], [True, False])
+        controller = self._controller()
+
+        with patch.object(controller_module, "model", fake_model), self._config_patch():
+            controller.speakerMessage({"text": "heard", "language": "English"})
+
+        expected_target = {
+            "1": {"enable": True, "language": "Japanese", "country": "Japan"}
+        }
+        payload = self._run_payload(controller, "/transcription/speaker")
+        self.assertEqual([item["message"] for item in payload["translations"]], ["ichi", ""])
+        self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[2], ["ichi"])
+        self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[3], expected_target)
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["ichi"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[4], expected_target)
+        websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
+        self.assertEqual(websocket_payload["translation"], ["ichi"])
+        self.assertEqual(websocket_payload["dst_languages"], expected_target)
+        fake_model.convertMessageToTransliteration.assert_called_once()
+
+    def test_speaker_reversed_partial_failure_keeps_target_two_metadata_aligned(self):
+        fake_model = self._fake_model()
+        fake_model.getOutputTranslate.return_value = ([False, "deux"], [False, True])
+        controller = self._controller()
+
+        with patch.object(controller_module, "model", fake_model), self._config_patch():
+            controller.speakerMessage({"text": "heard", "language": "English"})
+
+        expected_target = {
+            "2": {"enable": True, "language": "French", "country": "France"}
+        }
+        payload = self._run_payload(controller, "/transcription/speaker")
+        self.assertEqual([item["message"] for item in payload["translations"]], ["", "deux"])
+        self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[2], ["deux"])
+        self.assertEqual(fake_model.createOverlayImageSmallLog.call_args.args[3], expected_target)
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[3], ["deux"])
+        self.assertEqual(fake_model.createOverlayImageLargeLog.call_args.args[4], expected_target)
+        websocket_payload = fake_model.websocketSendMessage.call_args.args[0]
+        self.assertEqual(websocket_payload["translation"], ["deux"])
+        self.assertEqual(websocket_payload["dst_languages"], expected_target)
+        fake_model.convertMessageToTransliteration.assert_not_called()
 
 
 if __name__ == "__main__":
