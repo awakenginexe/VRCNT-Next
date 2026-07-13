@@ -1,0 +1,181 @@
+.overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    box-sizing: border-box;
+    padding: 1.6rem;
+    background: rgb(4 8 16 / 72%);
+    backdrop-filter: blur(18px) saturate(0.8);
+    animation: blocking_overlay_in 160ms ease-out;
+}
+
+.card {
+    width: min(42rem, calc(100% - 3.2rem));
+    max-height: calc(100% - 3.2rem);
+    overflow: auto;
+    box-sizing: border-box;
+    padding: clamp(2rem, 5vw, 3.2rem);
+    border: 0.1rem solid rgba(var(--accent_color_rgb), 0.24);
+    border-radius: 1.6rem;
+    background: var(--surface_2_color);
+    color: var(--dark_200_color);
+    font-variant-numeric: tabular-nums;
+    animation: blocking_card_in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+
+    &:focus {
+        outline: none;
+    }
+
+    &:focus-visible {
+        outline: 0.2rem solid var(--accent_color);
+        outline-offset: 0.3rem;
+    }
+}
+
+.title {
+    margin: 0;
+    color: var(--dark_100_color);
+    font-size: clamp(2rem, 4.4vw, 2.8rem);
+    line-height: 1.2;
+    text-wrap: balance;
+}
+
+.description {
+    margin-top: 1.6rem;
+}
+
+.phase,
+.detail,
+.progress_text,
+.elapsed {
+    margin: 0;
+    text-wrap: pretty;
+}
+
+.phase {
+    color: var(--dark_200_color);
+    font-size: clamp(1.35rem, 2.7vw, 1.65rem);
+    font-weight: 700;
+    line-height: 1.45;
+}
+
+.detail {
+    margin-top: 0.7rem;
+    color: var(--dark_350_color);
+    font-size: 1.2rem;
+    line-height: 1.5;
+}
+
+.progress {
+    position: relative;
+    height: 1.2rem;
+    margin-top: 2.2rem;
+    overflow: hidden;
+    border-radius: 99rem;
+    background: rgba(3, 8, 16, 0.72);
+}
+
+.progress_fill {
+    display: block;
+    width: var(--progress-percent, 100%);
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent_gradient);
+    transition: width 180ms ease-out;
+}
+
+.is_indeterminate .progress_fill {
+    background: linear-gradient(
+        90deg,
+        rgba(var(--accent_color_rgb), 0.2) 0%,
+        rgba(var(--accent_color_rgb), 0.9) 45%,
+        rgba(var(--accent_color_rgb), 0.2) 100%
+    );
+    background-position: 0 50%;
+    background-size: 180% 100%;
+    animation: blocking_progress_indeterminate 1.2s ease-in-out infinite;
+}
+
+.progress_text {
+    margin-top: 1rem;
+    color: var(--dark_300_color);
+    font-size: 1.2rem;
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+.elapsed {
+    margin-top: 0.45rem;
+    color: var(--dark_400_color);
+    font-size: 1.1rem;
+    line-height: 1.4;
+}
+
+@keyframes blocking_overlay_in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes blocking_card_in {
+    from {
+        opacity: 0;
+        transform: translateY(0.8rem);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes blocking_progress_indeterminate {
+    from { background-position: 100% 50%; }
+    to { background-position: -100% 50%; }
+}
+
+@media (max-width: 44rem) {
+    .overlay {
+        padding: 1rem;
+    }
+
+    .card {
+        width: calc(100% - 1.2rem);
+        max-height: calc(100% - 1.2rem);
+        padding: 2rem 1.6rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .overlay,
+    .card,
+    .progress_fill {
+        animation: none;
+        transition: none;
+    }
+
+    .is_indeterminate .progress_fill {
+        background-position: 50% 50%;
+    }
+}
+
+:global(.performance_mode) .overlay {
+    background: rgb(4 8 16 / 92%);
+    backdrop-filter: none;
+    animation: none;
+}
+
+:global(.performance_mode) .card {
+    box-shadow: none;
+    animation: none;
+}
+
+:global(.performance_mode) .progress_fill {
+    filter: none;
+    animation: none;
+    transition: none;
+}
+
+:global(.performance_mode) .is_indeterminate .progress_fill {
+    background-position: 50% 50%;
+}
