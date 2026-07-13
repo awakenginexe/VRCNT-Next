@@ -70,6 +70,7 @@ class Controller:
         self.run: Callable[[int, str, Any], None] = _noop_run
         self.device_access_status: bool = True
         self._transcription_restart_lock = RLock()
+        self._translation_activation_lock = RLock()
         self._transcription_shutdown_condition = Condition(
             self._transcription_restart_lock
         )
@@ -2059,7 +2060,54 @@ class Controller:
         except Exception:
             errorLogging()
 
-    def _translationActivationError(self, error: Exception) -> dict:
+    @staticmethod
+    def _collapseTranslationProviderSelection(selection):
+        providers = boundedTranslationProviderSnapshot(selection)
+        if not providers:
+            return ""
+        if len(providers) == 1:
+            return providers[0]
+        return list(providers)
+
+    @classmethod
+    def _normalizeTranslationEngineMap(cls, selections) -> dict:
+        if not isinstance(selections, dict):
+            return {}
+        return {
+            tab_no: cls._collapseTranslationProviderSelection(selection)
+            for tab_no, selection in selections.items()
+        }
+
+    @staticmethod
+    def _isCTranslate2Primary(selection) -> bool:
+        providers = boundedTranslationProviderSnapshot(selection)
+        return bool(providers and providers[0] == "CTranslate2")
+
+    def _ensureCTranslate2Ready(self, selection) -> None:
+        if not self._isCTranslate2Primary(selection):
+            return
+        if (
+            model.isLoadedCTranslate2Model() is False
+            or model.isChangedTranslatorParameters() is True
+        ):
+            printLog("Loading CTranslate2 translation model")
+            model.changeTranslatorCTranslate2Model()
+            model.setChangedTranslatorParameters(False)
+
+    @staticmethod
+    def _releaseCTranslate2() -> None:
+        try:
+            if model.isLoadedCTranslate2Model() is True:
+                model.unloadTranslatorCTranslate2Model()
+        except Exception:
+            errorLogging()
+
+    def _translationActivationError(
+        self,
+        error: Exception,
+        *,
+        preserve_enabled: bool = False,
+    ) -> dict:
         try:
             is_vram_error, _error_message = model.detectVRAMError(error)
         except Exception:
@@ -2073,10 +2121,11 @@ class Controller:
                 "error_translation_enable_vram_overflow",
                 response,
             )
-            disabled_response = self._activationErrorResponse(
-                ErrorCode.TRANSLATION_DISABLED_VRAM
-            )
-            self._safeActivationEvent("enable_translation", disabled_response)
+            if preserve_enabled is False:
+                disabled_response = self._activationErrorResponse(
+                    ErrorCode.TRANSLATION_DISABLED_VRAM
+                )
+                self._safeActivationEvent("enable_translation", disabled_response)
             return response
         errorLogging()
         return self._activationErrorResponse(
@@ -2085,34 +2134,32 @@ class Controller:
         )
 
     def setEnableTranslation(self, *args, **kwargs) -> dict:
-        if config.ENABLE_TRANSLATION is True:
-            return {"status": 200, "result": True}
+        with self._translation_activation_lock:
+            selected_engine = config.SELECTED_TRANSLATION_ENGINES.get(
+                config.SELECTED_TAB_NO,
+                "CTranslate2",
+            )
+            normalized_selection = self._collapseTranslationProviderSelection(
+                selected_engine
+            )
+            config.SELECTED_TRANSLATION_ENGINES[config.SELECTED_TAB_NO] = (
+                normalized_selection
+            )
+            try:
+                self._ensureCTranslate2Ready(normalized_selection)
+                if config.ENABLE_TRANSLATION is True:
+                    return {"status": 200, "result": True}
+                config.ENABLE_TRANSLATION = True
+                return {"status": 200, "result": True}
+            except Exception as error:
+                config.ENABLE_TRANSLATION = False
+                return self._translationActivationError(error)
 
-        selected_engine = config.SELECTED_TRANSLATION_ENGINES.get(
-            config.SELECTED_TAB_NO,
-            "CTranslate2",
-        )
-        selected_engines = normalizeTranslationEngineSelection(selected_engine)
-        try:
-            if "CTranslate2" in selected_engines:
-                if (
-                    model.isLoadedCTranslate2Model() is False
-                    or model.isChangedTranslatorParameters() is True
-                ):
-                    printLog("Loading CTranslate2 translation model")
-                    model.changeTranslatorCTranslate2Model()
-                    model.setChangedTranslatorParameters(False)
-            config.ENABLE_TRANSLATION = True
-            return {"status": 200, "result": True}
-        except Exception as error:
+    def setDisableTranslation(self, *args, **kwargs) -> dict:
+        with self._translation_activation_lock:
             config.ENABLE_TRANSLATION = False
-            return self._translationActivationError(error)
-
-    @staticmethod
-    def setDisableTranslation(*args, **kwargs) -> dict:
-        if config.ENABLE_TRANSLATION is True:
-            config.ENABLE_TRANSLATION = False
-        return {"status":200, "result":config.ENABLE_TRANSLATION}
+            self._releaseCTranslate2()
+            return {"status": 200, "result": config.ENABLE_TRANSLATION}
 
     @staticmethod
     def setEnableForeground(*args, **kwargs) -> dict:
@@ -2169,14 +2216,48 @@ class Controller:
     def getSpeakerDeviceList(*args, **kwargs) -> dict:
         return {"status":200, "result": model.getListSpeakerDevice()}
 
-    @staticmethod
-    def getSelectedTranslationEngines(*args, **kwargs) -> dict:
+    @classmethod
+    def getSelectedTranslationEngines(cls, *args, **kwargs) -> dict:
+        config.SELECTED_TRANSLATION_ENGINES = cls._normalizeTranslationEngineMap(
+            config.SELECTED_TRANSLATION_ENGINES
+        )
         return {"status":200, "result":config.SELECTED_TRANSLATION_ENGINES}
 
-    @staticmethod
-    def setSelectedTranslationEngines(data:dict, *args, **kwargs) -> dict:
-        config.SELECTED_TRANSLATION_ENGINES = data
-        return {"status":200,"result":config.SELECTED_TRANSLATION_ENGINES}
+    def setSelectedTranslationEngines(self, data:dict, *args, **kwargs) -> dict:
+        with self._translation_activation_lock:
+            normalized = self._normalizeTranslationEngineMap(data)
+            current_selection = config.SELECTED_TRANSLATION_ENGINES.get(
+                config.SELECTED_TAB_NO,
+                "",
+            )
+            proposed_selection = normalized.get(config.SELECTED_TAB_NO, "")
+
+            if config.ENABLE_TRANSLATION is False:
+                config.SELECTED_TRANSLATION_ENGINES = normalized
+                return {
+                    "status": 200,
+                    "result": config.SELECTED_TRANSLATION_ENGINES,
+                }
+
+            if self._isCTranslate2Primary(proposed_selection):
+                try:
+                    self._ensureCTranslate2Ready(proposed_selection)
+                except Exception as error:
+                    return self._translationActivationError(
+                        error,
+                        preserve_enabled=True,
+                    )
+                config.SELECTED_TRANSLATION_ENGINES = normalized
+            elif self._isCTranslate2Primary(current_selection):
+                config.SELECTED_TRANSLATION_ENGINES = normalized
+                self._releaseCTranslate2()
+            else:
+                config.SELECTED_TRANSLATION_ENGINES = normalized
+
+            return {
+                "status": 200,
+                "result": config.SELECTED_TRANSLATION_ENGINES,
+            }
 
     @staticmethod
     def getSelectedYourLanguages(*args, **kwargs) -> dict:
@@ -4423,12 +4504,14 @@ class Controller:
 
     def updateTranslationEngineAndEngineList(self):
         engines = config.SELECTED_TRANSLATION_ENGINES
-        selected_engines = normalizeTranslationEngineSelection(engines[config.SELECTED_TAB_NO])
+        selected_engines = list(
+            boundedTranslationProviderSnapshot(engines[config.SELECTED_TAB_NO])
+        )
         selectable_engines = self.getTranslationEngines()["result"]
         selected_engines = [engine for engine in selected_engines if engine in selectable_engines]
-        if len(selected_engines) == 0:
-            selected_engines = ["CTranslate2"]
-        engines[config.SELECTED_TAB_NO] = collapseTranslationEngineSelection(selected_engines)
+        engines[config.SELECTED_TAB_NO] = self._collapseTranslationProviderSelection(
+            selected_engines
+        )
         config.SELECTED_TRANSLATION_ENGINES = engines
 
         self.run(200, self.run_mapping["selected_translation_engines"], config.SELECTED_TRANSLATION_ENGINES)

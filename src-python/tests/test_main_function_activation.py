@@ -24,6 +24,7 @@ def _controller_for_activation():
     controller = object.__new__(Controller)
     controller.device_access_status = True
     controller._transcription_restart_lock = threading.RLock()
+    controller._translation_activation_lock = threading.RLock()
     controller._transcription_shutdown_requested = threading.Event()
     controller._transcription_shutdown_state = "running"
     controller.run = Mock()
@@ -429,6 +430,221 @@ class MainFunctionActivationTests(unittest.TestCase):
                 {"status": 200, "result": True},
             )
             change_model.assert_not_called()
+
+    def test_selecting_ctranslate2_while_translation_is_off_defers_loading(self):
+        controller = _controller_for_activation()
+        with (
+            patch.multiple(
+                controller_module.config,
+                _ENABLE_TRANSLATION=False,
+                _SELECTED_TAB_NO="1",
+                _SELECTED_TRANSLATION_ENGINES={"1": "Google"},
+            ),
+            patch.object(model_module.model, "changeTranslatorCTranslate2Model") as change_model,
+        ):
+            response = controller.setSelectedTranslationEngines({"1": "CTranslate2"})
+
+            self.assertEqual(response, {"status": 200, "result": {"1": "CTranslate2"}})
+            self.assertEqual(
+                controller_module.config.SELECTED_TRANSLATION_ENGINES,
+                {"1": "CTranslate2"},
+            )
+            change_model.assert_not_called()
+
+    def test_enabled_cloud_to_ctranslate2_waits_for_load_before_commit(self):
+        controller = _controller_for_activation()
+        load_entered = threading.Event()
+        release_load = threading.Event()
+        loaded = False
+        responses = []
+
+        def load_model():
+            nonlocal loaded
+            load_entered.set()
+            self.assertTrue(release_load.wait(WAIT_SECONDS))
+            loaded = True
+
+        try:
+            with (
+                patch.multiple(
+                    controller_module.config,
+                    _ENABLE_TRANSLATION=True,
+                    _SELECTED_TAB_NO="1",
+                    _SELECTED_TRANSLATION_ENGINES={"1": "Google"},
+                ),
+                patch.object(
+                    model_module.model,
+                    "isLoadedCTranslate2Model",
+                    side_effect=lambda: loaded,
+                ),
+                patch.object(model_module.model, "isChangedTranslatorParameters", return_value=False),
+                patch.object(model_module.model, "changeTranslatorCTranslate2Model", side_effect=load_model) as change_model,
+                patch.object(model_module.model, "setChangedTranslatorParameters"),
+            ):
+                worker = threading.Thread(
+                    target=lambda: responses.append(
+                        controller.setSelectedTranslationEngines({"1": "CTranslate2"})
+                    )
+                )
+                worker.start()
+                self.assertTrue(load_entered.wait(WAIT_SECONDS))
+                self.assertEqual(controller_module.config.SELECTED_TRANSLATION_ENGINES, {"1": "Google"})
+                self.assertEqual(responses, [])
+                release_load.set()
+                worker.join(WAIT_SECONDS)
+
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(responses, [{"status": 200, "result": {"1": "CTranslate2"}}])
+                self.assertEqual(controller_module.config.SELECTED_TRANSLATION_ENGINES, {"1": "CTranslate2"})
+                change_model.assert_called_once_with()
+        finally:
+            release_load.set()
+
+    def test_enabled_ctranslate2_load_failure_preserves_cloud_translation(self):
+        controller = _controller_for_activation()
+        with (
+            patch.multiple(
+                controller_module.config,
+                _ENABLE_TRANSLATION=True,
+                _SELECTED_TAB_NO="1",
+                _SELECTED_TRANSLATION_ENGINES={"1": "Google"},
+            ),
+            patch.object(model_module.model, "isLoadedCTranslate2Model", return_value=False),
+            patch.object(model_module.model, "isChangedTranslatorParameters", return_value=False),
+            patch.object(model_module.model, "changeTranslatorCTranslate2Model", side_effect=RuntimeError("load failed")),
+            patch.object(model_module.model, "detectVRAMError", return_value=(False, None)),
+        ):
+            response = controller.setSelectedTranslationEngines({"1": "CTranslate2"})
+
+            self.assertEqual(response["status"], 500)
+            self.assertEqual(response["result"]["error_code"], "TRANSLATION_ENABLE_FAILED")
+            self.assertEqual(controller_module.config.SELECTED_TRANSLATION_ENGINES, {"1": "Google"})
+            self.assertIs(controller_module.config.ENABLE_TRANSLATION, True)
+
+    def test_switching_away_from_ctranslate2_commits_online_then_unloads(self):
+        controller = _controller_for_activation()
+        unload_entered = threading.Event()
+        release_unload = threading.Event()
+        responses = []
+        selection_during_unload = []
+
+        def unload_model():
+            selection_during_unload.append(
+                controller_module.config.SELECTED_TRANSLATION_ENGINES["1"]
+            )
+            unload_entered.set()
+            self.assertTrue(release_unload.wait(WAIT_SECONDS))
+
+        try:
+            with (
+                patch.multiple(
+                    controller_module.config,
+                    _ENABLE_TRANSLATION=True,
+                    _SELECTED_TAB_NO="1",
+                    _SELECTED_TRANSLATION_ENGINES={"1": "CTranslate2"},
+                ),
+                patch.object(model_module.model, "isLoadedCTranslate2Model", return_value=True),
+                patch.object(model_module.model, "unloadTranslatorCTranslate2Model", side_effect=unload_model) as unload,
+            ):
+                worker = threading.Thread(
+                    target=lambda: responses.append(
+                        controller.setSelectedTranslationEngines({"1": "Google"})
+                    )
+                )
+                worker.start()
+                self.assertTrue(unload_entered.wait(WAIT_SECONDS))
+                self.assertEqual(selection_during_unload, ["Google"])
+                self.assertEqual(responses, [])
+                release_unload.set()
+                worker.join(WAIT_SECONDS)
+
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(responses, [{"status": 200, "result": {"1": "Google"}}])
+                unload.assert_called_once_with()
+        finally:
+            release_unload.set()
+
+    def test_disabling_ctranslate2_unloads_and_next_enable_loads_again(self):
+        controller = _controller_for_activation()
+        loaded = True
+
+        def unload_model():
+            nonlocal loaded
+            loaded = False
+
+        def load_model():
+            nonlocal loaded
+            loaded = True
+
+        with (
+            patch.multiple(
+                controller_module.config,
+                _ENABLE_TRANSLATION=True,
+                _SELECTED_TAB_NO="1",
+                _SELECTED_TRANSLATION_ENGINES={"1": "CTranslate2"},
+            ),
+            patch.object(model_module.model, "isLoadedCTranslate2Model", side_effect=lambda: loaded),
+            patch.object(model_module.model, "isChangedTranslatorParameters", return_value=False),
+            patch.object(model_module.model, "unloadTranslatorCTranslate2Model", side_effect=unload_model) as unload,
+            patch.object(model_module.model, "changeTranslatorCTranslate2Model", side_effect=load_model) as load,
+            patch.object(model_module.model, "setChangedTranslatorParameters"),
+        ):
+            self.assertEqual(controller.setDisableTranslation(), {"status": 200, "result": False})
+            self.assertFalse(loaded)
+            self.assertEqual(controller.setEnableTranslation(), {"status": 200, "result": True})
+            self.assertTrue(loaded)
+            unload.assert_called_once_with()
+            load.assert_called_once_with()
+
+    def test_online_primary_normalization_drops_ctranslate2_without_model_work(self):
+        controller = _controller_for_activation()
+        with (
+            patch.multiple(
+                controller_module.config,
+                _ENABLE_TRANSLATION=True,
+                _SELECTED_TAB_NO="1",
+                _SELECTED_TRANSLATION_ENGINES={"1": "Bing"},
+            ),
+            patch.object(model_module.model, "isLoadedCTranslate2Model") as is_loaded,
+            patch.object(model_module.model, "changeTranslatorCTranslate2Model") as load,
+            patch.object(model_module.model, "unloadTranslatorCTranslate2Model") as unload,
+        ):
+            response = controller.setSelectedTranslationEngines(
+                {"1": ["Google", "CTranslate2"]}
+            )
+
+            self.assertEqual(response, {"status": 200, "result": {"1": "Google"}})
+            is_loaded.assert_not_called()
+            load.assert_not_called()
+            unload.assert_not_called()
+
+    def test_language_refresh_does_not_auto_select_ctranslate2(self):
+        controller = _controller_for_activation()
+        controller.run_mapping.update({
+            "selected_translation_engines": "/run/selected_translation_engines",
+            "translation_engines": "/run/translation_engines",
+        })
+        with (
+            patch.multiple(
+                controller_module.config,
+                _ENABLE_TRANSLATION=True,
+                _SELECTED_TAB_NO="1",
+                _SELECTED_TRANSLATION_ENGINES={"1": "Google"},
+            ),
+            patch.object(
+                controller,
+                "getTranslationEngines",
+                return_value={"status": 200, "result": ["CTranslate2"]},
+            ),
+            patch.object(model_module.model, "changeTranslatorCTranslate2Model") as load,
+        ):
+            controller.updateTranslationEngineAndEngineList()
+
+            self.assertEqual(
+                controller_module.config.SELECTED_TRANSLATION_ENGINES,
+                {"1": ""},
+            )
+            load.assert_not_called()
 
     def test_ctranslate2_translation_enable_waits_for_model_readiness(self):
         controller = _controller_for_activation()
