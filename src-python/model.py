@@ -58,6 +58,7 @@ from models.websocket.websocket_server import WebSocketServer
 from models.clipboard.clipboard import Clipboard
 from models.telemetry import Telemetry
 from utils import errorLogging, setupLogger, printLog
+from errors import DeviceUnavailableError, ErrorCode
 
 TRANSCRIPT_THREAD_JOIN_TIMEOUT = 2.0
 TRANSCRIPT_STALL_RESTART_SECONDS = 90.0
@@ -1474,7 +1475,10 @@ class Model:
         try:
             return self._startMicTranscript(fnc, generation=generation)
         except Exception:
-            self.stopMicTranscript(stop_pipeline=False)
+            try:
+                self.stopMicTranscript(stop_pipeline=False)
+            except Exception:
+                errorLogging()
             raise
 
     def _startMicTranscript(self, fnc, generation: Optional[int] = None) -> bool:
@@ -1492,8 +1496,7 @@ class Model:
         selected_mic_device = [device for device in mic_device_list if device["name"] == mic_device_name]
 
         if len(selected_mic_device) == 0 or mic_device_name == "NoDevice":
-            fnc({"text": False, "language": None})
-            return False
+            raise DeviceUnavailableError(ErrorCode.DEVICE_NO_MIC)
         else:
             self.mic_audio_queue = _MetricAudioQueue(
                 PipelineSource.MIC,
@@ -1946,7 +1949,10 @@ class Model:
         try:
             return self._startSpeakerTranscript(fnc, generation=generation)
         except Exception:
-            self.stopSpeakerTranscript(stop_pipeline=False)
+            try:
+                self.stopSpeakerTranscript(stop_pipeline=False)
+            except Exception:
+                errorLogging()
             raise
 
     def _startSpeakerTranscript(
@@ -1967,10 +1973,7 @@ class Model:
         selected_speaker_device = [device for device in speaker_device_list if device["name"] == speaker_device_name]
 
         if len(selected_speaker_device) == 0 or speaker_device_name == "NoDevice":
-            # fnc may be None; only call if callable
-            if callable(fnc):
-                fnc({"text": False, "language": None})
-            return False
+            raise DeviceUnavailableError(ErrorCode.DEVICE_NO_SPEAKER)
         else:
             speaker_audio_queue = _MetricAudioQueue(
                 PipelineSource.SPEAKER,

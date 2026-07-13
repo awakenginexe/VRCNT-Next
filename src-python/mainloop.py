@@ -642,15 +642,35 @@ class Main:
 # 外部から参照可能なインスタンスを提供
 main_instance = Main(controller_instance=controller, mapping_data=mapping)
 
+
+def runControllerInitialization(main_instance: Main) -> bool:
+    """Run core startup and publish readiness only after it completes."""
+    try:
+        main_instance.controller.init()
+    except Exception:
+        try:
+            main_instance.controller.initializationStatus(
+                "",
+                "",
+                visible=True,
+                phase="error",
+                message_key="blocking_operation.startup_failed",
+                detail_key="blocking_operation.startup_failed_detail",
+            )
+        except Exception:
+            errorLogging()
+        errorLogging()
+        return False
+
+    for endpoint in main_instance.mapping.values():
+        endpoint["status"] = True
+    return True
+
 if __name__ == "__main__":
     main_instance.startReceiver()
     main_instance.startHandler()
 
     main_instance.controller.setWatchdogCallback(main_instance.stop)
-    main_instance.controller.init()
-
-    # mappingのすべてのstatusをTrueにする
-    for key in mapping.keys():
-        mapping[key]["status"] = True
+    runControllerInitialization(main_instance)
 
     main_instance.start()

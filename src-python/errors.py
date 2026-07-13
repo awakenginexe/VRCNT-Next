@@ -29,6 +29,7 @@ class ErrorCode(str, Enum):
     TRANSLATION_VRAM_SPEAKER = "TRANSLATION_VRAM_SPEAKER"
     TRANSLATION_VRAM_ENABLE = "TRANSLATION_VRAM_ENABLE"
     TRANSLATION_DISABLED_VRAM = "TRANSLATION_DISABLED_VRAM"
+    TRANSLATION_ENABLE_FAILED = "TRANSLATION_ENABLE_FAILED"
     
     # ============================================================================
     # 音声認識関連エラー (TRANSCRIPTION_*)
@@ -37,6 +38,7 @@ class ErrorCode(str, Enum):
     TRANSCRIPTION_VRAM_SPEAKER = "TRANSCRIPTION_VRAM_SPEAKER"
     TRANSCRIPTION_SEND_DISABLED_VRAM = "TRANSCRIPTION_SEND_DISABLED_VRAM"
     TRANSCRIPTION_RECEIVE_DISABLED_VRAM = "TRANSCRIPTION_RECEIVE_DISABLED_VRAM"
+    TRANSCRIPTION_START_FAILED = "TRANSCRIPTION_START_FAILED"
     
     # ============================================================================
     # ウェイトダウンロード関連エラー (WEIGHT_*)
@@ -112,6 +114,19 @@ class ErrorCode(str, Enum):
     GENERAL_UNKNOWN = "GENERAL_UNKNOWN"
 
 
+class DeviceUnavailableError(RuntimeError):
+    """Typed readiness failure raised before a transcription source starts."""
+
+    def __init__(self, error_code: ErrorCode) -> None:
+        if error_code not in (
+            ErrorCode.DEVICE_NO_MIC,
+            ErrorCode.DEVICE_NO_SPEAKER,
+        ):
+            raise ValueError("device error code required")
+        self.error_code = error_code
+        super().__init__(error_code.value)
+
+
 class ErrorCategory(str, Enum):
     """エラーカテゴリ"""
     DEVICE = "device"
@@ -181,6 +196,12 @@ ERROR_METADATA: Dict[ErrorCode, Dict[str, Any]] = {
         "severity": "critical",
         "user_action_required": True,
     },
+    ErrorCode.TRANSLATION_ENABLE_FAILED: {
+        "category": ErrorCategory.TRANSLATION,
+        "message": "",
+        "severity": "error",
+        "user_action_required": False,
+    },
     
     # 音声認識エラー
     ErrorCode.TRANSCRIPTION_VRAM_MIC: {
@@ -206,6 +227,12 @@ ERROR_METADATA: Dict[ErrorCode, Dict[str, Any]] = {
         "message": "Transcription receive disabled due to VRAM overflow",
         "severity": "critical",
         "user_action_required": True,
+    },
+    ErrorCode.TRANSCRIPTION_START_FAILED: {
+        "category": ErrorCategory.TRANSCRIPTION,
+        "message": "",
+        "severity": "error",
+        "user_action_required": False,
     },
     
     # ウェイトダウンロードエラー

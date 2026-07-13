@@ -38,7 +38,7 @@ except ImportError:
                 break
         return tuple(providers)
 from utils import removeLog, printLog, errorLogging, isConnectedNetwork, isValidIpAddress, isAvailableWebSocketServer
-from errors import ErrorCode, VRCTError
+from errors import DeviceUnavailableError, ErrorCode, VRCTError
 from models.transcription.transcription_languages import transcription_lang
 from models.transcription.transcription_whisper import DEFAULT_WHISPER_WEIGHT_TYPE
 from models.transcription.transcription_vosk import getVoskModelMeta
@@ -2005,52 +2005,88 @@ class Controller:
     # def getMaxSpeakerThreshold(*args, **kwargs) -> dict:
     #     return {"status":200, "result":config.MAX_SPEAKER_THRESHOLD}
 
+    @staticmethod
+    def _activationErrorResponse(
+        error_code: ErrorCode,
+        *,
+        status: int = 400,
+        message: str = "",
+    ) -> dict:
+        if not message:
+            message = VRCTError.create_error_response(
+                error_code,
+                data=False,
+            )["result"]["message"]
+        return {
+            "status": status,
+            "result": {
+                "error_code": error_code.value,
+                "message": message,
+                "data": False,
+            },
+        }
+
+    def _safeActivationEvent(
+        self,
+        endpoint_key: str,
+        response: dict,
+    ) -> None:
+        endpoint = self.run_mapping.get(endpoint_key)
+        if endpoint is None:
+            return
+        try:
+            self.run(response["status"], endpoint, response["result"])
+        except Exception:
+            errorLogging()
+
+    def _translationActivationError(self, error: Exception) -> dict:
+        try:
+            is_vram_error, _error_message = model.detectVRAMError(error)
+        except Exception:
+            errorLogging()
+            is_vram_error = False
+        if is_vram_error:
+            response = self._activationErrorResponse(
+                ErrorCode.TRANSLATION_VRAM_ENABLE
+            )
+            self._safeActivationEvent(
+                "error_translation_enable_vram_overflow",
+                response,
+            )
+            disabled_response = self._activationErrorResponse(
+                ErrorCode.TRANSLATION_DISABLED_VRAM
+            )
+            self._safeActivationEvent("enable_translation", disabled_response)
+            return response
+        errorLogging()
+        return self._activationErrorResponse(
+            ErrorCode.TRANSLATION_ENABLE_FAILED,
+            status=500,
+        )
+
     def setEnableTranslation(self, *args, **kwargs) -> dict:
-        if config.ENABLE_TRANSLATION is False:
-            selected_engine = config.SELECTED_TRANSLATION_ENGINES.get(config.SELECTED_TAB_NO, "CTranslate2")
-            selected_engines = normalizeTranslationEngineSelection(selected_engine)
-            if "CTranslate2" not in selected_engines:
-                config.ENABLE_TRANSLATION = True
-            elif model.isLoadedCTranslate2Model() is False or model.isChangedTranslatorParameters() is True:
-                try:
+        if config.ENABLE_TRANSLATION is True:
+            return {"status": 200, "result": True}
+
+        selected_engine = config.SELECTED_TRANSLATION_ENGINES.get(
+            config.SELECTED_TAB_NO,
+            "CTranslate2",
+        )
+        selected_engines = normalizeTranslationEngineSelection(selected_engine)
+        try:
+            if "CTranslate2" in selected_engines:
+                if (
+                    model.isLoadedCTranslate2Model() is False
+                    or model.isChangedTranslatorParameters() is True
+                ):
                     printLog("Loading CTranslate2 translation model")
                     model.changeTranslatorCTranslate2Model()
                     model.setChangedTranslatorParameters(False)
-                    config.ENABLE_TRANSLATION = True
-                except Exception as e:
-                    # VRAM不足エラーの検出（デバイス切り替え時）
-                    is_vram_error, error_message = model.detectVRAMError(e)
-                    if is_vram_error:
-                        # Defaultのデバイス設定に戻す
-                        printLog("VRAM error detected, reverting device setting")
-                        error_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_VRAM_ENABLE,
-                            data=error_message
-                        )
-                        self.run(
-                            error_response["status"],
-                            self.run_mapping["error_translation_enable_vram_overflow"],
-                            error_response["result"],
-                        )
-                        self.setDisableTranslation()
-                        disable_response = VRCTError.create_error_response(
-                            ErrorCode.TRANSLATION_DISABLED_VRAM,
-                            data=False
-                        )
-                        self.run(
-                            disable_response["status"],
-                            self.run_mapping["enable_translation"],
-                            disable_response["result"],
-                        )
-                        model.changeTranslatorCTranslate2Model()
-                        model.setChangedTranslatorParameters(False)
-                    else:
-                        # その他のエラーは通常通り処理
-                        errorLogging()
-                        return {"status":500, "result":config.ENABLE_TRANSLATION}
-            else:
-                config.ENABLE_TRANSLATION = True
-        return {"status":200, "result":config.ENABLE_TRANSLATION}
+            config.ENABLE_TRANSLATION = True
+            return {"status": 200, "result": True}
+        except Exception as error:
+            config.ENABLE_TRANSLATION = False
+            return self._translationActivationError(error)
 
     @staticmethod
     def setDisableTranslation(*args, **kwargs) -> dict:
@@ -3799,11 +3835,62 @@ class Controller:
         Popen(['explorer', config.PATH_DATA.replace('/', '\\')], shell=True)
         return {"status":200, "result":True}
 
+    def _transcriptionActivationError(
+        self,
+        source: PipelineSource,
+        error: Exception,
+    ) -> dict:
+        if isinstance(error, DeviceUnavailableError):
+            return self._activationErrorResponse(error.error_code)
+
+        try:
+            is_vram_error, _error_message = model.detectVRAMError(error)
+        except Exception:
+            errorLogging()
+            is_vram_error = False
+        if is_vram_error:
+            if source is PipelineSource.MIC:
+                error_code = ErrorCode.TRANSCRIPTION_VRAM_MIC
+                disabled_code = ErrorCode.TRANSCRIPTION_SEND_DISABLED_VRAM
+                error_endpoint = "error_transcription_mic_vram_overflow"
+                state_endpoint = "enable_transcription_send"
+            else:
+                error_code = ErrorCode.TRANSCRIPTION_VRAM_SPEAKER
+                disabled_code = ErrorCode.TRANSCRIPTION_RECEIVE_DISABLED_VRAM
+                error_endpoint = "error_transcription_speaker_vram_overflow"
+                state_endpoint = "enable_transcription_receive"
+            response = self._activationErrorResponse(error_code)
+            self._safeActivationEvent(error_endpoint, response)
+            self._safeActivationEvent(
+                state_endpoint,
+                self._activationErrorResponse(disabled_code),
+            )
+            return response
+
+        errorLogging()
+        return self._activationErrorResponse(
+            ErrorCode.TRANSCRIPTION_START_FAILED,
+            status=500,
+        )
+
     def setEnableTranscriptionSend(self, *args, **kwargs) -> dict:
-        if config.ENABLE_TRANSCRIPTION_SEND is False:
-            config.ENABLE_TRANSCRIPTION_SEND = True
-            self.startThreadingTranscriptionSendMessage()
-        return {"status":200, "result":config.ENABLE_TRANSCRIPTION_SEND}
+        if config.ENABLE_TRANSCRIPTION_SEND is True:
+            return {"status": 200, "result": True}
+        config.ENABLE_TRANSCRIPTION_SEND = True
+        try:
+            if self.startTranscriptionSendMessage() is not True:
+                raise RuntimeError("transcription activation was cancelled")
+            return {"status": 200, "result": True}
+        except Exception as error:
+            config.ENABLE_TRANSCRIPTION_SEND = False
+            try:
+                self.stopTranscriptionSendMessage()
+            except Exception:
+                errorLogging()
+            return self._transcriptionActivationError(
+                PipelineSource.MIC,
+                error,
+            )
 
     def setDisableTranscriptionSend(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSCRIPTION_SEND is True:
@@ -3812,10 +3899,23 @@ class Controller:
         return {"status":200, "result":config.ENABLE_TRANSCRIPTION_SEND}
 
     def setEnableTranscriptionReceive(self, *args, **kwargs) -> dict:
-        if config.ENABLE_TRANSCRIPTION_RECEIVE is False:
-            config.ENABLE_TRANSCRIPTION_RECEIVE = True
-            self.startThreadingTranscriptionReceiveMessage()
-        return {"status":200, "result":config.ENABLE_TRANSCRIPTION_RECEIVE}
+        if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
+            return {"status": 200, "result": True}
+        config.ENABLE_TRANSCRIPTION_RECEIVE = True
+        try:
+            if self.startTranscriptionReceiveMessage() is not True:
+                raise RuntimeError("transcription activation was cancelled")
+            return {"status": 200, "result": True}
+        except Exception as error:
+            config.ENABLE_TRANSCRIPTION_RECEIVE = False
+            try:
+                self.stopTranscriptionReceiveMessage()
+            except Exception:
+                errorLogging()
+            return self._transcriptionActivationError(
+                PipelineSource.SPEAKER,
+                error,
+            )
 
     def setDisableTranscriptionReceive(self, *args, **kwargs) -> dict:
         if config.ENABLE_TRANSCRIPTION_RECEIVE is True:
@@ -4136,58 +4236,24 @@ class Controller:
         if not self._waitForDeviceAccessOrShutdown():
             return False
         self.device_access_status = False
-        pipeline_ensured = False
-        session_established = False
         try:
             model.ensureSourcePipeline(
                 PipelineSource.MIC,
                 self._sourcePipelineCallbacks(PipelineSource.MIC),
                 self._sourcePipelineGeneration(PipelineSource.MIC),
             )
-            pipeline_ensured = True
             session_established = model.startMicTranscript(self.micMessage)
             if session_established is not True:
-                pipeline_ensured = False
                 model.stopSourcePipeline(PipelineSource.MIC)
-        except Exception as e:
-            if pipeline_ensured:
-                pipeline_ensured = False
-                try:
-                    model.stopSourcePipeline(PipelineSource.MIC)
-                except Exception:
-                    errorLogging()
-            # VRAM不足エラーの検出
-            is_vram_error, error_message = model.detectVRAMError(e)
-            if is_vram_error:
-                response = VRCTError.create_error_response(
-                    ErrorCode.TRANSCRIPTION_VRAM_MIC,
-                    data=error_message
-                )
-                self.run(
-                    response["status"],
-                    self.run_mapping["error_transcription_mic_vram_overflow"],
-                    response["result"],
-                )
-                # ここでマイクの音声認識を停止
-                model.stopMicTranscript(stop_pipeline=False)
-                config.ENABLE_TRANSCRIPTION_SEND = False
-                disable_response = VRCTError.create_error_response(
-                    ErrorCode.TRANSCRIPTION_SEND_DISABLED_VRAM,
-                    data=False
-                )
-                self.run(
-                    disable_response["status"],
-                    self.run_mapping["enable_transcription_send"],
-                    disable_response["result"],
-                )
-            else:
-                # その他のエラーは通常通り処理
+            return session_established is True
+        except Exception:
+            try:
+                model.stopSourcePipeline(PipelineSource.MIC)
+            except Exception:
                 errorLogging()
-                config.ENABLE_TRANSCRIPTION_SEND = False
-                self.run(200, self.run_mapping["enable_transcription_send"], False)
+            raise
         finally:
             self.device_access_status = True
-        return session_established is True
 
     def stopTranscriptionSendMessage(self) -> None:
         with self._transcription_restart_lock:
@@ -4217,58 +4283,24 @@ class Controller:
         if not self._waitForDeviceAccessOrShutdown():
             return False
         self.device_access_status = False
-        pipeline_ensured = False
-        session_established = False
         try:
             model.ensureSourcePipeline(
                 PipelineSource.SPEAKER,
                 self._sourcePipelineCallbacks(PipelineSource.SPEAKER),
                 self._sourcePipelineGeneration(PipelineSource.SPEAKER),
             )
-            pipeline_ensured = True
             session_established = model.startSpeakerTranscript(self.speakerMessage)
             if session_established is not True:
-                pipeline_ensured = False
                 model.stopSourcePipeline(PipelineSource.SPEAKER)
-        except Exception as e:
-            if pipeline_ensured:
-                pipeline_ensured = False
-                try:
-                    model.stopSourcePipeline(PipelineSource.SPEAKER)
-                except Exception:
-                    errorLogging()
-            # VRAM不足エラーの検出
-            is_vram_error, error_message = model.detectVRAMError(e)
-            if is_vram_error:
-                response = VRCTError.create_error_response(
-                    ErrorCode.TRANSCRIPTION_VRAM_SPEAKER,
-                    data=error_message
-                )
-                self.run(
-                    response["status"],
-                    self.run_mapping["error_transcription_speaker_vram_overflow"],
-                    response["result"],
-                )
-                # ここでスピーカーの音声認識を停止
-                model.stopSpeakerTranscript(stop_pipeline=False)
-                config.ENABLE_TRANSCRIPTION_RECEIVE = False
-                disable_response = VRCTError.create_error_response(
-                    ErrorCode.TRANSCRIPTION_RECEIVE_DISABLED_VRAM,
-                    data=False
-                )
-                self.run(
-                    disable_response["status"],
-                    self.run_mapping["enable_transcription_receive"],
-                    disable_response["result"],
-                )
-            else:
-                # その他のエラーは通常通り処理
+            return session_established is True
+        except Exception:
+            try:
+                model.stopSourcePipeline(PipelineSource.SPEAKER)
+            except Exception:
                 errorLogging()
-                config.ENABLE_TRANSCRIPTION_RECEIVE = False
-                self.run(200, self.run_mapping["enable_transcription_receive"], False)
+            raise
         finally:
             self.device_access_status = True
-        return session_established is True
 
     def stopTranscriptionReceiveMessage(self) -> None:
         with self._transcription_restart_lock:
@@ -4628,7 +4660,15 @@ class Controller:
     def initializationProgress(self, progress):
         self.run(200, self.run_mapping["initialization_progress"], progress)
 
-    def initializationStatus(self, message: str, detail: str = "", visible: bool = True, phase: str = "starting"):
+    def initializationStatus(
+        self,
+        message: str,
+        detail: str = "",
+        visible: bool = True,
+        phase: str = "starting",
+        message_key: str = "",
+        detail_key: str = "",
+    ):
         self.run(
             200,
             self.run_mapping["initialization_status"],
@@ -4637,6 +4677,8 @@ class Controller:
                 "detail": detail,
                 "visible": visible,
                 "phase": phase,
+                "message_key": message_key,
+                "detail_key": detail_key,
             },
         )
 
