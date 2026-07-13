@@ -34,3 +34,15 @@ test("release workflow retries external Python dependency failures", () => {
     assert.match(workflow, /Start-Sleep -Seconds \$delaySeconds/);
     assert.match(workflow, /failed after \$maxAttempts attempts/);
 });
+
+
+test("release workflow retries transient Hugging Face upload failures", () => {
+    assert.match(workflow, /\$uploadMaxAttempts\s*=\s*4/);
+    assert.match(
+        workflow,
+        /for \(\$uploadAttempt = 1; \$uploadAttempt -le \$uploadMaxAttempts; \$uploadAttempt\+\+\)/,
+    );
+    assert.match(workflow, /\$script \| python -/);
+    assert.match(workflow, /Hugging Face upload attempt \$uploadAttempt failed/);
+    assert.match(workflow, /Hugging Face upload failed after \$uploadMaxAttempts attempts/);
+});

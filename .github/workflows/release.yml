@@ -230,7 +230,22 @@ jobs:
           )
           print(f"Uploaded release files to {repo_id} and tagged {release_tag} at {commit_info.oid}")
           '@
-          $script | python -
+
+          $uploadMaxAttempts = 4
+          for ($uploadAttempt = 1; $uploadAttempt -le $uploadMaxAttempts; $uploadAttempt++) {
+            $script | python -
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+
+            if ($uploadAttempt -eq $uploadMaxAttempts) {
+              throw "Hugging Face upload failed after $uploadMaxAttempts attempts."
+            }
+
+            $delaySeconds = 30 * [Math]::Pow(2, $uploadAttempt - 1)
+            Write-Warning "Hugging Face upload attempt $uploadAttempt failed; retrying in $delaySeconds seconds."
+            Start-Sleep -Seconds $delaySeconds
+          }
 
       - name: Verify Hugging Face release URLs
         env:
