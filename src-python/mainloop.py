@@ -20,6 +20,8 @@ run_mapping = {
 
     "transcription_mic":"/run/transcription_send_mic_message",
     "transcription_speaker":"/run/transcription_receive_speaker_message",
+    "transcription_translation_update":"/run/transcription_translation_update",
+    "pipeline_status":"/run/pipeline_status",
 
     "check_mic_volume":"/run/check_mic_volume",
     "check_speaker_volume":"/run/check_speaker_volume",

@@ -22,7 +22,12 @@ from models.translation.translation_translator import Translator
 from models.osc.osc import OSCHandler
 from models.transcription.transcription_recorder import SelectedMicEnergyAndAudioRecorder, SelectedSpeakerEnergyAndAudioRecorder
 from models.transcription.transcription_recorder import SelectedMicEnergyRecorder, SelectedSpeakerEnergyRecorder
-from models.pipeline.pipeline_types import PipelineSource, PipelineStatusEvent
+from models.pipeline.pipeline_types import (
+    OutputConfigSnapshot,
+    PipelineSource,
+    PipelineStatusEvent,
+)
+from models.pipeline.source_pipeline import SourcePipeline
 from models.transcription.transcription_transcriber import (
     AudioTranscriber,
     TranscriberPipelineContext,
@@ -216,6 +221,9 @@ class Model:
         self.whisper_runtime_manager = WhisperRuntimeManager()
         self.transcription_pipeline_metrics: list[PipelineStatusEvent] = []
         self.transcription_recovery_requests: list[dict[str, object]] = []
+        self.mic_source_pipeline: Optional[SourcePipeline] = None
+        self.speaker_source_pipeline: Optional[SourcePipeline] = None
+        self._source_pipeline_generations: dict[PipelineSource, int] = {}
 
         self._inited = True
 
@@ -262,6 +270,124 @@ class Model:
                 "safe_to_restart": safe_to_restart,
             }
         )
+
+    @staticmethod
+    def _sourcePipelineAttribute(source: PipelineSource) -> str:
+        if source is PipelineSource.MIC:
+            return "mic_source_pipeline"
+        if source is PipelineSource.SPEAKER:
+            return "speaker_source_pipeline"
+        raise ValueError(f"unknown pipeline source: {source}")
+
+    def getSourcePipeline(self, source: PipelineSource) -> Optional[SourcePipeline]:
+        self.ensure_initialized()
+        return getattr(self, self._sourcePipelineAttribute(source), None)
+
+    def getSourcePipelineGeneration(
+        self,
+        source: PipelineSource,
+    ) -> Optional[int]:
+        self.ensure_initialized()
+        return getattr(self, "_source_pipeline_generations", {}).get(source)
+
+    def isSourcePipelineGenerationCurrent(
+        self,
+        source: PipelineSource,
+        generation: int,
+    ) -> bool:
+        self.ensure_initialized()
+        return (
+            getattr(self, "_source_pipeline_generations", {}).get(source)
+            == generation
+            and getattr(self, self._sourcePipelineAttribute(source), None) is not None
+        )
+
+    def transliterateTranscriptionMessage(
+        self,
+        message: str,
+        language: str,
+        output_config: OutputConfigSnapshot,
+    ) -> tuple[dict[str, str], ...]:
+        if language != "Japanese":
+            return ()
+        if (
+            not output_config.convert_message_to_hiragana
+            and not output_config.convert_message_to_romaji
+        ):
+            return ()
+        return tuple(
+            deepcopy(
+                self.convertMessageToTransliteration(
+                    message,
+                    hiragana=output_config.convert_message_to_hiragana,
+                    romaji=output_config.convert_message_to_romaji,
+                )
+            )
+        )
+
+    def ensureSourcePipeline(
+        self,
+        source: PipelineSource,
+        callbacks: dict[str, Callable],
+        generation: int,
+    ) -> SourcePipeline:
+        self.ensure_initialized()
+        if not hasattr(self, "_source_pipeline_generations"):
+            self._source_pipeline_generations = {}
+        attribute = self._sourcePipelineAttribute(source)
+        current = getattr(self, attribute, None)
+        current_generation = self._source_pipeline_generations.get(source)
+        if current is not None and current_generation == generation:
+            return current
+        if current is not None and current_generation is not None:
+            self.stopSourcePipeline(source)
+
+        required_callbacks = (
+            "emit_initial",
+            "emit_update",
+            "emit_metric",
+            "emit_final",
+        )
+        missing = [name for name in required_callbacks if not callable(callbacks.get(name))]
+        if missing:
+            raise ValueError(
+                "missing source pipeline callbacks: " + ", ".join(missing)
+            )
+
+        pipeline = SourcePipeline(
+            source=source,
+            translator=self.translator,
+            transliterate=self.transliterateTranscriptionMessage,
+            emit_initial=callbacks["emit_initial"],
+            emit_update=callbacks["emit_update"],
+            emit_metric=callbacks["emit_metric"],
+            emit_final=callbacks["emit_final"],
+            is_generation_current=lambda candidate: (
+                self.isSourcePipelineGenerationCurrent(source, candidate)
+            ),
+        )
+        setattr(self, attribute, pipeline)
+        self._source_pipeline_generations[source] = generation
+        try:
+            pipeline.start(generation)
+        except Exception:
+            if getattr(self, attribute, None) is pipeline:
+                setattr(self, attribute, None)
+            if self._source_pipeline_generations.get(source) == generation:
+                self._source_pipeline_generations.pop(source, None)
+            raise
+        return pipeline
+
+    def stopSourcePipeline(self, source: PipelineSource) -> None:
+        self.ensure_initialized()
+        attribute = self._sourcePipelineAttribute(source)
+        pipeline = getattr(self, attribute, None)
+        generations = getattr(self, "_source_pipeline_generations", None)
+        generation = generations.pop(source, None) if generations is not None else None
+        if getattr(self, attribute, None) is pipeline:
+            setattr(self, attribute, None)
+        if pipeline is not None and generation is not None:
+            pipeline.stop(generation, discard_pending=True)
 
     def _makeTranscriberPipelineContext(
         self,
@@ -875,7 +1001,7 @@ class Model:
             )
             or self.mic_whisper_runtime_lease is not None
         ):
-            self.stopMicTranscript()
+            self.stopMicTranscript(stop_pipeline=False)
         try:
             return self._startMicTranscript(fnc)
         except Exception:
@@ -1175,7 +1301,7 @@ class Model:
         else:
             self.resumeMicTranscript()
 
-    def stopMicTranscript(self):
+    def stopMicTranscript(self, stop_pipeline: bool = True):
         self.ensure_initialized()
         stop_event = self.mic_transcript_stop_event
         if hasattr(stop_event, "set"):
@@ -1189,6 +1315,9 @@ class Model:
         self._requestTranscriptThreadStop(thread)
         if self.mic_print_transcript is thread:
             self.mic_print_transcript = None
+
+        if stop_pipeline:
+            self.stopSourcePipeline(PipelineSource.MIC)
 
         whisper_runtime_lease = self.mic_whisper_runtime_lease
         close_error = None
@@ -1262,7 +1391,7 @@ class Model:
             )
             or self.speaker_whisper_runtime_lease is not None
         ):
-            self.stopSpeakerTranscript()
+            self.stopSpeakerTranscript(stop_pipeline=False)
         try:
             return self._startSpeakerTranscript(fnc)
         except Exception:
@@ -1447,7 +1576,7 @@ class Model:
             # self.speaker_get_energy.daemon = True
             # self.speaker_get_energy.start()
 
-    def stopSpeakerTranscript(self):
+    def stopSpeakerTranscript(self, stop_pipeline: bool = True):
         self.ensure_initialized()
         stop_event = self.speaker_transcript_stop_event
         if hasattr(stop_event, "set"):
@@ -1461,6 +1590,9 @@ class Model:
         self._requestTranscriptThreadStop(thread)
         if self.speaker_print_transcript is thread:
             self.speaker_print_transcript = None
+
+        if stop_pipeline:
+            self.stopSourcePipeline(PipelineSource.SPEAKER)
 
         whisper_runtime_lease = self.speaker_whisper_runtime_lease
         close_error = None
