@@ -1198,6 +1198,241 @@ class PipelineLifecycleTests(unittest.TestCase):
                         release_wait_result.set()
                         energy_thread.join(WAIT_SECONDS)
 
+    def test_shutdown_stops_energy_start_that_won_lifecycle_lock(self):
+        cases = (
+            ("startCheckMicEnergy", "mic", "mic-energy-stop"),
+            (
+                "startCheckSpeakerEnergy",
+                "speaker",
+                "speaker-energy-stop",
+            ),
+        )
+        for controller_method, source_name, stop_label in cases:
+            with self.subTest(controller_method=controller_method):
+                instance = object.__new__(Model)
+                instance._inited = True
+                instance._transcription_recovery_callback = None
+                instance.stopMicTranscript = lambda: None
+                instance.stopSpeakerTranscript = lambda: None
+                instance.whisper_runtime_manager = SimpleNamespace(
+                    shutdown=lambda: None
+                )
+                instance.telemetry = SimpleNamespace(shutdown=lambda: None)
+                energy_active = {"mic": False, "speaker": False}
+                energy_start_entered = threading.Event()
+                release_energy_start = threading.Event()
+                energy_done = threading.Event()
+                shutdown_done = threading.Event()
+                shutdown_response = []
+                stops = []
+
+                def start_energy(_callback, source=source_name):
+                    energy_active[source] = True
+                    energy_start_entered.set()
+                    release_energy_start.wait()
+
+                def stop_mic_energy():
+                    stops.append("mic-energy-stop")
+                    energy_active["mic"] = False
+
+                def stop_speaker_energy():
+                    stops.append("speaker-energy-stop")
+                    energy_active["speaker"] = False
+
+                instance.startCheckMicEnergy = (
+                    start_energy
+                    if source_name == "mic"
+                    else lambda _callback: None
+                )
+                instance.startCheckSpeakerEnergy = (
+                    start_energy
+                    if source_name == "speaker"
+                    else lambda _callback: None
+                )
+                instance.stopCheckMicEnergy = stop_mic_energy
+                instance.stopCheckSpeakerEnergy = stop_speaker_energy
+
+                with patch.object(controller_module, "model", instance):
+                    controller = Controller()
+                    energy_thread = threading.Thread(
+                        target=lambda: (
+                            getattr(controller, controller_method)(),
+                            energy_done.set(),
+                        )
+                    )
+                    energy_thread.start()
+                    self.assertTrue(
+                        energy_start_entered.wait(WAIT_SECONDS)
+                    )
+                    shutdown_thread = threading.Thread(
+                        target=lambda: (
+                            shutdown_response.append(controller.shutdown()),
+                            shutdown_done.set(),
+                        )
+                    )
+                    shutdown_thread.start()
+                    try:
+                        self.assertTrue(
+                            controller._transcription_shutdown_requested.wait(
+                                WAIT_SECONDS
+                            )
+                        )
+                        self.assertFalse(shutdown_done.wait(0.1))
+                        release_energy_start.set()
+                        self.assertTrue(energy_done.wait(WAIT_SECONDS))
+                        self.assertTrue(shutdown_done.wait(WAIT_SECONDS))
+                        self.assertEqual(
+                            shutdown_response,
+                            [{"status": 200, "result": True}],
+                        )
+                        self.assertFalse(energy_active[source_name])
+                        self.assertIn(stop_label, stops)
+                    finally:
+                        release_energy_start.set()
+                        energy_thread.join(WAIT_SECONDS)
+                        shutdown_thread.join(WAIT_SECONDS)
+                        energy_active[source_name] = False
+
+    def test_model_energy_start_rolls_back_partial_owned_resources(self):
+        cases = (
+            (
+                "mic",
+                "startCheckMicEnergy",
+                "mic_energy_recorder",
+                "mic_energy_plot_progressbar",
+                "SelectedMicEnergyRecorder",
+            ),
+            (
+                "speaker",
+                "startCheckSpeakerEnergy",
+                "speaker_energy_recorder",
+                "speaker_energy_plot_progressbar",
+                "SelectedSpeakerEnergyRecorder",
+            ),
+        )
+        for (
+            source_name,
+            start_method,
+            recorder_attribute,
+            thread_attribute,
+            recorder_class_name,
+        ) in cases:
+            for failure_stage in ("record", "thread"):
+                with self.subTest(
+                    source=source_name,
+                    failure_stage=failure_stage,
+                ):
+                    recorders = []
+                    threads = []
+
+                    class ControlledRecorder:
+                        def __init__(self, _device):
+                            self.active = False
+                            self.calls = []
+                            recorders.append(self)
+
+                        def recordIntoQueue(self, _queue):
+                            self.active = True
+                            self.calls.append("record")
+                            if failure_stage == "record":
+                                raise RuntimeError(
+                                    "controlled recorder start failure"
+                                )
+
+                        def resume(self):
+                            self.calls.append("resume")
+
+                        def stop(self):
+                            self.calls.append("stop")
+                            self.active = False
+
+                    class ControlledThread:
+                        def __init__(self, *_args, **_kwargs):
+                            self.daemon = False
+                            self.stopped = False
+                            self.joined = False
+                            threads.append(self)
+
+                        def start(self):
+                            raise RuntimeError(
+                                "controlled progress thread start failure"
+                            )
+
+                        def stop(self):
+                            self.stopped = True
+
+                        def join(self):
+                            self.joined = True
+
+                    instance = object.__new__(Model)
+                    instance._inited = True
+                    instance.check_mic_energy_fnc = lambda _value: None
+                    instance.check_speaker_energy_fnc = lambda _value: None
+                    instance.mic_energy_recorder = None
+                    instance.mic_energy_plot_progressbar = None
+                    instance.speaker_energy_recorder = None
+                    instance.speaker_energy_plot_progressbar = None
+                    fake_config = SimpleNamespace(
+                        SELECTED_MIC_HOST="host",
+                        SELECTED_MIC_DEVICE="mic-device",
+                        SELECTED_SPEAKER_DEVICE="speaker-device",
+                    )
+                    fake_device_manager = SimpleNamespace(
+                        getMicDevices=lambda: {
+                            "host": [{"name": "mic-device"}]
+                        },
+                        getSpeakerDevices=lambda: [
+                            {"name": "speaker-device"}
+                        ],
+                    )
+
+                    try:
+                        with (
+                            patch.object(model_module, "config", fake_config),
+                            patch.object(
+                                model_module,
+                                "device_manager",
+                                fake_device_manager,
+                            ),
+                            patch.object(
+                                model_module,
+                                recorder_class_name,
+                                ControlledRecorder,
+                            ),
+                            patch.object(
+                                model_module,
+                                "threadFnc",
+                                ControlledThread,
+                            ),
+                        ):
+                            with self.assertRaisesRegex(
+                                RuntimeError,
+                                "controlled .* start failure",
+                            ):
+                                getattr(instance, start_method)(
+                                    lambda _value: None
+                                )
+
+                            self.assertIsNone(
+                                getattr(instance, recorder_attribute)
+                            )
+                            self.assertIsNone(
+                                getattr(instance, thread_attribute)
+                            )
+                            self.assertEqual(len(recorders), 1)
+                            self.assertFalse(recorders[0].active)
+                            self.assertIn("resume", recorders[0].calls)
+                            self.assertIn("stop", recorders[0].calls)
+                            if failure_stage == "thread":
+                                self.assertEqual(len(threads), 1)
+                                self.assertTrue(threads[0].stopped)
+                                self.assertTrue(threads[0].joined)
+                    finally:
+                        for recorder in recorders:
+                            recorder.active = False
+                        setattr(instance, recorder_attribute, None)
+                        setattr(instance, thread_attribute, None)
+
     def test_device_waiting_starts_exit_when_shutdown_is_requested(self):
         class ObservedController(Controller):
             def __init__(self):
